@@ -1,0 +1,45 @@
+#ifndef BOOTSTRAP_RAWSOCKET_H_
+#define BOOTSTRAP_RAWSOCKET_H_
+
+// Raw Ethernet sockets (AF_PACKET, SOCK_RAW): every frame is a broadcast of one EtherType on one interface,
+// so each link behaves as a shared medium (like the radio): every socket on it gets every frame.
+// Needs CAP_NET_RAW: "make" runs the processes in a container that has it
+//
+// frame: dst MAC (6, broadcast) | src MAC (6) | EtherType (2) | len(data) (2) | data
+
+#include "Crypto.h"
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+
+// IEEE 802 "local experimental" EtherTypes
+constexpr uint16_t kRadioEtherType = 0x88B5;     // vehicle <-> RSU (radio)
+constexpr uint16_t kBackhaulEtherType = 0x88B6;  // RSU <-> ESA (HTTPS session)
+
+class RawSocket
+{
+    public:
+        // binds to "etherType" frames on "iface" (e.g. "lo"); throws std::runtime_error
+        RawSocket(const std::string& iface, uint16_t etherType);
+        ~RawSocket();
+        RawSocket(const RawSocket&) = delete;
+        RawSocket& operator=(const RawSocket&) = delete;
+
+        int fd() const { return mFd; }
+
+        // broadcasts data in one frame; throws std::runtime_error (e.g. data larger than the frame)
+        void send(const Bytes& data);
+
+        // next frame received from the interface (non-blocking): nullopt when there is none left.
+        // the copy of our own outgoing frames is skipped (the loopback copy still arrives, as on a radio)
+        std::optional<Bytes> receive();
+
+    private:
+        int mFd = -1;
+        int mIfindex = 0;
+        uint16_t mEtherType;
+        std::array<uint8_t, 6> mMac{};
+};
+
+#endif /* BOOTSTRAP_RAWSOCKET_H_ */

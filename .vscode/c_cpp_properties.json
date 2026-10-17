@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "secure_bootstrap (make)",
+            "includePath": [
+                "${workspaceFolder}/secure_bootstrap/common",
+                "${workspaceFolder}/secure_bootstrap/protocol",
+                "${workspaceFolder}/secure_bootstrap/net"
+            ],
+            "compilerPath": "/usr/bin/g++",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}

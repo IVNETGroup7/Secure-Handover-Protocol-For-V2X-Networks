@@ -1,0 +1,14 @@
+<!-- Signing configuration of the enclave (sgx_sign). Heap 16 MB: SGX-SSL / OpenSSL 3 needs more than the
+     SDK sample's 1 MB (Intel SGX-SSL README) -->
+<EnclaveConfiguration>
+  <ProdID>0</ProdID>
+  <ISVSVN>0</ISVSVN>
+  <StackMaxSize>0x40000</StackMaxSize>
+  <HeapMaxSize>0x1000000</HeapMaxSize>
+  <TCSNum>10</TCSNum>
+  <TCSPolicy>1</TCSPolicy>
+  <!-- 1 for a release enclave (not debuggable) -->
+  <DisableDebug>0</DisableDebug>
+  <MiscSelect>0</MiscSelect>
+  <MiscMask>0xFFFFFFFF</MiscMask>
+</EnclaveConfiguration>

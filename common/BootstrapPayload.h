@@ -127,4 +127,54 @@ std::vector<std::string> describe(const Active03Payload&);
 void setPayload(BootstrapMsg&, const Bytes&);
 Bytes getPayload(const BootstrapMsg&);
 
+// M = { Forwarding_Notice, Y_V, tau } (RSU -> RSU over HTTPS)
+struct ForwardingNoticePayload
+{
+    uint8_t type;
+    Bytes vehiclePublicKey; // Y_V
+    Block tau;              // tau_{i+2}
+};
+
+Bytes pack(const ForwardingNoticePayload&);
+ForwardingNoticePayload unpackForwardingNotice(const Bytes&);
+std::vector<std::string> describe(const ForwardingNoticePayload&);
+
+// M = { Handover_Command, Y_G } (RSU -> Vehicle)
+struct HandoverCommandPayload
+{
+    uint8_t type;
+    Bytes targetRsuPublicKey; // Y_G_{i+2}
+};
+
+Bytes pack(const HandoverCommandPayload&);
+HandoverCommandPayload unpackHandoverCommand(const Bytes&);
+std::vector<std::string> describe(const HandoverCommandPayload&);
+
+// M = { Forwarding_Request, auth, OTP } (Vehicle -> Target RSU)
+struct ForwardingRequestPayload
+{
+    uint8_t type;
+    Sha256 auth;            // auth_{i+2} = SHA256(tau)
+    Block otp;              // OTP = Poly1305(KT_i, auth ^ t_c, m)
+};
+
+Bytes pack(const ForwardingRequestPayload&);
+ForwardingRequestPayload unpackForwardingRequest(const Bytes&);
+std::vector<std::string> describe(const ForwardingRequestPayload&);
+
+// M = { Forwarding_Granted, Y_G_next, auth', K_G, OTP' } (Target RSU -> Vehicle)
+// Encrypted on air as E_KT_i(M)
+struct ForwardingGrantedPayload
+{
+    uint8_t type;
+    Bytes nextRsuPublicKey; // Y_{G_{i+3}} (optional pre-load)
+    Sha256 authPrime;       // auth'_{i+2}
+    Bytes kG;               // K_{G_{i+2}}
+    Block otp;              // Fresh OTP'
+};
+
+Bytes pack(const ForwardingGrantedPayload&);
+ForwardingGrantedPayload unpackForwardingGranted(const Bytes&);
+std::vector<std::string> describe(const ForwardingGrantedPayload&);
+
 #endif /* BOOTSTRAP_BOOTSTRAPPAYLOAD_H_ */

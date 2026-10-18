@@ -328,6 +328,125 @@ std::vector<std::string> describe(const Active03Payload& m)
     };
 }
 
+Bytes pack(const ForwardingNoticePayload& m)
+{
+    Bytes out;
+    putUint(out, m.type, 1);
+    putUint(out, m.vehiclePublicKey.size(), 2);
+    out.insert(out.end(), m.vehiclePublicKey.begin(), m.vehiclePublicKey.end());
+    out.insert(out.end(), m.tau.begin(), m.tau.end());
+    return out;
+}
+
+ForwardingNoticePayload unpackForwardingNotice(const Bytes& in)
+{
+    Reader reader(in);
+    ForwardingNoticePayload m;
+    m.type = reader.uint(1);
+    m.vehiclePublicKey = reader.bytes(reader.uint(2));
+    m.tau = reader.array<16>();
+    return m;
+}
+
+std::vector<std::string> describe(const ForwardingNoticePayload& m)
+{
+    return {
+        "M = { " + std::string(stageName(m.type)) + ", Y_V, tau }",
+        "Y_V = " + toHex(m.vehiclePublicKey.data(), m.vehiclePublicKey.size()),
+        "tau = " + toHex(m.tau.data(), m.tau.size()),
+    };
+}
+
+Bytes pack(const HandoverCommandPayload& m)
+{
+    Bytes out;
+    putUint(out, m.type, 1);
+    putUint(out, m.targetRsuPublicKey.size(), 2);
+    out.insert(out.end(), m.targetRsuPublicKey.begin(), m.targetRsuPublicKey.end());
+    return out;
+}
+
+HandoverCommandPayload unpackHandoverCommand(const Bytes& in)
+{
+    Reader reader(in);
+    HandoverCommandPayload m;
+    m.type = reader.uint(1);
+    m.targetRsuPublicKey = reader.bytes(reader.uint(2));
+    return m;
+}
+
+std::vector<std::string> describe(const HandoverCommandPayload& m)
+{
+    return {
+        "M = { " + std::string(stageName(m.type)) + ", Y_G_next }",
+        "Y_G_next = " + toHex(m.targetRsuPublicKey.data(), m.targetRsuPublicKey.size()),
+    };
+}
+
+Bytes pack(const ForwardingRequestPayload& m)
+{
+    Bytes out;
+    putUint(out, m.type, 1);
+    out.insert(out.end(), m.auth.begin(), m.auth.end());
+    out.insert(out.end(), m.otp.begin(), m.otp.end());
+    return out;
+}
+
+ForwardingRequestPayload unpackForwardingRequest(const Bytes& in)
+{
+    Reader reader(in);
+    ForwardingRequestPayload m;
+    m.type = reader.uint(1);
+    m.auth = reader.array<32>();
+    m.otp = reader.array<16>();
+    return m;
+}
+
+std::vector<std::string> describe(const ForwardingRequestPayload& m)
+{
+    return {
+        "M = { " + std::string(stageName(m.type)) + ", auth, OTP }",
+        "auth = " + toHex(m.auth.data(), m.auth.size()),
+        "OTP  = " + toHex(m.otp.data(), m.otp.size()),
+    };
+}
+
+Bytes pack(const ForwardingGrantedPayload& m)
+{
+    Bytes out;
+    putUint(out, m.type, 1);
+    putUint(out, m.nextRsuPublicKey.size(), 2);
+    out.insert(out.end(), m.nextRsuPublicKey.begin(), m.nextRsuPublicKey.end());
+    out.insert(out.end(), m.authPrime.begin(), m.authPrime.end());
+    putUint(out, m.kG.size(), 2);
+    out.insert(out.end(), m.kG.begin(), m.kG.end());
+    out.insert(out.end(), m.otp.begin(), m.otp.end());
+    return out;
+}
+
+ForwardingGrantedPayload unpackForwardingGranted(const Bytes& in)
+{
+    Reader reader(in);
+    ForwardingGrantedPayload m;
+    m.type = reader.uint(1);
+    m.nextRsuPublicKey = reader.bytes(reader.uint(2));
+    m.authPrime = reader.array<32>();
+    m.kG = reader.bytes(reader.uint(2));
+    m.otp = reader.array<16>();
+    return m;
+}
+
+std::vector<std::string> describe(const ForwardingGrantedPayload& m)
+{
+    return {
+        "M = { " + std::string(stageName(m.type)) + ", Y_G_next, auth', K_G_next, OTP' }",
+        "Y_G_next   = " + toHex(m.nextRsuPublicKey.data(), m.nextRsuPublicKey.size()),
+        "auth'      = " + toHex(m.authPrime.data(), m.authPrime.size()),
+        "K_G_next   = " + toHex(m.kG.data(), m.kG.size()),
+        "OTP'       = " + toHex(m.otp.data(), m.otp.size()),
+    };
+}
+
 void setPayload(BootstrapMsg& msg, const Bytes& payload)
 {
     msg.setPayloadBytes(payload);

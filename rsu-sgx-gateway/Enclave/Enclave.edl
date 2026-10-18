@@ -76,8 +76,9 @@ enclave {
          *    OT packet Message(AES(K_G, Data), Auth_d, OTP_dt) -> OTP check -> decrypt -> JSON -> encrypted
          *    HTTPS packet for the IT queue (to the cloud).
          *    ot_pkt: the OT packet as common/SmartData.h packs it (packDataMessage), reassembled by the App.
-         *    it_https_pkt: while TLS is in the App (net/Https.h), the body of the POST /smartdata
-         *    (application/json) the App sends to the cloud; GW_OK sends it, any other status sends nothing. */
+         *    it_https_pkt: HTTPS Header | AES(K_eg, JSON) (Fig. 5): the whole POST /smartdata request, made here
+         *    with the session of ECALL 7; the App sends it as it is (inside its TLS, only the transport) and
+         *    cannot read the JSON. GW_OK sends it, any other status sends nothing. */
         public int ecall_secure_marshal_ot_to_it(
             [in, size=ot_pkt_len] const uint8_t* ot_pkt, size_t ot_pkt_len,
             uint64_t current_ptp_time,
@@ -100,6 +101,17 @@ enclave {
             [in, size=16] const uint8_t* tau,
             [out, size=128] uint8_t* out_yg,
             [out] size_t* yg_len
+        );
+
+        /* 7. HTTPS Session of the Secure Marshaling (Fig. 5): the cloud's certificate CY_c (PEM), configured
+         *    before deployment, pinned here. Its key Y_c is the one the session key is agreed with:
+         *    K_eg = SHA256(ECDH(X_s, Y_c)) (common/SmartData.h), X_s fresh per session and dropped once K_eg is
+         *    derived; K_eg never leaves the enclave. host: the cloud's address (Host header); gateway: this RSU's
+         *    name (X-Gateway header) */
+        public int ecall_init_cloud_session(
+            [in, size=cert_len] const uint8_t* cloud_cert_pem, size_t cert_len,
+            [in, string] const char* host,
+            [in, string] const char* gateway
         );
     };
 

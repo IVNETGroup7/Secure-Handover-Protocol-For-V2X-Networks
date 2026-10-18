@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 using Bytes = std::vector<uint8_t>;
@@ -30,6 +31,10 @@ std::optional<Bytes> aesGcmDecrypt(const Bytes& key, const Bytes& sealed);
 
 // random bytes from OpenSSL's CSPRNG
 Bytes randomBytes(size_t size);
+
+// base64 (RFC 4648, with padding, no line breaks); decode: nullopt when "text" is not base64
+std::string base64Encode(const Bytes& data);
+std::optional<Bytes> base64Decode(const std::string& text);
 
 // Poly1305-AES (Bernstein): key = k (AES-128 key) || r, 16 bytes each; nonce n; message m
 //   tag = (Poly1305_r(m) + AES_k(n)) mod 2^128

@@ -18,6 +18,7 @@
 #include "Traits.h"
 #include "codec.h"
 #include "gateway.h"
+#include "key_manager.h"
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
@@ -392,6 +393,41 @@ std::optional<Bytes> forwardingRequest(const std::string& session, const Bytes& 
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------------------------
+// OT Key Manager (key_manager.h): what the Secure Marshaling reads of this state
+
+bool gatewayReady()
+{
+    return gGateway.ready;
+}
+
+std::optional<VehicleKeys> findVehicleKeys(const Bytes& authD)
+{
+    // the activated sessions (an OTP matched in SaveRSU, or restored from the sealed state) and their K_dg
+    for (const auto& [session, activation] : gGateway.active) {
+        if (activation.authD.size() != authD.size()
+            || CRYPTO_memcmp(activation.authD.data(), authD.data(), authD.size()) != 0) {
+            continue;
+        }
+        const auto kDg = gGateway.kdg.find(session);
+        if (kDg == gGateway.kdg.end()) {
+            return std::nullopt;
+        }
+        return VehicleKeys{ session, kDg->second, gGateway.groupKey }; // one K_G for every vehicle of this RSU
+    }
+    return std::nullopt;
+}
+
+void enclavePrint(const std::string& text)
+{
+    print(text);
+}
+
+void enclaveCheck(bool ok, const std::string& text)
+{
+    check(ok, text);
+}
 
 // ---------------------------------------------------------------------------------------------
 

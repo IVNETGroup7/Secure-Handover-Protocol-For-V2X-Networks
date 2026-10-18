@@ -6,8 +6,8 @@
 //   bootstrap messages   the RSU side of the bootstrap with the secrets moved into the enclave
 //                        here (no secrets): relay of the Activation_Request to the ESA, PTP (master), routing
 //                        in the enclave (Enclave/control.cpp): ECDH, OTP search, Auth_Granted, Active_02
-//   SmartData            ecall_secure_marshal_ot_to_it (Enclave/marshaling.cpp): what it returns goes into the
-//                        IT queue, for the cloud
+//   SmartData            ecall_secure_marshal_ot_to_it (Enclave/marshaling.cpp): what it returns, HTTPS Header |
+//                        AES(K_eg, JSON) made in the enclave, goes into the IT queue, for the cloud
 // It never sees the keys, only what an ECALL copies out.
 
 #include "BootstrapMsg.h"
@@ -49,6 +49,8 @@ class PacketManager
 
         // the ECALLs (Enclave.edl)
         int initGateway(const Bytes& gatewayCert, const Bytes& esaPublicKey, const Bytes& groupKey = {});
+        // the HTTPS Session of the Secure Marshaling: the cloud's certificate (PEM) into the enclave
+        int initCloudSession(const std::string& certificatePem, const std::string& host);
         int addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
             const Bytes& authEg);
         Reply handleBootstrap(int type, const std::string& session, const Bytes& payload, uint64_t ptpTimeNs);

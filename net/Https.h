@@ -3,21 +3,24 @@
 
 // HTTPS between the RSU and the cloud (Fig. 5 of the paper, tee.pdf step 6): real TLS over TCP (OpenSSL),
 // unlike the radio and the backhaul, which are raw Ethernet links (RawSocket.h)
-//   cloud  HttpsServer: a fresh P-256 key and self-signed certificate per run (address in its
-//          subjectAltName), published as PEM: the RSU's trust anchor, as if provisioned before deployment
+//   cloud  CloudIdentity: a fresh P-256 key and self-signed certificate per run (address in its subjectAltName),
+//          published as PEM: what the RSU's enclave pins (K_eg, SmartData.h) and what the RSU's TLS trusts, as if
+//          provisioned before deployment. HttpsServer: TLS with that identity
 //   RSU    HttpsClient: verifies the cloud's certificate against that PEM and its address; one session for
-//          kPostsPerSession requests (keep-alive), then a new one (the paper's evaluation, Section 6.1)
+//          kPostsPerSession requests (keep-alive), then a new one (the paper's evaluation, Section 6.1).
+//          Only the transport: the SmartData inside is already AES(K_eg, JSON), made in the enclave
 
 #include "Crypto.h"
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 
 constexpr const char* kCloudAddress = "127.0.0.1";
 constexpr uint16_t kCloudPort = 8443;
-constexpr const char* kSmartDataPath = "/smartdata";    // the marshaled SmartData, POSTed by the RSU
 constexpr int kPostsPerSession = 100;
 
 struct HttpRequest
@@ -36,11 +39,20 @@ struct HttpResponse
     std::string body;
 };
 
+// the cloud's key pair and self-signed certificate (CY_c), for "address"
+struct CloudIdentity
+{
+    std::shared_ptr<EVP_PKEY> key;      // X_c (and Y_c)
+    std::shared_ptr<X509> certificate;  // CY_c: Y_c, signed by X_c
+    std::string pem() const;            // the certificate, PEM
+};
+CloudIdentity newCloudIdentity(const std::string& address);
+
 class HttpsServer
 {
     public:
-        // listens on address:port; writes its certificate to "certificatePem". Throws std::runtime_error
-        HttpsServer(const std::string& address, uint16_t port, const std::string& certificatePem);
+        // listens on address:port with "identity". Throws std::runtime_error
+        HttpsServer(const std::string& address, uint16_t port, const CloudIdentity& identity);
         ~HttpsServer();
         HttpsServer(const HttpsServer&) = delete;
         HttpsServer& operator=(const HttpsServer&) = delete;
@@ -72,6 +84,8 @@ class HttpsClient
         // "headers": more header lines; "newSession": set when this request opened one. Throws std::runtime_error
         HttpResponse post(const std::string& path, const std::string& contentType, const Bytes& body,
             const std::map<std::string, std::string>& headers = {}, bool* newSession = nullptr);
+        // the same with a whole request already made (request line, headers and body), sent as it is
+        HttpResponse send(const Bytes& request, bool* newSession = nullptr);
         int sessions() const { return mSessions; }
         const std::string& session() const { return mSession; }   // of the last connect()
 

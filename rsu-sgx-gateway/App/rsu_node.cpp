@@ -5,13 +5,15 @@
 //   radio (vehicles)   -> OT queue -> PacketManager -> enclave: bootstrap (ECDH, OTP, Auth_Granted, Active_02)
 //                                                             or Secure Marshaling (SmartData)
 //                                                  -> replies on the radio, or into the IT queue
-//   IT queue           -> backhaul (HTTPS session with the ESA)  or  HTTPS POST to the cloud (TLS here, in the App,
-//                         until it moves into the enclave)
+//   IT queue           -> backhaul (HTTPS session with the ESA)  or  the cloud: HTTPS Header | AES(K_eg, JSON) as
+//                         the enclave made it, sent inside the App's TLS (only the transport: K_eg, the cloud's
+//                         pinned certificate and the JSON stay in the enclave)
 //   backhaul (ESA)     -> PacketManager::onHttps (Activation_Token)
 
 #include "modes.h"
 #include "Https.h"
 #include "Link.h"
+#include "SmartData.h"
 #include "Trace.h"
 #include "gateway.h"
 #include "packet_manager.h"
@@ -19,6 +21,8 @@
 #include <csignal>
 #include <cstdio>
 #include <exception>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -52,10 +56,9 @@ void postToCloud(HttpsClient& cloud, const std::string& node, const ItPacket& pa
     }
     try {
         bool newSession = false;
-        const HttpResponse response = cloud.post(kSmartDataPath, "application/json", packet.bytes,
-            { { "X-Gateway", node }, { "X-Vehicle", packet.vehicle } }, &newSession);
+        const HttpResponse response = cloud.send(packet.bytes, &newSession); // the request as the enclave made it
         if (newSession) {
-            trace::detail(node, "HTTPS session with the cloud: " + cloud.session() + ", certificate verified");
+            trace::detail(node, "TLS transport to the cloud: " + cloud.session() + ", certificate verified");
         }
         const bool ok = response.status / 100 == 2;
         if (ok) {
@@ -94,10 +97,20 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
         throw std::runtime_error(std::string("ecall_init_gateway: ") + statusName(init));
     }
 
-    // HTTPS session with the cloud (when there is one): its certificate verified against the one we trust
+    // the cloud (when there is one): its certificate goes into the enclave (the HTTPS Session of the Secure
+    // Marshaling, K_eg), and the App's TLS transport verifies the cloud with it too
     std::unique_ptr<HttpsClient> cloud;
     std::string cloudSession;
     if (!options.cloudCertificate.empty()) {
+        std::ifstream file(options.cloudCertificate);
+        const std::string pem((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        if (pem.empty()) {
+            throw std::runtime_error("cannot read the cloud's certificate " + options.cloudCertificate);
+        }
+        const int session = gateway.initCloudSession(pem, options.cloudAddress);
+        if (session != GW_OK) {
+            throw std::runtime_error(std::string("ecall_init_cloud_session: ") + statusName(session));
+        }
         cloud = std::make_unique<HttpsClient>(options.cloudAddress, options.cloudPort, options.cloudCertificate);
         cloudSession = cloud->connect();
     }
@@ -116,7 +129,7 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
     std::printf("[%s] SGX gateway: HTTPS session with the ESA, radio on %s (EtherType 0x88b5)\n",
         options.name.c_str(), options.iface.c_str());
     if (cloud) {
-        std::printf("[%s] HTTPS session with the cloud %s:%u: %s, certificate verified (%s)\n", options.name.c_str(),
+        std::printf("[%s] TLS transport to the cloud %s:%u: %s, certificate verified (%s)\n", options.name.c_str(),
             options.cloudAddress.c_str(), options.cloudPort, cloudSession.c_str(), options.cloudCertificate.c_str());
     }
     std::fflush(stdout);

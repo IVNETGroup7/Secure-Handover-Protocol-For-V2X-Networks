@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <cstring>
 #include <chrono>
+#include <fstream>
 #include <csignal>
 #include <iostream>
 #include <map>
@@ -298,7 +299,10 @@ std::string preview(const std::string& body)
         + toHex(reinterpret_cast<const uint8_t*>(body.data()), shown) + (shown < body.size() ? "…" : "");
 }
 
-// the cloud of Fig. 5: an HTTPS server that receives the marshaled SmartData (POST /smartdata).
+// the cloud of Fig. 5: an HTTPS server that receives the marshaled SmartData (POST /smartdata), as the RSU's
+// enclave made it: HTTPS Header | AES(K_eg, JSON). Its key X_c and certificate CY_c are fresh per run; the
+// certificate goes to --cert-out, which the RSU is configured with (its enclave pins it). Each session key Y_s
+// of the header gives K_eg = SHA256(ECDH(X_c, Y_s)) (common/SmartData.h), which opens the body.
 // The first request of each size is traced (the view draws it), the others only counted
 int runCloud(const Options& options)
 {
@@ -306,13 +310,27 @@ int runCloud(const Options& options)
     const auto port = static_cast<uint16_t>(std::stoi(options.get("--port", std::to_string(kCloudPort))));
     const std::string certificate = options.get("--cert-out", "cloud.crt");
 
-    HttpsServer server(address, port, certificate);
-    std::cout << "[cloud] HTTPS on " << address << ":" << port << ", self-signed P-256 certificate in "
+    const CloudIdentity identity = newCloudIdentity(address);
+    {
+        std::ofstream file(certificate);
+        file << identity.pem();
+        if (!file) {
+            throw std::runtime_error("cannot write " + certificate);
+        }
+    }
+    HttpsServer server(address, port, identity);
+    std::cout << "[cloud] HTTPS on " << address << ":" << port << ", self-signed P-256 certificate CY_c in "
         << certificate << std::endl;
     signalReady(options);
 
-    std::map<size_t, int> posts; // body size -> requests
-    int total = 0;
+    struct Session
+    {
+        int number;
+        Bytes kEg;
+    };
+    std::map<std::string, Session> sessions; // Y_s (base64) -> its K_eg
+    std::map<size_t, int> posts;             // body size -> requests
+    int total = 0, refused = 0;
     server.serve(
         [&](const HttpRequest& request, const std::string& peer) {
             HttpResponse response;
@@ -322,27 +340,67 @@ int runCloud(const Options& options)
                 response.body = R"({"error":"no such resource"})";
                 return response;
             }
+            auto header = [&](const std::string& name) {
+                std::string lower = name;
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+                auto value = request.headers.find(lower);
+                return value != request.headers.end() ? value->second : std::string();
+            };
+            auto refuse = [&](const std::string& why) {
+                ++refused;
+                trace::check("cloud", false, "POST " + request.path + " from " + peer + ": " + why);
+                response.status = 400;
+                response.reason = "Bad Request";
+                response.body = R"({"error":")" + why + R"("})";
+                return response;
+            };
+            const bool traced = posts[request.body.size()]++ == 0;
             ++total;
-            if (posts[request.body.size()]++ == 0) {
-                auto header = [&](const char* name) {
-                    auto value = request.headers.find(name);
-                    return value != request.headers.end() ? value->second : std::string("?");
-                };
-                trace::step("cloud", "store SmartData", "POST " + request.path, header("x-gateway"),
-                    header("x-vehicle"));
+            if (traced) {
+                trace::step("cloud", "store SmartData", "POST " + request.path, header("X-Gateway"),
+                    header("X-Vehicle"));
                 trace::detail("cloud", "from " + peer + ", " + std::to_string(request.body.size()) + " B, "
-                    + header("content-type"));
-                trace::detail("cloud", "body = " + preview(request.body));
+                    + header("Content-Type") + ", " + header("X-Encrypted"));
+            }
+
+            // K_eg of this session: SHA256(ECDH(X_c, Y_s)), derived once per Y_s
+            const std::string ys = header(kSessionKeyHeader);
+            auto session = sessions.find(ys);
+            if (session == sessions.end()) {
+                const auto der = base64Decode(ys);
+                if (ys.empty() || !der) {
+                    return refuse(std::string("no session key (") + kSessionKeyHeader + ")");
+                }
+                try {
+                    const auto peerKey = publicKeyFromDer(*der);
+                    const int number = static_cast<int>(sessions.size()) + 1;
+                    session = sessions.emplace(ys, Session{ number, computeKEg(identity.key.get(), peerKey.get()) }).first;
+                } catch (const std::exception& e) {
+                    return refuse(std::string("bad session key: ") + e.what());
+                }
+                trace::detail("cloud", "HTTPS session #" + std::to_string(session->second.number) + ": Y_s = "
+                    + ys.substr(36, 16) + "..., K_eg = SHA256(ECDH(X_c, Y_s))");
+            }
+
+            const auto json = aesGcmDecrypt(session->second.kEg, Bytes(request.body.begin(), request.body.end()));
+            if (!json) {
+                return refuse("AES(K_eg, JSON) does not decrypt with the K_eg of its session");
+            }
+            if (traced) {
+                trace::check("cloud", true, "AES(K_eg, JSON) decrypts with the K_eg of session #"
+                    + std::to_string(session->second.number) + " (GCM tag valid)");
+                trace::detail("cloud", "JSON = " + preview(std::string(json->begin(), json->end())));
             }
             response.body = R"({"status":"stored"})";
             return response;
         },
         [](const std::string& peer, const std::string& session) {
-            trace::detail("cloud", "HTTPS session from " + peer + ": " + session);
+            trace::detail("cloud", "TLS transport from " + peer + ": " + session);
         },
         [] { return gStop != 0; });
 
-    std::cout << "[cloud] " << total << " SmartData POST(s) received" << std::endl;
+    std::cout << "[cloud] " << total << " SmartData POST(s) received, " << total - refused << " stored, "
+        << sessions.size() << " HTTPS session key(s) K_eg" << std::endl;
     return 0;
 }
 

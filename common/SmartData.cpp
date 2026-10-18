@@ -150,3 +150,9 @@ DataMessage sealSmartData(const SmartData& data, const Bytes& kG, const Bytes& k
     message.otp = dataOtp(kDg, data.authD, dataOtpSlot(nowNs), message.sealedData);
     return message;
 }
+
+Bytes computeKEg(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey)
+{
+    const Sha256 key = sha256(ecdh(privateKey, peerPublicKey));
+    return Bytes(key.begin(), key.end());
+}

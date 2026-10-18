@@ -215,26 +215,32 @@ void writeAll(SSL* ssl, const std::string& data)
 
 // ---------------------------------------------------------------------------------------------
 
-HttpsServer::HttpsServer(const std::string& address, uint16_t port, const std::string& certificatePem)
+std::string CloudIdentity::pem() const
+{
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
+    if (!bio || PEM_write_bio_X509(bio.get(), certificate.get()) != 1) {
+        throw sslError("PEM_write_bio_X509");
+    }
+    char* data = nullptr;
+    const long size = BIO_get_mem_data(bio.get(), &data);
+    return std::string(data, static_cast<size_t>(size));
+}
+
+CloudIdentity newCloudIdentity(const std::string& address)
+{
+    CloudIdentity identity;
+    identity.key = newP256Key();
+    identity.certificate = selfSigned(identity.key.get(), address);
+    return identity;
+}
+
+HttpsServer::HttpsServer(const std::string& address, uint16_t port, const CloudIdentity& identity)
 {
     ignoreSigpipe();
-    const auto key = newP256Key();
-    const auto cert = selfSigned(key.get(), address);
-
-    // the RSU's trust anchor
-    FILE* file = std::fopen(certificatePem.c_str(), "w");
-    if (!file) {
-        throw systemError("cannot write " + certificatePem);
-    }
-    const bool written = PEM_write_X509(file, cert.get()) == 1;
-    std::fclose(file);
-    if (!written) {
-        throw sslError("PEM_write_X509");
-    }
-
     mContext = SSL_CTX_new(TLS_server_method());
     if (!mContext || SSL_CTX_set_min_proto_version(mContext, TLS1_2_VERSION) != 1
-        || SSL_CTX_use_certificate(mContext, cert.get()) != 1 || SSL_CTX_use_PrivateKey(mContext, key.get()) != 1) {
+        || SSL_CTX_use_certificate(mContext, identity.certificate.get()) != 1
+        || SSL_CTX_use_PrivateKey(mContext, identity.key.get()) != 1) {
         throw sslError("TLS server context");
     }
 
@@ -391,10 +397,19 @@ std::string HttpsClient::connect()
 HttpResponse HttpsClient::post(const std::string& path, const std::string& contentType, const Bytes& body,
     const std::map<std::string, std::string>& headers, bool* newSession)
 {
-    std::string extra;
+    std::string head = "POST " + path + " HTTP/1.1\r\nHost: " + mAddress + "\r\nContent-Type: " + contentType
+        + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
     for (const auto& [name, value] : headers) {
-        extra += name + ": " + value + "\r\n";
+        head += name + ": " + value + "\r\n";
     }
+    head += "\r\n";
+    Bytes request(head.begin(), head.end());
+    request.insert(request.end(), body.begin(), body.end());
+    return send(request, newSession);
+}
+
+HttpResponse HttpsClient::send(const Bytes& request, bool* newSession)
+{
     if (newSession) {
         *newSession = false;
     }
@@ -407,9 +422,7 @@ HttpResponse HttpsClient::post(const std::string& path, const std::string& conte
         }
         ++mPosts;
         try {
-            writeAll(mSsl, "POST " + path + " HTTP/1.1\r\nHost: " + mAddress + "\r\nContent-Type: " + contentType
-                + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n" + extra + "\r\n"
-                + std::string(body.begin(), body.end()));
+            writeAll(mSsl, std::string(request.begin(), request.end()));
             auto message = readMessage(mSsl, mFd, mBuffer, nullptr);
             if (!message) {
                 throw std::runtime_error("the server closed the session");

@@ -104,6 +104,34 @@ Bytes randomBytes(size_t size)
     return out;
 }
 
+std::string base64Encode(const Bytes& data)
+{
+    std::string text(4 * ((data.size() + 2) / 3), '\0');
+    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(&text[0]), data.data(), static_cast<int>(data.size()));
+    text.resize(static_cast<size_t>(n));
+    return text;
+}
+
+std::optional<Bytes> base64Decode(const std::string& text)
+{
+    if (text.size() % 4 != 0) {
+        return std::nullopt;
+    }
+    Bytes out(3 * (text.size() / 4));
+    const int n = EVP_DecodeBlock(out.data(), reinterpret_cast<const unsigned char*>(text.data()),
+        static_cast<int>(text.size()));
+    if (n < 0) {
+        return std::nullopt;
+    }
+    // EVP_DecodeBlock counts the padding as zero bytes
+    size_t padding = 0;
+    for (size_t i = text.size(); i > 0 && text[i - 1] == '=' && padding < 2; --i) {
+        ++padding;
+    }
+    out.resize(static_cast<size_t>(n) - padding);
+    return out;
+}
+
 Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& m)
 {
     if (key.size() != 32) {

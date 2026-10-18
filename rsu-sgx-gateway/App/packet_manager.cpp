@@ -14,7 +14,12 @@ namespace
 {
 
 constexpr size_t kMaxBootstrapReply = 1500;           // a reply goes in one radio frame (net/RawSocket.cpp)
-constexpr size_t kMaxItPacket = 64 * 1024 + 1024;     // SmartData up to 64 KB (tee.pdf step 6) + HTTPS framing
+// the IT packet of an OT packet (Enclave/marshaling.cpp): its value in base64 (4/3 of it) plus the other JSON
+// fields, the AES-GCM nonce and tag, and the HTTPS header (with Y_s)
+size_t itBufferFor(size_t otPacket)
+{
+    return otPacket * 4 / 3 + 2048;
+}
 
 // the ECALL itself failed (enclave lost, bad parameters for the bridge): not a gateway status
 void check(sgx_status_t status, const char* ecall)
@@ -108,7 +113,8 @@ void PacketManager::onSmartData(const OtPacket& packet)
         return;
     }
     if (traced) {
-        trace::detail(mName, "IT packet = " + std::to_string(reply.payload.size()) + " B -> IT queue -> cloud");
+        trace::detail(mName, "IT packet = HTTPS Header | AES(K_eg, JSON) = " + std::to_string(reply.payload.size())
+            + " B (made in the enclave: the App cannot read the JSON) -> IT queue -> cloud");
     }
     ItPacket it;
     it.to = ItPacket::To::Cloud;
@@ -236,6 +242,14 @@ int PacketManager::initGateway(const Bytes& gatewayCert, const Bytes& esaPublicK
     return ret;
 }
 
+int PacketManager::initCloudSession(const std::string& certificatePem, const std::string& host)
+{
+    int ret = GW_ERR_STATE;
+    check(ecall_init_cloud_session(mEid, &ret, reinterpret_cast<const uint8_t*>(certificatePem.data()),
+        certificatePem.size(), host.c_str(), mName.c_str()), "ecall_init_cloud_session");
+    return ret;
+}
+
 int PacketManager::addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
     const Bytes& authEg)
 {
@@ -262,7 +276,7 @@ Reply PacketManager::handleBootstrap(int type, const std::string& session, const
 Reply PacketManager::marshal(const Bytes& otPacket, uint64_t ptpTimeNs)
 {
     Reply reply;
-    Bytes out(kMaxItPacket);
+    Bytes out(itBufferFor(otPacket.size()));
     size_t outLen = 0;
     check(ecall_secure_marshal_ot_to_it(mEid, &reply.status, otPacket.data(), otPacket.size(), ptpTimeNs,
         out.data(), out.size(), &outLen), "ecall_secure_marshal_ot_to_it");

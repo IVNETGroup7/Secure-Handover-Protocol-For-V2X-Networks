@@ -2,8 +2,9 @@
 // Fig. 5 of the paper). A vehicle's OT packet becomes the JSON the cloud receives:
 //   1. unpack       Message(AES(K_G, Data), Auth_d, OTP_dt)                       (common/SmartData.h)
 //   2. keys         Auth_d -> K_dg, K_G of that vehicle                           (OT Key Manager, key_manager.h)
-//   3. OTP_dt       == Poly1305(K_dg, Auth_d xor t, AES(K_G, Data)), t = my slot +- kOtpWindow
-//   4. decrypt      Data = AES(K_G)^-1 (AES-128-GCM): SmartData { location, timing, metadata, value, Auth_d }
+//   3. decrypt      Data = AES(K_G)^-1 (AES-128-GCM): SmartData { location, timing, metadata, value, Auth_d }
+//   4. OTP_dt       == Poly1305(K_dg, Auth_d xor t, AES(K_G, Data)), t = my slot +- kOtpWindow
+//   (3 before 4 as in the paper: "decrypted using K_G (16) ... and authenticated using the OTP key (8)")
 //   5. JSON         { Location, Timing, Metadata, Value, Trust }   (Value in base64, Trust: Auth_d in hex)
 //   6. IT packet    HTTPS Header | AES(K_eg, JSON): the whole POST /smartdata, into it_https_pkt; the body is
 //                   AES-256-GCM with K_eg, the key of the HTTPS Session below. The App only sends it (inside its
@@ -111,29 +112,7 @@ int marshal(const Bytes& otPacket, uint64_t now, uint8_t* out, size_t outMax, si
     }
     const std::string& session = keys->session;
 
-    // 3. OTP_dt: every t in +-kOtpWindow slots around my own truncated clock (as SaveRSU)
-    const uint64_t tNow = dataOtpSlot(static_cast<int64_t>(now));
-    bool otpOk = false;
-    uint64_t tMatch = 0;
-    for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow && !otpOk; ++t) {
-        const Block candidate = dataOtp(keys->kDg, message.authD, t, message.sealedData);
-        if (CRYPTO_memcmp(candidate.data(), message.otp.data(), candidate.size()) == 0) { // constant time
-            otpOk = true;
-            tMatch = t;
-        }
-    }
-    if (!otpOk) {
-        enclaveCheck(false, session + ": OTP_dt of the SmartData does not match K_dg, Auth_d and t in "
-            + std::to_string(2 * kOtpWindow + 1) + " slots around " + std::to_string(tNow) + ": ignored");
-        return GW_IGNORED;
-    }
-    if (traced) {
-        const long long offset = static_cast<long long>(tMatch) - static_cast<long long>(tNow);
-        enclaveCheck(true, session + ": OTP_dt = Poly1305(K_dg, Auth_d xor t, AES(K_G, Data)) with t = "
-            + std::to_string(tMatch) + " (my slot " + (offset >= 0 ? "+" : "") + std::to_string(offset) + ")");
-    }
-
-    // 4. Data: AES-128-GCM with K_G
+    // 3. Data: AES-128-GCM with K_G (the paper's order: decrypted with K_G, then authenticated with the OTP)
     std::optional<Bytes> plain = aesGcmDecrypt(keys->kG, message.sealedData);
     if (!plain) {
         enclaveCheck(false, session + ": AES(K_G, Data) does not decrypt with K_G (GCM tag invalid): ignored");
@@ -148,14 +127,40 @@ int marshal(const Bytes& otPacket, uint64_t now, uint8_t* out, size_t outMax, si
         return GW_IGNORED;
     }
     OPENSSL_cleanse(plain->data(), plain->size());
+    // a refused packet leaves no Data behind
+    auto refuse = [&](const std::string& why) {
+        OPENSSL_cleanse(data.value.data(), data.value.size());
+        enclaveCheck(false, session + ": " + why + ": ignored");
+        return GW_IGNORED;
+    };
     // the Auth_d inside the encrypted Data must be the one the packet came with
     if (data.authD.size() != message.authD.size()
         || CRYPTO_memcmp(data.authD.data(), message.authD.data(), data.authD.size()) != 0) {
-        enclaveCheck(false, session + ": the Auth_d inside Data is not the packet's: ignored");
-        return GW_IGNORED;
+        return refuse("the Auth_d inside Data is not the packet's");
     }
     if (traced) {
         enclaveCheck(true, session + ": AES(K_G, Data) decrypts with K_G (GCM tag valid), its Auth_d is the packet's");
+    }
+
+    // 4. OTP_dt: every t in +-kOtpWindow slots around my own truncated clock (as SaveRSU)
+    const uint64_t tNow = dataOtpSlot(static_cast<int64_t>(now));
+    bool otpOk = false;
+    uint64_t tMatch = 0;
+    for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow && !otpOk; ++t) {
+        const Block candidate = dataOtp(keys->kDg, message.authD, t, message.sealedData);
+        if (CRYPTO_memcmp(candidate.data(), message.otp.data(), candidate.size()) == 0) { // constant time
+            otpOk = true;
+            tMatch = t;
+        }
+    }
+    if (!otpOk) {
+        return refuse("OTP_dt of the SmartData does not match K_dg, Auth_d and t in "
+            + std::to_string(2 * kOtpWindow + 1) + " slots around " + std::to_string(tNow));
+    }
+    if (traced) {
+        const long long offset = static_cast<long long>(tMatch) - static_cast<long long>(tNow);
+        enclaveCheck(true, session + ": OTP_dt = Poly1305(K_dg, Auth_d xor t, AES(K_G, Data)) with t = "
+            + std::to_string(tMatch) + " (my slot " + (offset >= 0 ? "+" : "") + std::to_string(offset) + ")");
     }
 
     // 5. JSON

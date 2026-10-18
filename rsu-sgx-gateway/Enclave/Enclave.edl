@@ -1,0 +1,100 @@
+/*
+ * Enclave.edl: boundary between the RSU gateway's Non-Secure World (App/, a normal Linux process)
+ * and its Secure World (Enclave/, the SGX enclave). sgx_edger8r generates the bridge from this file:
+ *   Enclave_t.{c,h}  trusted side: the enclave implements the ECALLs, calls the OCALLs
+ *   Enclave_u.{c,h}  untrusted side: the App calls ecall_x(eid, &ret, ...), implements the OCALLs
+ *
+ * What lives inside the enclave (the RSU part of protocol/BootstrapService.cpp that holds
+ * secrets): the ECDH private key X_g, K_dg per session, the group key K_g, CY_e, the pending activations
+ * (Auth_d, Auth_eg, t_0, t_f), the OTP search and the encryption of the Auth_Granted.
+ * What stays outside: sockets, the OT/IT queues, PTP, the relay to the ESA.
+ *
+ * Buffers: [in, size=n] copies n bytes App -> enclave; [out, size=n] gives the enclave n bytes that are
+ * copied back to the App on return. Sizes are parameters (the protocol fields are not fixed-size:
+ * Auth_d is 48 bytes, Auth_eg 96, Y_d 91 with AES-256-ECB / P-256 DER).
+ *
+ * Conventions
+ *   times      ns since the epoch (as common/SimTime.h), from the App's PTP-synchronized clock
+ *   msg_type   BootstrapType of common/BootstrapType.h (ECDH_Request = 4, ...)
+ *   session    the session the message belongs to (the vehicle name in BootstrapMsg.vehicle): the enclave
+ *              keeps one K_dg per session
+ *   return     0 ok; 1 ignored (validation failed, nothing to send); < 0 error (bad arguments, buffer too small,
+ *              crypto failure)
+ */
+
+enclave {
+    /* OCALLs the trusted C library of the SDK needs (mutexes, condition variables) */
+    from "sgx_tstdc.edl" import *;
+
+    /* crypto inside the enclave: Intel SGX-SSL (OpenSSL 3.0 in the enclave, the same EVP API as
+       common/Crypto.cpp). The SDK's sgx_tcrypto is not enough: it has P-256 ECDH, SHA-256 and
+       AES-GCM with 128-bit keys only, and the RSU needs AES-256-GCM with K_dg (Auth_Granted, Active_01) and
+       Poly1305-AES (OTP). sgx_edger8r needs --search-path /opt/intel/sgxssl/include (this EDL) and
+       /opt/intel/sgxssl/include/nofilefunc (the sgxssl_file.edl it imports: no file I/O in the enclave, non-FIPS) */
+    from "sgx_tsgxssl.edl" import *;
+    /* OCALLs of the SDK's trusted pthread (libsgx_pthread), which SGX-SSL's OpenSSL uses */
+    from "sgx_pthread.edl" import *;
+
+    trusted {
+        /* 1. Gateway initialization (Root of Trust): security parameters configured before deployment.
+         *    gw_cert: the gateway certificate (CY_g), DER; esa_pub_key: CY_e, DER SubjectPublicKeyInfo
+         *    (main.cpp gets it in the Session_Ack of the HTTPS session).
+         *    group_key: K_g (16 bytes, AES-128-GCM) shared by the RSUs; group_key_len 0: generated inside. */
+        public int ecall_init_gateway(
+            [in, size=cert_len] const uint8_t* gw_cert, size_t cert_len,
+            [in, size=esa_len] const uint8_t* esa_pub_key, size_t esa_len,
+            [in, size=group_key_len] const uint8_t* group_key, size_t group_key_len
+        );
+
+        /* 2. Control: the Activation_Token from the ESA (BootstrapService::PTP) becomes a pending activation
+         *    { Auth_d, t_0, t_f, Auth_eg }, searched by the OTP of the Auth_Request. */
+        public int ecall_control_add_activation_token(
+            [in, string] const char* session,
+            uint64_t t0, uint64_t tf,
+            [in, size=auth_d_len] const uint8_t* auth_d, size_t auth_d_len,
+            [in, size=auth_eg_len] const uint8_t* auth_eg, size_t auth_eg_len
+        );
+
+        /* 3. Control: one bootstrap message from a vehicle; the reply is built inside the enclave.
+         *      ECDH_Request  in: { ECDH_Request, Y_d }               out: ECDH_Response { Y_g }   (K_dg stays inside)
+         *      Auth_Request  in: { Auth_Request, OTP_dt }            out: Auth_Granted E_K_dg(M)  (OTP search, K_g)
+         *      Active_01     in: E_K_dg({ Auth_d, OTP_dt, Auth_de }) out: Active_02 M, for the ESA
+         *    in_pkt / out_pkt: the payload of BootstrapMsg (common/BootstrapPayload.h).
+         *    out_type: the BootstrapType of the reply, so the App knows where it goes (radio or HTTPS).
+         *    current_ptp_time: t of the OTP window and of the t_f check (the enclave trusts the App for it). */
+        public int ecall_control_handle_bootstrap(
+            int msg_type,
+            [in, string] const char* session,
+            [in, size=in_len] const uint8_t* in_pkt, size_t in_len,
+            [out, size=out_max_len] uint8_t* out_pkt, size_t out_max_len,
+            [out] size_t* actual_out_len,
+            [out] int* out_type,
+            uint64_t current_ptp_time
+        );
+
+        /* 4. Secure Marshaling (data path after the bootstrap, step 4 of tee.pdf):
+         *    OT packet Message(AES(K_G, Data), Auth_d, OTP_dt) -> OTP check -> decrypt -> JSON -> encrypted
+         *    HTTPS packet for the IT queue (to the cloud). */
+        public int ecall_secure_marshal_ot_to_it(
+            [in, size=ot_pkt_len] const uint8_t* ot_pkt, size_t ot_pkt_len,
+            uint64_t current_ptp_time,
+            [out, size=it_buf_max] uint8_t* it_https_pkt, size_t it_buf_max,
+            [out] size_t* it_pkt_len
+        );
+    };
+
+    untrusted {
+        /* the enclave has no stdout: its trace lines (common/Trace.h) go through the App */
+        void ocall_print([in, string] const char* str);
+
+        /* network, only for TLS terminated inside the enclave (MbedTLS / SGX-SSL); the bootstrap replies
+           come back in out_pkt and the App sends them. Return: bytes sent / received, < 0 error */
+        int ocall_net_send([in, size=len] const uint8_t* buf, size_t len);
+        int ocall_net_recv([out, size=len] uint8_t* buf, size_t len);
+
+        /* reboot recovery: state sealed with sgx_seal_data() (K_dg, K_G, Auth_d, Auth_eg, CY_e), on the
+           untrusted disk. Return: bytes saved / loaded, 0 nothing saved, < 0 error */
+        int ocall_save_sealed_state([in, size=len] const uint8_t* sealed_blob, size_t len);
+        int ocall_load_sealed_state([out, size=max_len] uint8_t* sealed_blob, size_t max_len);
+    };
+};

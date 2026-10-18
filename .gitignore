@@ -68,3 +68,6 @@ Testing/
 
 # build output
 bootstrap
+
+# ignoring TEE pdfs
+*.pdf 

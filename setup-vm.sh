@@ -1,13 +1,22 @@
 #!/bin/bash
 set -e
 
+# Run as your normal user: the script calls sudo itself where needed. Under sudo, $HOME would be /root,
+# $USER root (usermod would add root to the groups) and the VM would get root's SSH key instead of yours.
+if [ "$EUID" -eq 0 ]; then
+    echo "Error: run this script without sudo (as your normal user)."
+    exit 1
+fi
+
 export LIBVIRT_DEFAULT_URI="qemu:///system"
 
 VM_NAME="ubuntu24-tee-vm"
 VM_RAM="4096"        # 4GB RAM
 VM_CPUS="2"         # 2 vCPUs
 DISK_SIZE="20G"     # 20 GB Disk
-IMG_DIR="$HOME/.libvirt/images"
+# Not a hidden directory: on Ubuntu, AppArmor's virt-aa-helper profile denies reading @{HOME}/.*/**,
+# so it cannot follow the qcow2 to its backing image and QEMU gets "Permission denied" on it
+IMG_DIR="$HOME/libvirt/images"
 DISK_PATH="$IMG_DIR/$VM_NAME.qcow2"
 CLOUD_ISO="$IMG_DIR/seed.iso"
 
@@ -139,6 +148,19 @@ if [ ! -f "$LOCAL_IMG" ]; then
 fi
 
 echo "=== Step 5: Preparing VM Disk and Cloud-Init Configuration ==="
+# An existing VM is kept: recreating it erases its disk (SGX SDK, SGX-SSL and everything else installed in it).
+# While it runs, libvirt hands its disk to libvirt-qemu, so it must also be stopped before it can be replaced.
+if virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
+    if [ "$RECREATE" != "1" ]; then
+        echo "VM '$VM_NAME' already exists: nothing to do."
+        echo "  start it:      virsh -c qemu:///system start $VM_NAME"
+        echo "  recreate it:   RECREATE=1 $0   (erases the VM's disk)"
+        exit 0
+    fi
+    virsh destroy "$VM_NAME" 2>/dev/null || true
+    virsh undefine "$VM_NAME"
+fi
+rm -f "$DISK_PATH"   # the folder is ours, so this works even when libvirt owns the file
 qemu-img create -f qcow2 -F qcow2 -b "$LOCAL_IMG" "$DISK_PATH" "$DISK_SIZE"
 
 # Guest-side script: installs Intel SGX SDK for SIMULATION mode only
@@ -171,6 +193,20 @@ source /opt/intel/sgxsdk/environment
 cp -r /opt/intel/sgxsdk/SampleCode/SampleEnclave /tmp/SampleEnclave
 make -C /tmp/SampleEnclave SGX_MODE=SIM
 (cd /tmp/SampleEnclave && ./app)
+
+# Intel SGX-SSL: OpenSSL 3.0 inside the enclave (the gateway needs AES-256-GCM and Poly1305, which the
+# SDK's sgx_tcrypto lacks). Installs to /opt/intel/sgxssl; its unit tests run in an enclave (SIM)
+SGXSSL_TAG=3.0_Rev5.4
+OPENSSL_VER=openssl-3.0.21
+OPENSSL_SHA256=617e29af8e421f46649484a4937e48c685e47f46488167c982f88bc4ec1d522f
+apt-get install -y nasm git perl
+rm -rf /tmp/intel-sgx-ssl
+git clone --depth 1 --branch "$SGXSSL_TAG" https://github.com/intel/intel-sgx-ssl.git /tmp/intel-sgx-ssl
+wget -q "https://github.com/openssl/openssl/releases/download/$OPENSSL_VER/$OPENSSL_VER.tar.gz" \
+    -O "/tmp/intel-sgx-ssl/openssl_source/$OPENSSL_VER.tar.gz"
+echo "$OPENSSL_SHA256  /tmp/intel-sgx-ssl/openssl_source/$OPENSSL_VER.tar.gz" | sha256sum -c -
+make -C /tmp/intel-sgx-ssl/Linux all test SGX_MODE=SIM
+make -C /tmp/intel-sgx-ssl/Linux install
 touch /var/log/sgx-sdk-installed
 GUEST
 
@@ -223,11 +259,14 @@ rm -f "$CLOUD_ISO"
 genisoimage -output "$CLOUD_ISO" -volid cidata -joliet -rock "$IMG_DIR/user-data" "$IMG_DIR/meta-data" >/dev/null
 
 echo "=== Step 6: Defining and Launching VM via libvirt ==="
+<<<<<<< HEAD
 if virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
     virsh destroy "$VM_NAME" 2>/dev/null || true
     virsh undefine "$VM_NAME" || true
 fi
 
+=======
+>>>>>>> bootstrapIntegration
 virt-install \
     --name "$VM_NAME" \
     --memory "$VM_RAM" \
@@ -242,7 +281,7 @@ virt-install \
     --noautoconsole \
     --import
 
-echo "=== Step 7: Waiting for cloud-init + SGX SDK install to finish (usually 2-4 min) ==="
+echo "=== Step 7: Waiting for cloud-init + SGX SDK and SGX-SSL install to finish (usually 10-20 min) ==="
 # Polls the guest agent for /var/lib/cloud/instance/boot-finished, which
 # cloud-init writes after ALL modules (incl. runcmd/SGX install) are done.
 TIMEOUT=1800; ELAPSED=0
@@ -259,7 +298,7 @@ echo
 
 if virsh qemu-agent-command "$VM_NAME" \
         '{"execute":"guest-file-open","arguments":{"path":"/var/log/sgx-sdk-installed"}}' >/dev/null 2>&1; then
-    echo "SGX SDK (simulation mode) installed and SampleEnclave test passed."
+    echo "SGX SDK (simulation mode) and SGX-SSL installed; SampleEnclave and SGX-SSL tests passed."
 else
     echo "WARNING: SGX SDK install did not complete. See /var/log/sgx-sdk-install.log in the VM."
 fi

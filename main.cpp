@@ -1,35 +1,16 @@
-// Secure bootstrap between 3 processes (ESA, RSU, vehicle) over raw Ethernet sockets (needs CAP_NET_RAW)
-//
-//   ./bootstrap [--pretty | --view [--color]]
-//                                forks ESA, RSU and vehicle (in this order) and waits for the vehicle's bootstrap;
-//                                --pretty: a bar with the component's name whenever the speaker changes
-//                                --view: at the end, the protocol as a sequence diagram (TraceView.h)
-//   ./bootstrap esa     [--iface lo]
-//   ./bootstrap rsu     [--iface lo] [--name rsu[0]] [--seed 2]
-//   ./bootstrap vehicle [--iface lo] [--name node[0]] [--seed 1] [--clock-offset 0] [--timeout 5]
-//   (separately: start the ESA, then the RSU, then the vehicles; the servers stop on Ctrl+C)
-//
-// links (RawSocket.h): every frame is a broadcast, every node on the link gets it
-//   radio     (EtherType 0x88B5)  vehicles and RSUs; each one keeps only what is for it (isForMe)
-//   backhaul  (EtherType 0x88B6)  RSUs and ESA: the "HTTPS" session, established by Session_Hello/Session_Ack
-//
-// data of a frame: kind (1) | body
-//   Bootstrap      body = serialize(BootstrapMsg)
-//   Session_Hello  body = "rsu name\nsession key"  (RSU -> ESA, repeated until the ack)
-//   Session_Ack    body = "rsu name\n" CY_e         (ESA -> RSU; CY_e: ESA public key, DER)
-
 #include "Bootstrap.h"
 #include "BootstrapMsg.h"
 #include "BootstrapService.h"
 #include "ExternalSecurityAgent.h"
+#include "Link.h"
 #include "RawSocket.h"
 #include "Trace.h"
 #include "TraceView.h"
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <algorithm>
 #include <cerrno>
+#include <cstring>
 #include <chrono>
 #include <csignal>
 #include <iostream>
@@ -40,12 +21,6 @@
 
 namespace
 {
-
-enum class FrameKind : uint8_t { Bootstrap = 0, Session_Hello = 1, Session_Ack = 2 };
-
-constexpr auto kSessionTimeout = std::chrono::seconds(5);         // RSU: waiting for the ESA's Session_Ack
-constexpr auto kSessionRetry = std::chrono::milliseconds(100);    // RSU: Session_Hello period
-constexpr int kPollPeriodMs = 100;                                // loops check the stop flag at least this often
 
 volatile std::sig_atomic_t gStop = 0;   // SIGINT / SIGTERM: servers leave their loop
 
@@ -85,52 +60,7 @@ class Options
 // fork mode: tells the parent this node is ready (internal --ready-fd)
 void signalReady(const Options& options)
 {
-    const int fd = std::stoi(options.get("--ready-fd", "-1"));
-    if (fd >= 0) {
-        const char ready = 1;
-        if (write(fd, &ready, 1) != 1) {
-            throw std::runtime_error("cannot signal readiness");
-        }
-        close(fd);
-    }
-}
-
-void sendFrame(RawSocket& link, FrameKind kind, const Bytes& body)
-{
-    Bytes data{ static_cast<uint8_t>(kind) };
-    data.insert(data.end(), body.begin(), body.end());
-    link.send(data);
-}
-
-void sendMsg(RawSocket& link, const BootstrapMsg& msg)
-{
-    sendFrame(link, FrameKind::Bootstrap, serialize(msg));
-}
-
-Bytes toBytes(const std::string& text)
-{
-    return Bytes(text.begin(), text.end());
-}
-
-// hands every frame waiting on "link" to onFrame(kind, body)
-template<typename OnFrame>
-void drain(RawSocket& link, OnFrame onFrame)
-{
-    while (auto data = link.receive()) {
-        if (!data->empty()) {
-            onFrame(static_cast<FrameKind>((*data)[0]), Bytes(data->begin() + 1, data->end()));
-        }
-    }
-}
-
-// waits until one of the links has a frame (or kPollPeriodMs passes, or a signal arrives)
-void waitFor(std::initializer_list<const RawSocket*> links, int timeoutMs = kPollPeriodMs)
-{
-    std::vector<pollfd> fds;
-    for (const RawSocket* link : links) {
-        fds.push_back({ link->fd(), POLLIN, 0 });
-    }
-    poll(fds.data(), fds.size(), timeoutMs);
+    ::signalReady(std::stoi(options.get("--ready-fd", "-1")));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -188,24 +118,9 @@ int runRsu(const Options& options)
     RawSocket radio(iface, kRadioEtherType);
     RawSocket backhaul(iface, kBackhaulEtherType);
 
-    // HTTPS session with the ESA first: Session_Hello until its Session_Ack
-    const auto giveUp = std::chrono::steady_clock::now() + kSessionTimeout;
-    for (bool acked = false; !acked;) {
-        if (std::chrono::steady_clock::now() >= giveUp || gStop) {
-            throw std::runtime_error("no Session_Ack from the ESA (is it running on " + iface + "?)");
-        }
-        sendFrame(backhaul, FrameKind::Session_Hello, toBytes(rsu.myName() + "\n" + rsu.httpsSessionKey()));
-        waitFor({ &backhaul }, std::chrono::duration_cast<std::chrono::milliseconds>(kSessionRetry).count());
-        drain(backhaul, [&](FrameKind kind, const Bytes& body) {
-            // "rsu name\n" CY_e
-            const Bytes name = toBytes(rsu.myName() + "\n");
-            if (kind == FrameKind::Session_Ack && body.size() > name.size()
-                && std::equal(name.begin(), name.end(), body.begin())) {
-                rsu.setEsaPublicKey(Bytes(body.begin() + name.size(), body.end()));
-                acked = true;
-            }
-        });
-    }
+    // HTTPS session with the ESA first: Session_Hello until its Session_Ack, which carries CY_e
+    rsu.setEsaPublicKey(openHttpsSession(backhaul, rsu.myName(), rsu.httpsSessionKey(), iface,
+        [] { return gStop != 0; }));
 
     BootstrapService::Transport transport;
     transport.radio = [&](const BootstrapMsg& msg) { sendMsg(radio, msg); };
@@ -312,8 +227,10 @@ struct Child
     int code = 1;           // exit code
 };
 
-// runs "role" in a child; with waitReady, returns only once the child is ready (or has failed: pid -1)
-Child spawn(const std::string& role, const std::string& label, const std::string& iface, bool waitReady)
+// runs "role" in a child; with waitReady, returns only once the child is ready (or has failed: pid -1).
+// "program": run that executable as the node instead of this one ("events": it prints Trace events)
+Child spawn(const std::string& role, const std::string& label, const std::string& iface, bool waitReady,
+    const std::string& program = "", bool events = false)
 {
     int out[2];
     int ready[2] = { -1, -1 };
@@ -336,9 +253,19 @@ Child spawn(const std::string& role, const std::string& label, const std::string
             close(ready[0]);
             args.insert(args.end(), { "--ready-fd", std::to_string(ready[1]) });
         }
+        if (!program.empty() && events) {
+            args.push_back("--events");
+        }
         std::vector<char*> argv;
         for (std::string& arg : args) {
             argv.push_back(arg.data());
+        }
+        if (!program.empty()) {
+            argv[0] = const_cast<char*>(program.c_str());
+            argv.push_back(nullptr);
+            execv(program.c_str(), argv.data());
+            std::cerr << "[" << label << "] error: cannot run " << program << ": " << std::strerror(errno) << std::endl;
+            _exit(127);
         }
         const int code = run(role, Options(argv.size(), argv.data(), 2));
         std::cout.flush();
@@ -436,7 +363,7 @@ bool relay(Child& child, Printer& printer)
 }
 
 // everything from one command, on the loopback: no frame is sent before its receiver is listening
-int runAll(bool pretty, bool view, bool color)
+int runAll(bool pretty, bool view, bool color, const std::string& rsuProgram)
 {
     // view: the children (forked from here) print Trace events, drawn at the end
     TraceView traceView(color);
@@ -447,7 +374,7 @@ int runAll(bool pretty, bool view, bool color)
     const std::string iface = "lo";
     Child esa = spawn("esa", "esa", iface, true);
     auto notStarted = [](const std::string& label) { Child child; child.label = label; return child; };
-    Child rsu = esa.pid > 0 ? spawn("rsu", "rsu[0]", iface, true) : notStarted("rsu[0]");
+    Child rsu = esa.pid > 0 ? spawn("rsu", "rsu[0]", iface, true, rsuProgram, view) : notStarted("rsu[0]");
     Child vehicle = rsu.pid > 0 ? spawn("vehicle", "node[0]", iface, false) : notStarted("node[0]");
     std::vector<Child*> children{ &esa, &rsu, &vehicle };
 
@@ -519,7 +446,7 @@ int main(int argc, char** argv)
 
     const std::string first = argc >= 2 ? argv[1] : "";
     if (first == "-h" || first == "--help") {
-        std::cout << "usage: " << argv[0] << " [--pretty | --view [--color]]         (ESA, RSU and vehicle)\n"
+        std::cout << "usage: " << argv[0] << " [--pretty | --view [--color]] [--rsu-exec <program>]   (ESA, RSU and vehicle)\n"
             << "       " << argv[0] << " esa|rsu|vehicle [--option value ...]   (one node, see main.cpp)" << std::endl;
         return 0;
     }
@@ -535,9 +462,12 @@ int main(int argc, char** argv)
     bool pretty = false;
     bool view = false;
     bool color = false;
+    std::string rsuProgram;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
-        if (option == "--pretty") {
+        if (option == "--rsu-exec" && i + 1 < argc) {
+            rsuProgram = argv[++i];
+        } else if (option == "--pretty") {
             pretty = true;
         } else if (option == "--view") {
             view = true;
@@ -548,5 +478,5 @@ int main(int argc, char** argv)
             return 1;
         }
     }
-    return runAll(pretty, view, color);
+    return runAll(pretty, view, color, rsuProgram);
 }

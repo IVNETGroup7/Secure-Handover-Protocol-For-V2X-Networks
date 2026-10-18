@@ -80,13 +80,10 @@ class HttpsClient
         // TCP + TLS handshake, the certificate verified; returns the session ("TLSv1.3 TLS_AES_256_GCM_SHA384").
         // Throws std::runtime_error
         std::string connect();
-        // one request in the open session (a new session when there is none, or after kPostsPerSession);
-        // "headers": more header lines; "newSession": set when this request opened one. Throws std::runtime_error
-        HttpResponse post(const std::string& path, const std::string& contentType, const Bytes& body,
-            const std::map<std::string, std::string>& headers = {}, bool* newSession = nullptr);
-        // the same with a whole request already made (request line, headers and body), sent as it is
+        // one request, already made (request line, headers and body), sent as it is in the open session (a new
+        // session when there is none, or after kPostsPerSession); "newSession": set when this request opened one.
+        // Throws std::runtime_error
         HttpResponse send(const Bytes& request, bool* newSession = nullptr);
-        int sessions() const { return mSessions; }
         const std::string& session() const { return mSession; }   // of the last connect()
 
     private:
@@ -98,7 +95,6 @@ class HttpsClient
         SSL* mSsl = nullptr;
         int mFd = -1;
         int mPosts = 0;             // requests in the current session
-        int mSessions = 0;
         std::string mSession;
         std::string mBuffer;        // bytes read past the last response
 };

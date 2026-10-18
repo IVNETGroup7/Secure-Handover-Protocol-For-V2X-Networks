@@ -227,7 +227,6 @@ void PacketManager::send(int type, const std::string& destination, int seqNum, i
     if (!transport) {
         throw std::runtime_error(mName + ": no " + (https ? "HTTPS" : "radio") + " transport");
     }
-    trace::send(mName, stageName(type), destination, msg.getVehicle(), https ? "HTTPS" : "radio", payload.size());
     transport(msg);
 }
 

@@ -113,7 +113,6 @@ void ExternalSecurityAgent::active03(const BootstrapMsg& received)
     const Sha256 kDe = computeKDe(idD, m.authD, m.authDe, m.otp);
     mKde[received.getVehicle()] = Bytes(kDe.begin(), kDe.end());
     trace::keep(mName, "K_de", mKde[received.getVehicle()], received.getVehicle());
-    trace::keep(mName, "CY_e", mPublicKey, received.getVehicle(), false);
 
     // send the UUID and SHA256(f_w)
     // the message would be
@@ -166,7 +165,6 @@ void ExternalSecurityAgent::send(int type, const std::string& destination, const
         throw std::runtime_error("esa: no HTTPS transport");
     }
 
-    trace::send(mName, stageName(type), destination, vehicle, "HTTPS", payload.size());
 
     BootstrapMsg msg;
     msg.setType(type);

@@ -2,7 +2,7 @@
 // of Enclave/Enclave.edl (via PacketManager).
 //
 //   ./app [selftest]       the bootstrap of the repository's vehicle and ESA against the enclave, in memory
-//   ./app rsu [--iface lo] [--name rsu[0]] [--ready-fd <fd>] [--events]
+//   ./app rsu [--iface lo] [--name rsu[0]] [--ready-fd <fd>]
 //             [--cloud-cert <cloud.crt> [--cloud-address 127.0.0.1] [--cloud-port 8443]]
 //                          the gateway as the RSU node on the raw sockets (needs CAP_NET_RAW);
 //                          ../bootstrap --rsu-exec <this app> runs it in place of its own RSU;
@@ -10,7 +10,6 @@
 //   common options: [--enclave <enclave.signed.so>] [--sealed <file>]   (default: next to this program)
 
 #include "modes.h"
-#include "Trace.h"
 #include <sgx_urts.h>
 #include <unistd.h>
 #include <climits>
@@ -42,14 +41,11 @@ int main(int argc, char** argv)
     const std::string mode = argc > 1 && argv[1][0] != '-' ? argv[1] : "selftest";
     const int first = argc > 1 && argv[1][0] != '-' ? 2 : 1;
 
-    // --key value options; --events has no value
+    // --key value options
     std::map<std::string, std::string> options;
-    bool events = false;
     for (int i = first; i < argc; ++i) {
         const std::string key = argv[i];
-        if (key == "--events") {
-            events = true;
-        } else if (key.rfind("--", 0) == 0 && i + 1 < argc) {
+        if (key.rfind("--", 0) == 0 && i + 1 < argc) {
             options[key] = argv[++i];
         } else {
             std::fprintf(stderr, "error: unexpected argument '%s'\n", key.c_str());
@@ -63,9 +59,6 @@ int main(int argc, char** argv)
     if (mode != "selftest" && mode != "rsu") {
         std::fprintf(stderr, "error: unknown mode '%s' (selftest or rsu)\n", mode.c_str());
         return 1;
-    }
-    if (events) {
-        trace::setMode(trace::Mode::Events); // for ../bootstrap --view
     }
 
     const std::string dir = programDir();

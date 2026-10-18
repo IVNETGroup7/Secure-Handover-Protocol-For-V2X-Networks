@@ -120,7 +120,6 @@ struct Active03Payload
 };
 
 Bytes pack(const Active03Payload&);
-Active03Payload unpackActive03(const Bytes&);
 std::vector<std::string> describe(const Active03Payload&);
 
 // BootstrapMsg.payload <-> Bytes

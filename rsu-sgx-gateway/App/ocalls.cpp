@@ -33,21 +33,6 @@ void ocall_print(const char* str)
     trace::detail("enclave", text);
 }
 
-// TLS terminated inside the enclave: not used yet (the bootstrap replies come back in out_pkt)
-int ocall_net_send(const uint8_t* buf, size_t len)
-{
-    (void) buf;
-    (void) len;
-    return -1;
-}
-
-int ocall_net_recv(uint8_t* buf, size_t len)
-{
-    (void) buf;
-    (void) len;
-    return -1;
-}
-
 // the blob is sealed by the enclave (sgx_seal_data): the App only stores bytes it cannot read
 int ocall_save_sealed_state(const uint8_t* sealed_blob, size_t len)
 {

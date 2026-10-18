@@ -60,14 +60,8 @@ class PacketQueue
             return packet;
         }
 
-        size_t size() const
-        {
-            std::lock_guard<std::mutex> lock(mMutex);
-            return mPackets.size();
-        }
-
     private:
-        mutable std::mutex mMutex;
+        std::mutex mMutex;
         std::queue<Packet> mPackets;
 };
 

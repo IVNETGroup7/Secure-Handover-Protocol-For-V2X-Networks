@@ -51,9 +51,6 @@ std::string sessionKey()
 // IT queue -> cloud: one HTTPS POST of the marshaled SmartData
 void postToCloud(HttpsClient& cloud, const std::string& node, const ItPacket& packet, PacketManager& gateway)
 {
-    if (packet.traced) {
-        trace::send(node, std::string("POST ") + kSmartDataPath, "cloud", packet.vehicle, "HTTPS", packet.bytes.size());
-    }
     try {
         bool newSession = false;
         const HttpResponse response = cloud.send(packet.bytes, &newSession); // the request as the enclave made it

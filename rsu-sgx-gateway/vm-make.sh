@@ -56,7 +56,7 @@ rsync -rlp --checksum --delete -e "${SSH[*]}" \
     --exclude='Enclave_u.*' --exclude='Enclave_t.*' \
     "$REPO/" "$host:$VM_DIR/"
 
-# a terminal: ssh -t, so make sees one (colors of make view) and Ctrl-C reaches it
+# a terminal: ssh -t, so Ctrl-C reaches make
 tty=
 [ -t 0 ] && [ -t 1 ] && tty=-t
 status=0

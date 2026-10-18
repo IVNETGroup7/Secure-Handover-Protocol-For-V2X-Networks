@@ -15,7 +15,7 @@ they talk over raw Ethernet sockets (no Artery/OMNeT++). There are two RSU optio
 | [`common/`](common) | Messages, payloads, crypto, vehicle traits, simulated time, tracing |
 | [`protocol/`](protocol) | Bootstrap protocol (`BootstrapService`, `ExternalSecurityAgent`) and its API (`Bootstrap.h`) |
 | [`net/`](net) | Raw Ethernet sockets (`AF_PACKET`) |
-| [`main.cpp`](main.cpp), [`TraceView.cpp`](TraceView.cpp) | One process per node; the sequence diagram that `--view` draws |
+| [`main.cpp`](main.cpp) | One process per node |
 | [`rsu-sgx-gateway/`](rsu-sgx-gateway) | SGX RSU: `App/` (untrusted side), `Enclave/` (trusted side), `vm-make.sh` |
 | [`setup-vm.sh`](setup-vm.sh) | Builds the Ubuntu VM that has the SGX SDK + SGX-SSL |
 
@@ -23,11 +23,11 @@ they talk over raw Ethernet sockets (no Artery/OMNeT++). There are two RSU optio
 
 ```bash
 # 1. Plain protocol: ESA + RSU + vehicle (needs Docker, no SGX)
-make view
+make pretty
 
 # 2. Same protocol, RSU running inside an SGX enclave (needs the VM, see below)
 ./setup-vm.sh                 # once
-cd rsu-sgx-gateway && make view
+cd rsu-sgx-gateway && make network
 ```
 
 ---
@@ -36,7 +36,7 @@ cd rsu-sgx-gateway && make view
 
 Requirements: `g++` (C++17), OpenSSL 3 (static `libcrypto`), Docker.
 
-Raw sockets need `CAP_NET_RAW`. To avoid `sudo`, the `run`/`pretty`/`view` targets put the static
+Raw sockets need `CAP_NET_RAW`. To avoid `sudo`, the `run`/`pretty` targets put the static
 `./bootstrap` binary in an empty image (`FROM scratch`) and run it with `--network none` (the container's
 own loopback only).
 
@@ -44,7 +44,6 @@ own loopback only).
 |---|---|
 | `make` / `make run` | Builds and runs the 3 processes (ESA, RSU, vehicle) |
 | `make pretty` | Same, with each component's output separated by a bar |
-| `make view` | Same, drawn as a sequence diagram: messages, carried values, validations (ok / failed) and the keys each node kept, compared in a summary |
 | `make build` | Only builds `./bootstrap` |
 | `make clean` | Removes `build/`, `./bootstrap` and the Docker image |
 
@@ -53,14 +52,13 @@ own loopback only).
 Without Docker you need `CAP_NET_RAW` (`sudo setcap cap_net_raw=ep ./bootstrap` or `sudo`):
 
 ```text
-./bootstrap [--pretty | --view [--color]] [--rsu-exec <program>]    # ESA, RSU and vehicle
+./bootstrap [--pretty] [--rsu-exec <program>]                       # ESA, RSU and vehicle
 ./bootstrap esa|rsu|vehicle [--option value ...]                    # a single node
 ```
 
 | Option | Meaning |
 |---|---|
 | `--pretty` | Output of each node separated by a bar |
-| `--view` | Sequence diagram at the end (`--color` adds ANSI colors) |
 | `--rsu-exec <program>` | Use another program as the RSU (e.g. the SGX gateway `app`) |
 | `--iface <if>` | Network interface (default `lo`) — single node |
 | `--name <n>` | Node name (`rsu[0]`, `node[0]`, …) — single node |
@@ -87,10 +85,9 @@ The enclave uses the Intel SGX SDK and Intel SGX-SSL (OpenSSL inside the enclave
 | `make` / `make all` | Builds `./app` and the signed enclave `enclave.signed.so` |
 | `make run` | Builds and runs `./app` (the gateway's self-test against the repo's vehicle and ESA) |
 | `make network` | Runs `../bootstrap --pretty --rsu-exec ./app`: real ESA + vehicle, RSU = the enclave |
-| `make view` | Same as `network`, drawn as the sequence diagram |
 | `make clean` | Removes build outputs, the sealed state (`gateway.sealed`) and capability stamps |
 
-`network` and `view` call `sudo setcap cap_net_raw=ep` on `app` and `../bootstrap`, so expect a `sudo` prompt
+`network` and `bench` call `sudo setcap cap_net_raw=ep` on `app` and `../bootstrap`, so expect a `sudo` prompt
 (inside the VM it is passwordless).
 
 ### Shared project folder

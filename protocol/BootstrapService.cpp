@@ -504,8 +504,6 @@ void BootstrapService::AuthGranted(const BootstrapMsg& received)
     for (const std::string& line : describe(m)) {
         printDetail(line);
     }
-    printKeep("K_g", m.kG, received.getVehicle(), false);
-    printKeep("CY_e", m.esaPublicKey, received.getVehicle(), false);
 
     // 2. Encrypt the message M using K_dg (key formed on ECDH)
     // you can use AES-128 CBC for example or other chain considered better
@@ -572,7 +570,6 @@ void BootstrapService::SaveVehicle(const BootstrapMsg& received)
     mGroupKey = m.kG;
     mEsaPublicKey = m.esaPublicKey;
     printKeep("K_g", mGroupKey, myName());
-    printKeep("CY_e", mEsaPublicKey, myName(), false);
 
     // 5. K_de = SHA256(Id_d + Auth_d + Auth_de + OTP_dt), Auth_de with the CY_e verified in 3.
     //    the ESA derives the same key from what the Active_01 carries
@@ -658,16 +655,15 @@ bool BootstrapService::withinDeadline(const std::string& vehicle)
 {
     auto deadline = mDeadlines.find(vehicle);
     if (deadline != mDeadlines.end() && localClock() <= deadline->second) {
-        printCheck(true, "t = " + localClock().str() + " s <= t_f = " + deadline->second.str() + " s", true);
+        printCheck(true, "t = " + localClock().str() + " s <= t_f = " + deadline->second.str() + " s");
         return true;
     }
 
     // past t_f (or no t_f known for this vehicle): the protocol ends here for this vehicle
     if (deadline == mDeadlines.end()) {
-        trace::end(myName(), "aborted: no t_f for " + vehicle, false);
+        trace::end(myName(), "aborted: no t_f for " + vehicle);
     } else {
-        trace::end(myName(), "aborted: t_f exceeded (" + localClock().str() + " s > t_f = " + deadline->second.str() + " s)",
-            false);
+        trace::end(myName(), "aborted: t_f exceeded (" + localClock().str() + " s > t_f = " + deadline->second.str() + " s)");
         mDeadlines.erase(deadline);
     }
     mKdg.erase(vehicle); // an aborted bootstrap leaves no key
@@ -716,7 +712,6 @@ void BootstrapService::sendBootstrap(int type, const std::string& destination, i
         if (!mTransport.https) {
             throw std::runtime_error(myName() + ": no HTTPS transport");
         }
-        trace::send(myName(), stageName(type), destination, msg.getVehicle(), "HTTPS", payload.size());
         mTransport.https(msg);
         return;
     }
@@ -725,7 +720,6 @@ void BootstrapService::sendBootstrap(int type, const std::string& destination, i
         throw std::runtime_error(myName() + ": no radio transport");
     }
     stampTransmission(msg); // PTP: timestamps of the moment the message leaves
-    trace::send(myName(), stageName(type), destination, msg.getVehicle(), "radio", getPayload(msg).size());
     mTransport.radio(msg);
 }
 
@@ -793,14 +787,14 @@ void BootstrapService::printDetail(const std::string& text) const
     trace::detail(myName(), text);
 }
 
-void BootstrapService::printCheck(bool ok, const std::string& text, bool beforeStep) const
+void BootstrapService::printCheck(bool ok, const std::string& text) const
 {
-    trace::check(myName(), ok, text, beforeStep);
+    trace::check(myName(), ok, text);
 }
 
-void BootstrapService::printKeep(const std::string& name, const Bytes& value, const std::string& vehicle, bool echo) const
+void BootstrapService::printKeep(const std::string& name, const Bytes& value, const std::string& vehicle) const
 {
-    trace::keep(myName(), name, value, vehicle, echo);
+    trace::keep(myName(), name, value, vehicle);
 }
 
 void BootstrapService::notifyCompleted(const std::string& vehicle, const std::string& rsu)

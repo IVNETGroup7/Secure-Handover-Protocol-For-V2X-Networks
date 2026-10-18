@@ -7,12 +7,11 @@
 #   make network    ESA, RSU, vehicle and cloud (tee.pdf step 6): the bootstrap on the raw sockets with this gateway
 #                   as the RSU, then the vehicle sends SmartData (32 B, 1 KB, 64 KB - 1) over the radio, which the
 #                   gateway marshals in the enclave and POSTs to the cloud over HTTPS (../bootstrap --pretty)
-#   make view       the same, drawn at the end as a sequence diagram (../bootstrap --view)
 #   make bench      the same with 100 packets of each size from 32 B to 64 KB - 1: the turn-around table
 #                   (Fig. 6 of the paper)
 #   make clean
 #
-# Raw sockets need CAP_NET_RAW: "network" and "view" give it to ./app and ../bootstrap with sudo setcap,
+# Raw sockets need CAP_NET_RAW: "network" and "bench" give it to ./app and ../bootstrap with sudo setcap,
 # again only when a binary changes (setcap needs sudo once per build)
 #   make SGX_MODE=HW    on a CPU with SGX (driver + PSW installed)
 #
@@ -124,7 +123,7 @@ Enclave_Key := Enclave/Enclave_private.pem
 
 Build_Stamp := .config_$(SGX_MODE)_$(SGX_DEBUG)
 
-.PHONY: all run network view bench clean
+.PHONY: all run network bench clean
 all: $(Build_Stamp) app $(Signed_Enclave_Name)
 	@echo "built: ./app + $(Signed_Enclave_Name) (SGX_MODE=$(SGX_MODE), SGX_DEBUG=$(SGX_DEBUG))"
 
@@ -137,10 +136,6 @@ SMARTDATA := --smartdata 32,1024,65535
 
 network: all .caps_app .caps_bootstrap
 	$(ROOT)/bootstrap --pretty --rsu-exec $(CURDIR)/app $(CLOUD) $(SMARTDATA)
-
-# colors only on a terminal (tested on make's own output)
-view: all .caps_app .caps_bootstrap
-	color=; [ -t 1 ] && color=--color; $(ROOT)/bootstrap --view $$color --rsu-exec $(CURDIR)/app $(CLOUD) $(SMARTDATA)
 
 bench: all .caps_app .caps_bootstrap
 	$(ROOT)/bootstrap --pretty --rsu-exec $(CURDIR)/app $(CLOUD) \

@@ -104,8 +104,8 @@ class BootstrapService
         // output (Trace.h): a step, a line under it, a validation, a value kept (for "vehicle")
         void printStep(const char* step, const BootstrapMsg* received = nullptr);
         void printDetail(const std::string& text) const;
-        void printCheck(bool ok, const std::string& text, bool beforeStep = false) const;
-        void printKeep(const std::string& name, const Bytes& value, const std::string& vehicle, bool echo = true) const;
+        void printCheck(bool ok, const std::string& text) const;
+        void printKeep(const std::string& name, const Bytes& value, const std::string& vehicle) const;
         void notifyCompleted(const std::string& vehicle, const std::string& rsu);
         void stampTransmission(BootstrapMsg&);
         bool withinDeadline(const std::string& vehicle);

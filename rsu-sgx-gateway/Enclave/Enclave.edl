@@ -119,11 +119,6 @@ enclave {
         /* the enclave has no stdout: its trace lines (common/Trace.h) go through the App */
         void ocall_print([in, string] const char* str);
 
-        /* network, only for TLS terminated inside the enclave (MbedTLS / SGX-SSL); the bootstrap replies
-           come back in out_pkt and the App sends them. Return: bytes sent / received, < 0 error */
-        int ocall_net_send([in, size=len] const uint8_t* buf, size_t len);
-        int ocall_net_recv([out, size=len] uint8_t* buf, size_t len);
-
         /* reboot recovery: state sealed with sgx_seal_data() (K_dg, K_G, Auth_d, Auth_eg, CY_e), on the
            untrusted disk. Return: bytes saved / loaded, 0 nothing saved, < 0 error */
         int ocall_save_sealed_state([in, size=len] const uint8_t* sealed_blob, size_t len);

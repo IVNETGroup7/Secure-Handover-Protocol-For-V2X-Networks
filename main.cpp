@@ -8,7 +8,6 @@
 #include "SimTime.h"
 #include "SmartData.h"
 #include "Trace.h"
-#include "TraceView.h"
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -182,8 +181,8 @@ std::vector<size_t> parseSizes(const std::string& text)
 
 // after the bootstrap, the vehicle as an OBU (tee.pdf step 6): SmartData to its RSU over the radio, one packet
 // per size in "sizes", "count" rounds, one packet every "interval" (the first one too: the RSU ends its part of
-// the bootstrap first). The first round is traced (the view draws it), the others only counted. t of OTP_dt: this process's clock (the PTP-synchronized one when
-// --clock-offset is 0, as in fork mode)
+// the bootstrap first). The first round is printed, the others only counted. t of OTP_dt: this process's clock
+// (the PTP-synchronized one when --clock-offset is 0, as in fork mode)
 void sendSmartData(RawSocket& radio, const BootstrapResult& result, const std::vector<size_t>& sizes, int count,
     std::chrono::milliseconds interval)
 {
@@ -216,7 +215,6 @@ void sendSmartData(RawSocket& radio, const BootstrapResult& result, const std::v
                     + toHex(message.otp.data(), message.otp.size()) + " (t = " + std::to_string(dataOtpSlot(now)) + ")");
                 trace::detail(name, "OT packet = Message(AES(K_G, Data), Auth_d, OTP_dt) = "
                     + std::to_string(packet.size()) + " B");
-                trace::send(name, "SmartData", result.rsu, name, "radio", packet.size());
             }
             const size_t pieces = sendData(radio, name, result.rsu, packet);
             if (round == 0) {
@@ -303,7 +301,7 @@ std::string preview(const std::string& body)
 // enclave made it: HTTPS Header | AES(K_eg, JSON). Its key X_c and certificate CY_c are fresh per run; the
 // certificate goes to --cert-out, which the RSU is configured with (its enclave pins it). Each session key Y_s
 // of the header gives K_eg = SHA256(ECDH(X_c, Y_s)) (common/SmartData.h), which opens the body.
-// The first request of each size is traced (the view draws it), the others only counted
+// The first request of each size is printed, the others only counted
 int runCloud(const Options& options)
 {
     const std::string address = options.get("--address", kCloudAddress);
@@ -431,10 +429,9 @@ struct Child
 };
 
 // runs "role" in a child; with waitReady, returns only once the child is ready (or has failed: pid -1).
-// "program": run that executable as the node instead of this one ("events": it prints Trace events);
-// "extra": more --option value pairs for the node
+// "program": run that executable as the node instead of this one; "extra": more --option value pairs for the node
 Child spawn(const std::string& role, const std::string& label, const std::string& iface, bool waitReady,
-    const std::string& program = "", bool events = false, const std::vector<std::string>& extra = {})
+    const std::string& program = "", const std::vector<std::string>& extra = {})
 {
     int out[2];
     int ready[2] = { -1, -1 };
@@ -456,9 +453,6 @@ Child spawn(const std::string& role, const std::string& label, const std::string
         if (waitReady) {
             close(ready[0]);
             args.insert(args.end(), { "--ready-fd", std::to_string(ready[1]) });
-        }
-        if (!program.empty() && events) {
-            args.push_back("--events");
         }
         args.insert(args.end(), extra.begin(), extra.end());
         std::vector<char*> argv;
@@ -498,19 +492,14 @@ Child spawn(const std::string& role, const std::string& label, const std::string
     return child;
 }
 
-// prints the children's lines; "pretty": a bar with the component's name whenever the speaker changes;
-// with a view, collects them instead and draws the view at the end
+// prints the children's lines; "pretty": a bar with the component's name whenever the speaker changes
 class Printer
 {
     public:
-        explicit Printer(bool pretty, TraceView* view = nullptr) : mPretty(pretty), mView(view) {}
+        explicit Printer(bool pretty) : mPretty(pretty) {}
 
         void line(const Child& from, const std::string& text)
         {
-            if (mView) {
-                mView->line(from.label, text);
-                return;
-            }
             if (mPretty && &from != mLast) {
                 std::cout << (mLast ? "\n" : "") << bar(" " + from.label + " ") << "\n";
             }
@@ -520,9 +509,6 @@ class Printer
 
         void end()
         {
-            if (mView) {
-                mView->render(std::cout);
-            }
             std::cout << "\n";
             if (mPretty) {
                 std::cout << bar("") << "\n";
@@ -540,7 +526,6 @@ class Printer
         }
 
         bool mPretty;
-        TraceView* mView;
         const Child* mLast = nullptr;
 };
 
@@ -571,8 +556,6 @@ bool relay(Child& child, Printer& printer)
 struct Scenario
 {
     bool pretty = false;
-    bool view = false;
-    bool color = false;
     std::string rsuProgram;         // --rsu-exec: another program as the RSU (e.g. the SGX gateway)
     std::string cloudCertificate;   // --cloud: start the cloud; its certificate goes there (the RSU trusts it)
     std::string smartdata;          // --smartdata: sizes of the SmartData the vehicle sends after the bootstrap
@@ -583,30 +566,24 @@ struct Scenario
 // everything from one command, on the loopback: no frame is sent before its receiver is listening
 int runAll(const Scenario& scenario)
 {
-    // view: the children (forked from here) print Trace events, drawn at the end
-    TraceView traceView(scenario.color);
-    if (scenario.view) {
-        trace::setMode(trace::Mode::Events);
-    }
-
     const std::string iface = "lo";
     auto notStarted = [](const std::string& label) { Child child; child.label = label; return child; };
     const bool withCloud = !scenario.cloudCertificate.empty();
-    Child cloud = withCloud ? spawn("cloud", "cloud", iface, true, "", false, { "--cert-out", scenario.cloudCertificate })
+    Child cloud = withCloud ? spawn("cloud", "cloud", iface, true, "", { "--cert-out", scenario.cloudCertificate })
         : notStarted("cloud");
     Child esa = !withCloud || cloud.pid > 0 ? spawn("esa", "esa", iface, true) : notStarted("esa");
     std::vector<std::string> rsuExtra;
     if (withCloud && !scenario.rsuProgram.empty()) {
         rsuExtra = { "--cloud-cert", scenario.cloudCertificate };
     }
-    Child rsu = esa.pid > 0 ? spawn("rsu", "rsu[0]", iface, true, scenario.rsuProgram, scenario.view, rsuExtra)
+    Child rsu = esa.pid > 0 ? spawn("rsu", "rsu[0]", iface, true, scenario.rsuProgram, rsuExtra)
         : notStarted("rsu[0]");
     std::vector<std::string> vehicleExtra;
     if (!scenario.smartdata.empty()) {
         vehicleExtra = { "--smartdata", scenario.smartdata, "--smartdata-count", scenario.smartdataCount,
             "--smartdata-interval", scenario.smartdataInterval };
     }
-    Child vehicle = rsu.pid > 0 ? spawn("vehicle", "node[0]", iface, false, "", false, vehicleExtra)
+    Child vehicle = rsu.pid > 0 ? spawn("vehicle", "node[0]", iface, false, "", vehicleExtra)
         : notStarted("node[0]");
     std::vector<Child*> children{ &esa, &rsu, &vehicle };
     if (withCloud) {
@@ -614,7 +591,7 @@ int runAll(const Scenario& scenario)
     }
 
     // until every output closes: the vehicle leaves on its own, then the servers are stopped
-    Printer printer(scenario.pretty, scenario.view ? &traceView : nullptr);
+    Printer printer(scenario.pretty);
     auto stopServersAt = std::chrono::steady_clock::time_point::max();
     bool stopped = false;
     while (true) {
@@ -689,7 +666,7 @@ int main(int argc, char** argv)
 
     const std::string first = argc >= 2 ? argv[1] : "";
     if (first == "-h" || first == "--help") {
-        std::cout << "usage: " << argv[0] << " [--pretty | --view [--color]] [--rsu-exec <program>]   (ESA, RSU and vehicle)\n"
+        std::cout << "usage: " << argv[0] << " [--pretty] [--rsu-exec <program>]   (ESA, RSU and vehicle)\n"
             << "         [--cloud <certificate.pem>]      also the cloud (HTTPS); its certificate is written there\n"
             << "         [--smartdata <size,size,...> [--smartdata-count <n>] [--smartdata-interval <ms>]]\n"
             << "                                          after the bootstrap, the vehicle sends SmartData\n"
@@ -721,10 +698,6 @@ int main(int argc, char** argv)
             scenario.smartdataInterval = argv[++i];
         } else if (option == "--pretty") {
             scenario.pretty = true;
-        } else if (option == "--view") {
-            scenario.view = true;
-        } else if (option == "--color") {
-            scenario.color = true;
         } else {
             std::cerr << "error: unexpected argument '" << argv[i] << "' (see --help)" << std::endl;
             return 1;

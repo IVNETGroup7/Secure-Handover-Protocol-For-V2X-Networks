@@ -309,16 +309,6 @@ Bytes pack(const Active03Payload& m)
     return out;
 }
 
-Active03Payload unpackActive03(const Bytes& in)
-{
-    Reader reader(in);
-    Active03Payload m;
-    m.type = reader.uint(1);
-    m.uuid = reader.array<16>();
-    m.firmwareHash = reader.array<32>();
-    return m;
-}
-
 std::vector<std::string> describe(const Active03Payload& m)
 {
     return {

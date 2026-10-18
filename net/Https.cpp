@@ -389,23 +389,8 @@ std::string HttpsClient::connect()
         close();
         throw error;
     }
-    ++mSessions;
     mSession = sessionName(mSsl);
     return mSession;
-}
-
-HttpResponse HttpsClient::post(const std::string& path, const std::string& contentType, const Bytes& body,
-    const std::map<std::string, std::string>& headers, bool* newSession)
-{
-    std::string head = "POST " + path + " HTTP/1.1\r\nHost: " + mAddress + "\r\nContent-Type: " + contentType
-        + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
-    for (const auto& [name, value] : headers) {
-        head += name + ": " + value + "\r\n";
-    }
-    head += "\r\n";
-    Bytes request(head.begin(), head.end());
-    request.insert(request.end(), body.begin(), body.end());
-    return send(request, newSession);
 }
 
 HttpResponse HttpsClient::send(const Bytes& request, bool* newSession)

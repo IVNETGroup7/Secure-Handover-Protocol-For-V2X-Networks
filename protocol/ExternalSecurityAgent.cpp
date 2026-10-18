@@ -3,6 +3,7 @@
 #include "BootstrapMsg.h"
 #include "BootstrapPayload.h"
 #include "Trace.h"
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 
@@ -12,15 +13,17 @@ ExternalSecurityAgent::ExternalSecurityAgent(const std::string& name) : mName(na
     mPublicKey = publicKeyDer(mKey.get());
 }
 
-void ExternalSecurityAgent::registerRsu(const std::string& rsu, const std::string& sessionKey)
+void ExternalSecurityAgent::registerRsu(const std::string& rsu, const std::string& sessionKey,
+    const Bytes& gatewayPublicKey)
 {
-    mSessionKeys[rsu] = sessionKey;
-    trace::detail(mName, "HTTPS session established with " + rsu);
+    mGateways[rsu] = Gateway{ sessionKey, gatewayPublicKey };
+    trace::detail(mName, "HTTPS session established with " + rsu + ", CY_g = "
+        + toHex(gatewayPublicKey.data(), gatewayPublicKey.size()));
 }
 
 void ExternalSecurityAgent::handleMessage(const BootstrapMsg& bootstrap)
 {
-    if (mSessionKeys.count(bootstrap.getSender()) == 0) {
+    if (mGateways.count(bootstrap.getSender()) == 0) {
         std::cerr << mName << ": dropping message from " << bootstrap.getSender() << " (no HTTPS session)" << std::endl;
         return;
     }
@@ -59,6 +62,17 @@ void ExternalSecurityAgent::activationToken(const BootstrapMsg& received)
         printDetail(line);
     }
 
+    // CY_g "enables the ESA to identify the target gateway and also to confirm that it has previously
+    // authenticated itself to that ESA": the token goes to the gateway whose certificate key is CY_g, and only
+    // if it established its HTTPS session with me
+    auto gateway = std::find_if(mGateways.begin(), mGateways.end(),
+        [&](const auto& entry) { return entry.second.publicKey == request.gatewayPublicKey; });
+    if (gateway == mGateways.end()) {
+        printCheck(false, "CY_g is the certificate key of no gateway with an HTTPS session: ignored");
+        return;
+    }
+    printCheck(true, "CY_g is the certificate key of " + gateway->first + " (HTTPS session established)");
+
     // 2. Id_d = SHA256(UUID + SHA256(fw_d))
     const Sha256 idD = computeIdD(request.uuid, request.firmwareHash);
 
@@ -71,7 +85,7 @@ void ExternalSecurityAgent::activationToken(const BootstrapMsg& received)
     token.authEg = aes256Encrypt(idD, mPublicKey);                       // 4. Auth_eg = AES(Id_d, CY_e)
     mActivations[token.authD] = Activation{ idD, request.uuid, request.firmwareHash }; // for the Active_02
 
-    sendToRsu(Activation_Token, received.getSender(), received.getVehicle(),
+    sendToRsu(Activation_Token, gateway->first, received.getVehicle(),
         received.getAckNum(), received.getSeqNum() + 1, pack(token));
 }
 
@@ -152,7 +166,7 @@ void ExternalSecurityAgent::sendToUser(int type, const std::string& vehicle, int
 void ExternalSecurityAgent::sendToRsu(int type, const std::string& rsu, const std::string& vehicle,
     int seqNum, int ackNum, const Bytes& payload)
 {
-    if (mSessionKeys.count(rsu) == 0) {
+    if (mGateways.count(rsu) == 0) {
         throw std::runtime_error("esa: no HTTPS session with '" + rsu + "'");
     }
     send(type, rsu, vehicle, seqNum, ackNum, payload);

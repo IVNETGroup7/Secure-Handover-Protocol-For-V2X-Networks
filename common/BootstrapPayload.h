@@ -14,7 +14,7 @@ class BootstrapMsg;
 struct ActivationRequestPayload
 {
     uint8_t type;
-    Bytes gatewayPublicKey;     // CY_g
+    Bytes gatewayPublicKey;     // CY_g: public key (DER) of the target gateway's (RSU's) certificate
     simtime_t t0;      // t_0
     simtime_t tf;      // t_f
     Uuid uuid;                  // UUID
@@ -76,15 +76,13 @@ Bytes pack(const AuthRequestPayload&);
 AuthRequestPayload unpackAuthRequest(const Bytes&);
 std::vector<std::string> describe(const AuthRequestPayload&);
 
-// M = { Auth_Granted, OTP_dt, K_dg, K_g, CY_e, Auth_eg }
-//   type (1) | OTP_dt (16) | len(K_dg) (2) | K_dg | len(K_g) (2) | K_g | len(CY_e) (2) | CY_e
-//   | len(Auth_eg) (2) | Auth_eg
+// M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }     (the paper's (10): Auth_Granted(Auth_eg, OTP_dt, K_G, CY_e))
+//   type (1) | OTP_dt (16) | len(K_g) (2) | K_g | len(CY_e) (2) | CY_e | len(Auth_eg) (2) | Auth_eg
 //   on air only as E_K_dg(M) = aesGcmEncrypt(K_dg, pack(M)) (Crypto.h)
 struct AuthGrantedPayload
 {
     uint8_t type;
     Block otp;                  // OTP_dt: the one the RSU matched
-    Bytes kDg;                  // K_dg
     Bytes kG;                   // K_g: group key (AES-128-GCM, vehicle <-> vehicle)
     Bytes esaPublicKey;         // CY_e: ESA public key (DER SubjectPublicKeyInfo)
     Bytes authEg;               // Auth_eg = AES(Id_d, CY_e), from the Activation_Token: the vehicle checks CY_e with it

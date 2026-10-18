@@ -64,10 +64,10 @@ class Options
         std::map<std::string, std::string> mValues;
 };
 
-// fork mode: tells the parent this node is ready (internal --ready-fd)
-void signalReady(const Options& options)
+// fork mode: tells the parent this node is ready (internal --ready-fd), with "info" for it
+void signalReady(const Options& options, const Bytes& info = {})
 {
-    ::signalReady(std::stoi(options.get("--ready-fd", "-1")));
+    ::signalReady(std::stoi(options.get("--ready-fd", "-1")), info);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -85,14 +85,16 @@ int runEsa(const Options& options)
         waitFor({ &backhaul });
         drain(backhaul, [&](FrameKind kind, const Bytes& body) {
             if (kind == FrameKind::Session_Hello) {
-                // pre-established HTTPS session: "rsu name\nsession key"
-                const std::string text(body.begin(), body.end());
-                const auto newline = text.find('\n');
-                const std::string rsu = text.substr(0, newline);
-                const std::string key = newline == std::string::npos ? "" : text.substr(newline + 1);
-                if (sessions[rsu] != key) {
-                    sessions[rsu] = key;
-                    esa.registerRsu(rsu, key);
+                // pre-established HTTPS session: the RSU's name, session key and certificate (CY_g)
+                const auto hello = parseSessionHello(body);
+                if (!hello) {
+                    std::cerr << "[esa] Session_Hello refused: the RSU's certificate does not verify" << std::endl;
+                    return;
+                }
+                const std::string& rsu = hello->rsu;
+                if (sessions[rsu] != hello->sessionKey) {
+                    sessions[rsu] = hello->sessionKey;
+                    esa.registerRsu(rsu, hello->sessionKey, hello->gatewayPublicKey);
                 }
                 Bytes ack = toBytes(rsu + "\n");
                 ack.insert(ack.end(), esa.publicKey().begin(), esa.publicKey().end());
@@ -125,8 +127,10 @@ int runRsu(const Options& options)
     RawSocket radio(iface, kRadioEtherType);
     RawSocket backhaul(iface, kBackhaulEtherType);
 
-    // HTTPS session with the ESA first: Session_Hello until its Session_Ack, which carries CY_e
-    rsu.setEsaPublicKey(openHttpsSession(backhaul, rsu.myName(), rsu.httpsSessionKey(), iface,
+    // HTTPS session with the ESA first: Session_Hello (with my certificate, CY_g) until its Session_Ack, which
+    // carries CY_e
+    const GatewayCertificate certificate = newGatewayCertificate(rsu.myName());
+    rsu.setEsaPublicKey(openHttpsSession(backhaul, rsu.myName(), rsu.httpsSessionKey(), certificate.certificate, iface,
         [] { return gStop != 0; }));
 
     BootstrapService::Transport transport;
@@ -135,7 +139,7 @@ int runRsu(const Options& options)
     rsu.setTransport(transport);
     std::cout << "[" << rsu.myName() << "] HTTPS session with the ESA, radio on " << iface << " (EtherType 0x88b5)"
         << std::endl;
-    signalReady(options);
+    signalReady(options, certificate.publicKey); // CY_g: what the operator (here, the vehicle) sends
 
     while (true) {
         waitFor({ &radio, &backhaul });
@@ -237,6 +241,12 @@ int runVehicle(const Options& options)
     config.role = BootstrapService::Role::Vehicle;
     config.clockOffset = std::stod(options.get("--clock-offset", "0"));
     config.seed = std::stoul(options.get("--seed", "1"));
+    // CY_g of the target RSU (base64 DER), which the operator knows: in fork mode, the RSU's own
+    const auto gatewayPublicKey = base64Decode(options.get("--gateway-cert", ""));
+    if (!gatewayPublicKey) {
+        throw std::runtime_error("--gateway-cert is not base64");
+    }
+    config.gatewayPublicKey = *gatewayPublicKey;
     const auto timeout = std::chrono::duration<double>(std::stod(options.get("--timeout", "5")));
     const std::vector<size_t> sizes = parseSizes(options.get("--smartdata", ""));
     const int rounds = std::stoi(options.get("--smartdata-count", "1"));
@@ -426,6 +436,7 @@ struct Child
     int out = -1;           // read end of its output (-1 once closed)
     std::string pending;    // output after the last newline
     int code = 1;           // exit code
+    Bytes info;             // what it handed over when ready (signalReady)
 };
 
 // runs "role" in a child; with waitReady, returns only once the child is ready (or has failed: pid -1).
@@ -479,9 +490,21 @@ Child spawn(const std::string& role, const std::string& label, const std::string
 
     if (waitReady) {
         close(ready[1]);
-        char byte = 0;
-        const bool ok = read(ready[0], &byte, 1) == 1; // EOF: the child exited before being ready
+        // the ready byte, then its info until the pipe closes; nothing: the child exited before being ready
+        Bytes data;
+        uint8_t buffer[512];
+        for (ssize_t n; (n = read(ready[0], buffer, sizeof(buffer))) != 0;) {
+            if (n > 0) {
+                data.insert(data.end(), buffer, buffer + n);
+            } else if (errno != EINTR) {
+                break;
+            }
+        }
         close(ready[0]);
+        const bool ok = !data.empty();
+        if (ok) {
+            child.info.assign(data.begin() + 1, data.end());
+        }
         if (!ok) {
             int status = 0;
             waitpid(pid, &status, 0);
@@ -578,10 +601,11 @@ int runAll(const Scenario& scenario)
     }
     Child rsu = esa.pid > 0 ? spawn("rsu", "rsu[0]", iface, true, scenario.rsuProgram, rsuExtra)
         : notStarted("rsu[0]");
-    std::vector<std::string> vehicleExtra;
+    // the vehicle sends the Activation_Request in the operator's place: it gets the CY_g of the target RSU
+    std::vector<std::string> vehicleExtra{ "--gateway-cert", base64Encode(rsu.info) };
     if (!scenario.smartdata.empty()) {
-        vehicleExtra = { "--smartdata", scenario.smartdata, "--smartdata-count", scenario.smartdataCount,
-            "--smartdata-interval", scenario.smartdataInterval };
+        vehicleExtra.insert(vehicleExtra.end(), { "--smartdata", scenario.smartdata, "--smartdata-count",
+            scenario.smartdataCount, "--smartdata-interval", scenario.smartdataInterval });
     }
     Child vehicle = rsu.pid > 0 ? spawn("vehicle", "node[0]", iface, false, "", vehicleExtra)
         : notStarted("node[0]");

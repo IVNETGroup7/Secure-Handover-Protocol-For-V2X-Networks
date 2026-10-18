@@ -53,13 +53,12 @@ struct AuthRequest
     Block otp;
 };
 
-// { Auth_Granted, OTP_dt, K_dg, K_g, CY_e, Auth_eg }:
-//   type (1) | OTP_dt (16) | len(K_dg) (2) | K_dg | len(K_g) (2) | K_g | len(CY_e) (2) | CY_e | len(Auth_eg) (2) | Auth_eg
+// { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }:
+//   type (1) | OTP_dt (16) | len(K_g) (2) | K_g | len(CY_e) (2) | CY_e | len(Auth_eg) (2) | Auth_eg
 struct AuthGranted
 {
     uint8_t type;
     Block otp;
-    Bytes kDg;
     Bytes kG;
     Bytes esaPublicKey;
     Bytes authEg;

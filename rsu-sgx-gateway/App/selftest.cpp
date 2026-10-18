@@ -4,6 +4,8 @@
 //   1. normal                        the vehicle gets ready, the ESA ends the protocol
 //   2. OTP changed on the air        the enclave finds no matching Auth_d: ignored, nothing more
 //   3. Auth_Request after t_f        the enclave aborts the session
+//   5. CY_g of no gateway            the ESA issues no Activation_Token: nothing starts
+//   6. before t_0                    the vehicle's window starts in the future: the enclave aborts at ECDH
 //   4. Secure Marshaling             SmartData of the vehicle of 1 (tee.pdf step 4), with this test as the cloud:
 //                                    the IT packet is HTTPS Header | AES(K_eg, JSON), with no JSON in clear, and
 //                                    the cloud's K_eg opens it to exactly what the vehicle sent; a changed OTP_dt,
@@ -17,6 +19,7 @@
 #include "BootstrapService.h"
 #include "ExternalSecurityAgent.h"
 #include "Https.h"
+#include "Link.h"
 #include "SimTime.h"
 #include "SmartData.h"
 #include "Traits.h"
@@ -51,9 +54,10 @@ struct Outcome
     BootstrapResult result;         // the vehicle's keys (K_dg, K_g, Auth_d), when it got ready
 };
 
-// one vehicle's bootstrap against the gateway; "onAir" may change (or delay) a frame before it is delivered
+// one vehicle's bootstrap against the gateway; "gatewayPublicKey": the CY_g its Activation_Request names;
+// "onAir" may change (or delay) a frame before it is delivered; "clockOffset": the vehicle clock's error
 Outcome bootstrap(const std::string& vehicleName, unsigned seed, PacketManager& gateway, ExternalSecurityAgent& esa,
-    const std::function<void(BootstrapMsg&)>& onAir = nullptr)
+    const Bytes& gatewayPublicKey, const std::function<void(BootstrapMsg&)>& onAir = nullptr, double clockOffset = 0)
 {
     std::deque<Frame> air;
     Outcome outcome;
@@ -63,6 +67,8 @@ Outcome bootstrap(const std::string& vehicleName, unsigned seed, PacketManager& 
     config.name = vehicleName;
     config.role = BootstrapService::Role::Vehicle;
     config.seed = seed;
+    config.gatewayPublicKey = gatewayPublicKey;
+    config.clockOffset = clockOffset;
     BootstrapService vehicle(config);
 
     BootstrapService::Transport vehicleLinks;
@@ -244,15 +250,18 @@ int runSelfTest(sgx_enclave_id_t eid)
 {
     bool ok = true;
     bool marshaling = false;
-    Outcome normal, tampered, late;
+    Outcome normal, tampered, late, stranger, early;
     try {
         ExternalSecurityAgent esa("esa");
         PacketManager gateway(eid, "rsu[0]");
         const CloudIdentity cloud = newCloudIdentity(kCloudAddress); // this test plays the cloud of 4
 
-        // the HTTPS session with the ESA: CY_e comes in its Session_Ack (main.cpp of the repository root)
-        esa.registerRsu(gateway.name(), "gateway-session");
-        const int init = gateway.initGateway({}, esa.publicKey());
+        // the HTTPS session with the ESA (main.cpp of the repository root): my certificate (CY_g) goes to the ESA,
+        // CY_e comes in its Session_Ack
+        const GatewayCertificate certificate = newGatewayCertificate(gateway.name());
+        esa.registerRsu(gateway.name(), "gateway-session", certificate.publicKey);
+        const Bytes& cyG = certificate.publicKey; // what the operator (here, the vehicle) names in Activation_Request
+        const int init = gateway.initGateway(certificate.certificate, esa.publicKey());
         if (init != GW_OK) {
             throw std::runtime_error(std::string("ecall_init_gateway: ") + statusName(init));
         }
@@ -262,10 +271,10 @@ int runSelfTest(sgx_enclave_id_t eid)
         }
 
         title("1. normal bootstrap (node[0])");
-        normal = bootstrap("node[0]", 1, gateway, esa);
+        normal = bootstrap("node[0]", 1, gateway, esa, cyG);
 
         title("2. OTP changed on the air (node[1])");
-        tampered = bootstrap("node[1]", 7, gateway, esa, [](BootstrapMsg& msg) {
+        tampered = bootstrap("node[1]", 7, gateway, esa, cyG, [](BootstrapMsg& msg) {
             if (msg.getType() == Auth_Request) {
                 Bytes payload = getPayload(msg);
                 payload[5] ^= 1; // one bit of OTP_dt
@@ -274,7 +283,7 @@ int runSelfTest(sgx_enclave_id_t eid)
         });
 
         title("3. Auth_Request after t_f (node[2])");
-        late = bootstrap("node[2]", 11, gateway, esa, [](BootstrapMsg& msg) {
+        late = bootstrap("node[2]", 11, gateway, esa, cyG, [](BootstrapMsg& msg) {
             if (msg.getType() == Auth_Request) {
                 std::this_thread::sleep_for(std::chrono::duration<double>(kActivationWindow + 0.1));
             }
@@ -282,6 +291,12 @@ int runSelfTest(sgx_enclave_id_t eid)
 
         title("4. Secure Marshaling (SmartData of node[0])");
         marshaling = secureMarshaling(gateway, cloud, normal.result);
+
+        title("5. CY_g of no gateway (node[3])");
+        stranger = bootstrap("node[3]", 13, gateway, esa, newGatewayCertificate("rogue").publicKey);
+
+        title("6. before t_0: the window opens 2 s later (node[4])");
+        early = bootstrap("node[4]", 17, gateway, esa, cyG, nullptr, 2.0);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         ok = false;
@@ -294,6 +309,8 @@ int runSelfTest(sgx_enclave_id_t eid)
     ok &= report("3. Auth_Request after t_f", !late.vehicleReady && !late.protocolEnded && late.ignored == 1, late);
     std::printf("  %-34s %s\n", "4. Secure Marshaling", marshaling ? "ok" : "UNEXPECTED");
     ok &= marshaling;
+    ok &= report("5. CY_g of no gateway", !stranger.vehicleReady && !stranger.protocolEnded, stranger);
+    ok &= report("6. before t_0", !early.vehicleReady && !early.protocolEnded, early);
 
     std::printf("%s\n", ok ? "gateway OK" : "gateway FAILED");
     return ok ? 0 : 1;

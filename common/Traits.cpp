@@ -2,34 +2,9 @@
 #include <iomanip>
 #include <sstream>
 
-static std::shared_ptr<X509> makeGatewayCertificate(const std::string& name, EVP_PKEY* key, long serial)
-{
-    std::shared_ptr<X509> cert(X509_new(), X509_free);
-    check(cert != nullptr, "X509_new");
-    X509_set_version(cert.get(), 2); // X.509 v3
-    ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), serial);
-    X509_gmtime_adj(X509_getm_notBefore(cert.get()), 0);
-    X509_gmtime_adj(X509_getm_notAfter(cert.get()), 10L * 365 * 24 * 3600);
-    check(X509_set_pubkey(cert.get(), key) == 1, "X509_set_pubkey");
-
-    const std::string cn = name + "-gateway";
-    X509_NAME* subject = X509_get_subject_name(cert.get());
-    X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn.c_str()), -1, -1, 0);
-    X509_set_issuer_name(cert.get(), subject); // self-signed
-    check(X509_sign(cert.get(), key, EVP_sha256()) > 0, "X509_sign");
-    return cert;
-}
-
-VehicleTraits manufactureVehicle(const std::string& name, std::mt19937& rng)
+VehicleTraits manufactureVehicle(std::mt19937& rng)
 {
     VehicleTraits traits;
-
-    // gateway key pair and certificate
-    traits.gatewayKey = newP256Key();
-    traits.gatewayCert = makeGatewayCertificate(name, traits.gatewayKey.get(), intuniform(rng, 1, 1 << 30));
-
-    // CY_g = public key of the gateway certificate
-    traits.gatewayPublicKey = publicKeyDer(X509_get0_pubkey(traits.gatewayCert.get()));
 
     // UUID version 4 (random), from the seeded RNG
     for (auto& byte : traits.uuid) {
@@ -38,11 +13,11 @@ VehicleTraits manufactureVehicle(const std::string& name, std::mt19937& rng)
     traits.uuid[6] = (traits.uuid[6] & 0x0f) | 0x40; // version 4
     traits.uuid[8] = (traits.uuid[8] & 0x3f) | 0x80; // RFC 4122 variant
 
-    // f_w = ECDSA-SHA256(firmware image || UUID) with the gateway key
-    Bytes signedData(kFirmwareImage, kFirmwareImage + std::char_traits<char>::length(kFirmwareImage));
-    signedData.insert(signedData.end(), traits.uuid.begin(), traits.uuid.end());
+    // f_w = ECDSA-SHA256(firmware image), the manufacturer's signature of the firmware
+    const auto manufacturerKey = newP256Key();
+    const Bytes signedData(kFirmwareImage, kFirmwareImage + std::char_traits<char>::length(kFirmwareImage));
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    check(EVP_DigestSignInit(ctx.get(), nullptr, EVP_sha256(), nullptr, traits.gatewayKey.get()) == 1, "EVP_DigestSignInit");
+    check(EVP_DigestSignInit(ctx.get(), nullptr, EVP_sha256(), nullptr, manufacturerKey.get()) == 1, "EVP_DigestSignInit");
     size_t signatureLength = 0;
     check(EVP_DigestSign(ctx.get(), nullptr, &signatureLength, signedData.data(), signedData.size()) == 1, "EVP_DigestSign");
     traits.firmwareSignature.resize(signatureLength);
@@ -50,7 +25,7 @@ VehicleTraits manufactureVehicle(const std::string& name, std::mt19937& rng)
         "EVP_DigestSign");
     traits.firmwareSignature.resize(signatureLength); // DER signatures vary in length
 
-    // SHA256(f_w)
+    // SHA256(f_w): the hash of the firmware signature
     traits.firmwareHash = sha256(traits.firmwareSignature);
 
     // Auth_d, as the ESA computes it from the Activation_Request

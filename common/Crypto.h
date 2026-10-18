@@ -52,4 +52,10 @@ std::shared_ptr<EVP_PKEY> publicKeyFromDer(const Bytes& der);
 // ECDH shared secret (x coordinate of X * Y): own private key X, peer public key Y
 Bytes ecdh(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey);
 
+// self-signed X.509 certificate of "key" (CN = commonName, valid for one year), DER
+Bytes selfSignedCertificate(EVP_PKEY* key, const std::string& commonName);
+// a self-signed certificate (DER) whose signature verifies with its own key: that key, DER SubjectPublicKeyInfo;
+// nullopt when it does not parse or does not verify
+std::optional<Bytes> verifiedCertificateKey(const Bytes& certificateDer);
+
 #endif /* BOOTSTRAP_CRYPTO_H_ */

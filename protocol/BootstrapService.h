@@ -39,6 +39,8 @@ class BootstrapService
             Role role = Role::Vehicle;
             bool autoStart = true;          // vehicle only: false = wait for initBootstrap()
             double clockOffset = 0.0;       // s, vehicle only: initial error of the vehicle clock (PTP corrects it)
+            Bytes gatewayPublicKey;         // vehicle only: CY_g, the certificate key of the target RSU, as the
+                                            // operator knows it (see activationRequest)
             std::string httpsSessionKey;    // RSU only: "" = random key
             Bytes groupKey;                 // RSU only: K_g (kGroupKeySize bytes), empty = random key
             unsigned seed = 0;              // RNG of the UUID / session key (reproducible)
@@ -89,7 +91,7 @@ class BootstrapService
         void ECDHResponse(const BootstrapMsg& received);
         void AuthRequest(const BootstrapMsg& received);
         void SaveRSU(const BootstrapMsg& received);
-        void AuthGranted(const BootstrapMsg& received);
+        void AuthGranted(const BootstrapMsg& received, const std::string& session);
         void SaveVehicle(const BootstrapMsg& received);
         void Active01(const BootstrapMsg& received);
         void Active02(const BootstrapMsg& received);
@@ -108,7 +110,7 @@ class BootstrapService
         void printKeep(const std::string& name, const Bytes& value, const std::string& vehicle) const;
         void notifyCompleted(const std::string& vehicle, const std::string& rsu);
         void stampTransmission(BootstrapMsg&);
-        bool withinDeadline(const std::string& vehicle);
+        bool withinWindow(const std::string& vehicle);
         void correct_clock(simtime_t t1, simtime_t t2, simtime_t t3, simtime_t t4);
         simtime_t localClock() const;               // vehicle: simTime() + mClockOffset; RSU: simTime() (PTP master)
 
@@ -125,6 +127,7 @@ class BootstrapService
         bool mStarted = false;                      // trigger() may run many times: send Activation_Request once
         BootstrapCallback mOnCompleted;
         VehicleTraits mTraits;                      // manufacturing data (Traits.h)
+        Bytes mGatewayPublicKey;                    // CY_g of the target RSU (Config::gatewayPublicKey)
         simtime_t mClockOffset;                     // error of the vehicle clock (see localClock)
         simtime_t mPtpT1;                           // PTP: Sync sent by the RSU (kept for correct_clock)
         simtime_t mPtpT2;                           // PTP: Sync received
@@ -136,8 +139,14 @@ class BootstrapService
         uint64_t mTi = 0;                           // timestamp of Handover / Forwarding Notice
         Bytes mKt;                                  // handover transient key KT_i
 
-        // t_f per vehicle: after PTP the protocol must end before it (vehicle: its own entry; RSU: from the token)
-        std::map<std::string, simtime_t> mDeadlines;
+        // activation window [t_0, t_f] per vehicle: from ECDH on, every step must happen inside it
+        // (vehicle: its own entry; RSU: from the token)
+        struct ActivationWindow
+        {
+            simtime_t t0;
+            simtime_t tf;
+        };
+        std::map<std::string, ActivationWindow> mWindows;
 
         // K_dg per vehicle, kept after the bootstrap (vehicle: its own entry; RSU: one per vehicle)
         std::map<std::string, Bytes> mKdg;

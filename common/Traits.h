@@ -17,16 +17,13 @@ using Uuid = std::array<uint8_t, 16>;
 
 struct VehicleTraits
 {
-    std::shared_ptr<EVP_PKEY> gatewayKey;   // gateway key pair (the private part never leaves the vehicle)
-    std::shared_ptr<X509> gatewayCert;      // gateway certificate (self-signed, P-256)
-    Bytes gatewayPublicKey;                 // CY_g: public key of the gateway certificate (DER SubjectPublicKeyInfo)
     Uuid uuid;                              // UUID: manufacturing-time device identification (version 4)
-    Bytes firmwareSignature;                // f_w: firmware signature (ECDSA-SHA256)
-    Sha256 firmwareHash;                    // SHA256(f_w)
+    Bytes firmwareSignature;                // f_w: firmware signature (ECDSA-SHA256 of kFirmwareImage)
+    Sha256 firmwareHash;                    // SHA256(f_w): the hash of the firmware signature
     Bytes authD;                            // Auth_d = AES(Id_d, Id_d): the vehicle derives the same value as the ESA
 };
 
-// firmware image installed at manufacturing; f_w signs it together with the UUID (exclusive per vehicle)
+// firmware image installed at manufacturing; f_w is its signature, made by the manufacturer
 constexpr const char* kFirmwareImage = "gateway-firmware v1.0";
 
 // maximum execution time: after PTP, the protocol must finish between t_0 and t_f = t_0 + kActivationWindow
@@ -52,7 +49,7 @@ Bytes computeAuthDe(const Sha256& idD, const Uuid& uuid, const Sha256& firmwareH
 Sha256 computeKDe(const Sha256& idD, const Bytes& authD, const Bytes& authDe, const Block& otp);
 
 // builds the traits of one vehicle; "rng" makes the UUID reproducible
-VehicleTraits manufactureVehicle(const std::string& name, std::mt19937& rng);
+VehicleTraits manufactureVehicle(std::mt19937& rng);
 
 // uniform integer in [a, b]
 int intuniform(std::mt19937& rng, int a, int b);

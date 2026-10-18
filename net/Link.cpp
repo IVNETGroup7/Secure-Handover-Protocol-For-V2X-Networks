@@ -32,9 +32,20 @@ void waitFor(std::initializer_list<const RawSocket*> links, int timeoutMs)
     poll(fds.data(), fds.size(), timeoutMs);
 }
 
-Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::string& sessionKey,
-    const std::string& iface, const std::function<bool()>& stop)
+GatewayCertificate newGatewayCertificate(const std::string& rsu)
 {
+    GatewayCertificate identity;
+    identity.key = newP256Key();
+    identity.certificate = selfSignedCertificate(identity.key.get(), rsu);
+    identity.publicKey = publicKeyDer(identity.key.get());
+    return identity;
+}
+
+Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::string& sessionKey,
+    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop)
+{
+    Bytes hello = toBytes(rsu + "\n" + sessionKey + "\n");
+    hello.insert(hello.end(), certificate.begin(), certificate.end());
     const auto giveUp = std::chrono::steady_clock::now() + kSessionTimeout;
     const Bytes name = toBytes(rsu + "\n");
     Bytes esaPublicKey;
@@ -42,7 +53,7 @@ Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::s
         if (std::chrono::steady_clock::now() >= giveUp || (stop && stop())) {
             throw std::runtime_error("no Session_Ack from the ESA (is it running on " + iface + "?)");
         }
-        sendFrame(backhaul, FrameKind::Session_Hello, toBytes(rsu + "\n" + sessionKey));
+        sendFrame(backhaul, FrameKind::Session_Hello, hello);
         waitFor({ &backhaul }, std::chrono::duration_cast<std::chrono::milliseconds>(kSessionRetry).count());
         drain(backhaul, [&](FrameKind kind, const Bytes& body) {
             // "rsu name\n" CY_e
@@ -53,6 +64,21 @@ Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::s
         });
     }
     return esaPublicKey;
+}
+
+std::optional<SessionHello> parseSessionHello(const Bytes& body)
+{
+    // "rsu name\nsession key\n" certificate
+    const auto first = std::find(body.begin(), body.end(), '\n');
+    const auto second = first == body.end() ? body.end() : std::find(first + 1, body.end(), '\n');
+    if (second == body.end()) {
+        return std::nullopt;
+    }
+    const auto key = verifiedCertificateKey(Bytes(second + 1, body.end()));
+    if (!key) {
+        return std::nullopt;
+    }
+    return SessionHello{ std::string(body.begin(), first), std::string(first + 1, second), *key };
 }
 
 namespace
@@ -170,11 +196,12 @@ std::optional<Reassembler::Packet> Reassembler::add(const Bytes& body)
     return packet;
 }
 
-void signalReady(int fd)
+void signalReady(int fd, const Bytes& info)
 {
     if (fd >= 0) {
-        const char ready = 1;
-        if (write(fd, &ready, 1) != 1) {
+        Bytes data{ 1 };    // ready, then the info (read until the pipe closes)
+        data.insert(data.end(), info.begin(), info.end());
+        if (write(fd, data.data(), data.size()) != static_cast<ssize_t>(data.size())) {
             throw std::runtime_error("cannot signal readiness");
         }
         close(fd);

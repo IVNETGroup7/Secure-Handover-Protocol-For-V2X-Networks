@@ -10,7 +10,8 @@
 //
 // data of a frame: kind (1) | body
 //   Bootstrap      body = serialize(BootstrapMsg)
-//   Session_Hello  body = "rsu name\nsession key"  (RSU -> ESA, repeated until the ack)
+//   Session_Hello  body = "rsu name\nsession key\n" certificate   (RSU -> ESA, repeated until the ack;
+//                  certificate: the RSU's self-signed X.509, DER, whose key is CY_g)
 //   Session_Ack    body = "rsu name\n" CY_e         (ESA -> RSU; CY_e: ESA public key, DER)
 //   Data_Fragment  body = len | from | len | to | id (4) | index (2) | count (2) | piece    (radio)
 //                  a data packet larger than one frame (SmartData.h: up to 64 KB), in pieces; to: its RSU
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <functional>
 #include <initializer_list>
+#include <memory>
 #include <map>
 #include <optional>
 #include <string>
@@ -49,10 +51,28 @@ void drain(RawSocket& link, OnFrame onFrame)
 // waits until one of the links has a frame (or timeoutMs passes, or a signal arrives)
 void waitFor(std::initializer_list<const RawSocket*> links, int timeoutMs = kPollPeriodMs);
 
-// RSU side of the HTTPS session with the ESA: Session_Hello until its Session_Ack; returns CY_e.
-// Throws std::runtime_error after kSessionTimeout, or as soon as stop() is true
+// the RSU's certificate: presented to the ESA in Session_Hello (the paper's arrow 2); its key is CY_g
+struct GatewayCertificate
+{
+    std::shared_ptr<EVP_PKEY> key;  // the RSU's key pair (P-256)
+    Bytes certificate;              // self-signed X.509, DER
+    Bytes publicKey;                // CY_g: DER SubjectPublicKeyInfo
+};
+GatewayCertificate newGatewayCertificate(const std::string& rsu);
+
+// RSU side of the HTTPS session with the ESA: Session_Hello (with "certificate") until its Session_Ack;
+// returns CY_e. Throws std::runtime_error after kSessionTimeout, or as soon as stop() is true
 Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::string& sessionKey,
-    const std::string& iface, const std::function<bool()>& stop);
+    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop);
+
+// ESA side: a Session_Hello; nullopt when it is not one (or its certificate does not verify)
+struct SessionHello
+{
+    std::string rsu;
+    std::string sessionKey;
+    Bytes gatewayPublicKey;         // CY_g, from the RSU's certificate (self-signature verified)
+};
+std::optional<SessionHello> parseSessionHello(const Bytes& body);
 
 // "packet" from "from" to "to" in Data_Fragment frames (as many as it takes; returns how many);
 // throws std::runtime_error
@@ -87,7 +107,8 @@ class Reassembler
         size_t mDropped = 0;
 };
 
-// fork mode: tells the parent this node is ready (fd < 0: nobody waits)
-void signalReady(int fd);
+// fork mode: tells the parent this node is ready (fd < 0: nobody waits), with "info" for it (e.g. the RSU's
+// CY_g, which the operator, played by the vehicle, needs)
+void signalReady(int fd, const Bytes& info = {});
 
 #endif /* BOOTSTRAP_LINK_H_ */

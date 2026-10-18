@@ -70,7 +70,6 @@ Bytes pack(const AuthGranted& m)
     Bytes out;
     putUint(out, m.type, 1);
     out.insert(out.end(), m.otp.begin(), m.otp.end());
-    putField(out, m.kDg);
     putField(out, m.kG);
     putField(out, m.esaPublicKey);
     putField(out, m.authEg);

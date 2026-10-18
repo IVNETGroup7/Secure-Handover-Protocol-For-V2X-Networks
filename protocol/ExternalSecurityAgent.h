@@ -20,8 +20,10 @@ class ExternalSecurityAgent
         explicit ExternalSecurityAgent(const std::string& name = "esa");
         void setTransport(HttpsTransport transport) { mTransport = std::move(transport); }
 
-        // called once per RSU when its HTTPS session is established (pre-established session)
-        void registerRsu(const std::string& rsu, const std::string& sessionKey);
+        // called once per RSU when its HTTPS session is established (pre-established session); "gatewayPublicKey":
+        // CY_g, the key of the RSU's certificate, verified when the session was established (the paper's arrow 2:
+        // the gateway and the ESA keep each other's certificate key, CY_g and CY_e)
+        void registerRsu(const std::string& rsu, const std::string& sessionKey, const Bytes& gatewayPublicKey);
 
         // incoming message over HTTPS
         void handleMessage(const BootstrapMsg&);
@@ -58,7 +60,12 @@ class ExternalSecurityAgent
         HttpsTransport mTransport;
         std::shared_ptr<EVP_PKEY> mKey;                         // ESA key pair (P-256)
         Bytes mPublicKey;                                       // CY_e: ESA public key (DER SubjectPublicKeyInfo)
-        std::map<std::string, std::string> mSessionKeys;        // RSU -> HTTPS session key
+        struct Gateway
+        {
+            std::string sessionKey;     // HTTPS session key
+            Bytes publicKey;            // CY_g
+        };
+        std::map<std::string, Gateway> mGateways;               // RSU -> its HTTPS session
         std::map<Bytes, Activation> mActivations;               // Auth_d -> activation, kept when the token is issued:
                                                                 // the Active_02 carries Auth_d, K_de needs Id_d
         std::map<std::string, Bytes> mKde;                      // K_de per vehicle (vehicle <-> ESA key)

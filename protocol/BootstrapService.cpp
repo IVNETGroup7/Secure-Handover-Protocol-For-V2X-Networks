@@ -54,7 +54,8 @@ BootstrapService::BootstrapService(const Config& config) :
     if (mRole == Role::Vehicle) {
         mAutoStart = config.autoStart;
         mClockOffset = config.clockOffset;
-        mTraits = manufactureVehicle(myName(), mRng);
+        mGatewayPublicKey = config.gatewayPublicKey;
+        mTraits = manufactureVehicle(mRng);
     } else {
         mHttpsSessionKey = config.httpsSessionKey;
         if (mHttpsSessionKey.empty()) {
@@ -147,11 +148,11 @@ void BootstrapService::dispatch(const BootstrapMsg& msg)
     // no stages: the message was already filtered by destination (isForMe),
     // so its type alone says which step to run
 
-    // from ECDH on, a message that arrives after t_f ends the protocol for that vehicle
+    // from ECDH on, a message outside the activation window [t_0, t_f] ends the protocol for that vehicle
     switch (msg.getType()) {
         case ECDH_Request: case ECDH_Response: case Auth_Request: case Auth_Granted:
         case Active_01: case Active_02: case Active_03:
-            if (!withinDeadline(msg.getVehicle())) {
+            if (!withinWindow(msg.getVehicle())) {
                 return;
             }
             break;
@@ -165,7 +166,7 @@ void BootstrapService::dispatch(const BootstrapMsg& msg)
         case PTP_Sync:           PTPDelayRequest(msg); break;    // vehicle
         case PTP_Delay_Request:  PTPDelayResponse(msg); break;   // RSU
         case PTP_Delay_Response: ECDHRequest(msg); break;        // vehicle
-        // from here, everything must happen before arriving in t_f
+        // from here, everything must happen inside [t_0, t_f]
         case ECDH_Request:       ECDHResponse(msg); break;       // RSU
         case ECDH_Response:      AuthRequest(msg); break;        // vehicle
         case Auth_Request:       SaveRSU(msg); break;            // RSU
@@ -184,16 +185,20 @@ void BootstrapService::dispatch(const BootstrapMsg& msg)
 void BootstrapService::activationRequest()
 {
     // vehicle, on start(); goes to the ESA through the RSU in range (relayed in HTTPSEstablishment)
+    // in the paper (arrow 1) the operator sends it to the ESA from the IT network; here the vehicle sends it in the
+    // operator's place, for simplicity: the protocol starts as if the operator had already sent it (with that, UUID
+    // and SHA256(f_w) cross the radio in clear, which the paper never allows)
     printStep("activationRequest");
 
     // here we are doing an activation request
-    // 1. we need to pass the public key of the gateway certificate (CY_g)
+    // 1. we need to pass the public key of the target gateway's certificate (CY_g): the RSU the operator chose;
+    //    the ESA only accepts a gateway that established its HTTPS session with it
     // 2. we need to pass both timestamps for ptp and time to the protocol to realize (t_0 and t_f)
-    // 3. we pass the manufacturing-time identification of the device (UUID) and the SHA256 of the firmware signature (SHA256(f_w)) 
+    // 3. we pass the manufacturing-time identification of the device (UUID) and the SHA256 of the firmware signature (SHA256(fw_d)) 
     //    so nobody will forge on ECDH requests, both of those values are exclusive from the vehicle
     
     // the message that will be passed is
-    // M = { Activation_Request, CY_g, t_0, t_f, UUID, SHA256(f_w) }
+    // M = { Activation_Request, CY_g, t_0, t_f, UUID, SHA256(fw_d) }
 
     // all those values must be stored on a file containing all those informations, split from BootstrapService.cpp
     // since we can use those values on future protocols, make like a traits.h that contains all those information or 
@@ -201,12 +206,12 @@ void BootstrapService::activationRequest()
 
     ActivationRequestPayload m;
     m.type = Activation_Request;
-    m.gatewayPublicKey = mTraits.gatewayPublicKey;  // CY_g
+    m.gatewayPublicKey = mGatewayPublicKey;         // CY_g of the target RSU
     m.t0 = localClock();                            // t_0
     m.tf = m.t0 + kActivationWindow;                // t_f
-    mDeadlines[myName()] = m.tf;
+    mWindows[myName()] = { m.t0, m.tf };
     m.uuid = mTraits.uuid;                          // UUID
-    m.firmwareHash = mTraits.firmwareHash;          // SHA256(f_w)
+    m.firmwareHash = mTraits.firmwareHash;          // SHA256(fw_d)
 
     sendBootstrap(Activation_Request, "esa", 0, 0, "", pack(m));
 }
@@ -232,7 +237,7 @@ void BootstrapService::PTP(const BootstrapMsg& received)
     for (const std::string& line : describe(token)) {
         printDetail(line);
     }
-    mDeadlines[received.getVehicle()] = token.tf; // checked from ECDH on (see dispatch)
+    mWindows[received.getVehicle()] = { token.t0, token.tf }; // checked from ECDH on (see dispatch)
     
     // save in a struct called PendingVehicles (on BootstrapService.h)
     // pending until an Auth_Request's OTP matches its Auth_d (SaveRSU)
@@ -319,8 +324,8 @@ void BootstrapService::ECDHRequest(const BootstrapMsg& received)
     }
     correct_clock(mPtpT1, mPtpT2, mPtpT3, response.timestamp);
 
-    // from here, everything must happen before t_f (checked with the corrected clock)
-    if (!withinDeadline(myName())) {
+    // from here, everything must happen inside [t_0, t_f] (checked with the corrected clock)
+    if (!withinWindow(myName())) {
         return;
     }
 
@@ -356,6 +361,7 @@ void BootstrapService::ECDHResponse(const BootstrapMsg& received)
     const auto keyG = newEcKey(kEcdhCurve); // X_g and Y_g, fresh for this vehicle
     const Bytes kDg = ecdh(keyG.get(), publicKeyFromDer(request.publicKey).get());
     mKdg[received.getVehicle()] = kDg;
+    mActive.erase(received.getVehicle()); // a new K_dg, not yet authenticated: the old one's binding goes with it
     printKeep("K_dg", kDg, received.getVehicle());
 
     // the message that will be passed is
@@ -402,8 +408,10 @@ void BootstrapService::AuthRequest(const BootstrapMsg& received)
     // be using a truncate timestamp, for example the timestamp marking 10:00:03.203, will be considered 10:00:03.200
     // so the gateway can guess the timestamp it was sent without permitting attackers to guess
     // obs : since we did PTP, both times from RSU and vehicle are well stablished so we are going to
-    // "guess" the value of the timestamp (ex : the timestamp is at 10:00:03.420) (we would do a window of 1 second and 100ms each),
-    // so we calculate OTP guessing t -> 10:00:03.100 (wrong), 10:00:03.200 (right), so we have OTP and is valid 
+    // "guess" the value of the timestamp: slots of kOtpTimeStep = 100 ms, and the RSU tries its own slot +-kOtpWindow
+    // (= 1), as the paper ("running OTP verification with the truncated timestamp +-1"). Ex: the vehicle sends at
+    // 10:00:03.420 (t = 10:00:03.400); the RSU, at 10:00:03.460, tries 10:00:03.300 (wrong), 10:00:03.400 (right)
+    // and 10:00:03.500, so we have OTP and is valid
     const uint64_t t = otpSlot(localClock());               // PTP-synchronized time slot
     const Block nonce = otpNonce(mTraits.authD, t);         // Auth_d xor t
 
@@ -415,7 +423,7 @@ void BootstrapService::AuthRequest(const BootstrapMsg& received)
         + toHex(nonce.data(), nonce.size()));
 
     // the message that will be passed is
-    // M = { Auth_Request, OTP_dt , t}
+    // M = { Auth_Request, OTP_dt }        (t is not sent: the RSU tries its own truncated clock +-1)
 
     sendBootstrap(Auth_Request, received.getSender(), received.getAckNum(), received.getSeqNum() + 1, "", pack(otp));
 }
@@ -432,16 +440,11 @@ void BootstrapService::SaveRSU(const BootstrapMsg& received)
     }
 
     // 1. we calculate the OTP that was
-    // no identifier goes in clear, so the session (the K_dg of the ECDH made in it) does not say which
-    // pending activation it belongs to: the RSU tries every pending Auth_d with every t in a window of
-    // +-kOtpWindow slots around its own truncated clock, and a match binds the session to that Auth_d
-    //   OTP_candidate = Poly1305(K_dg, Auth_d_pending xor t_candidate, m)
-    auto kDg = mKdg.find(received.getVehicle());
-    if (kDg == mKdg.end()) {
-        printCheck(false, "no K_dg for this session: ignored");
-        return;
-    }
-
+    // as the paper: "It then computes OTP_dt for each combination of ECDH master secrets not yet authenticated
+    // and Auth_d pending activation using (8)": every K_dg of an ECDH not yet bound to an activation, with every
+    // pending Auth_d and every t in +-kOtpWindow slots around the RSU's own truncated clock; a match binds that
+    // K_dg to that Auth_d (status active)
+    //   OTP_candidate = Poly1305(K_dg_unauthenticated, Auth_d_pending xor t_candidate, m)
     const simtime_t now = localClock();
     const uint64_t tNow = otpSlot(now);
 
@@ -450,54 +453,68 @@ void BootstrapService::SaveRSU(const BootstrapMsg& received)
         pending = now > pending->second.tf ? mPending.erase(pending) : std::next(pending);
     }
 
+    std::string session;            // the ECDH session whose K_dg matched
     auto match = mPending.end();
     uint64_t tMatch = 0;
-    for (auto pending = mPending.begin(); pending != mPending.end() && match == mPending.end(); ++pending) {
-        for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow; ++t) {
-            const Block candidate = poly1305Aes(kDg->second, otpNonce(pending->second.authD, t), otpMessage());
-            if (CRYPTO_memcmp(candidate.data(), request.otp.data(), candidate.size()) == 0) { // constant time
-                match = pending;
-                tMatch = t;
-                break;
+    size_t unauthenticated = 0;
+    for (const auto& [candidateSession, kDg] : mKdg) {
+        if (mActive.count(candidateSession) != 0) {
+            continue; // K_dg already bound to an activation
+        }
+        ++unauthenticated;
+        for (auto pending = mPending.begin(); pending != mPending.end() && match == mPending.end(); ++pending) {
+            for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow; ++t) {
+                const Block candidate = poly1305Aes(kDg, otpNonce(pending->second.authD, t), otpMessage());
+                if (CRYPTO_memcmp(candidate.data(), request.otp.data(), candidate.size()) == 0) { // constant time
+                    session = candidateSession;
+                    match = pending;
+                    tMatch = t;
+                    break;
+                }
             }
+        }
+        if (match != mPending.end()) {
+            break;
         }
     }
 
     if (match == mPending.end()) {
         // no combination matches: the message is ignored
-        printCheck(false, "OTP_dt matches no pending Auth_d (" + std::to_string(mPending.size()) + " pending x "
+        printCheck(false, "OTP_dt matches no combination (" + std::to_string(unauthenticated)
+            + " K_dg not yet authenticated x " + std::to_string(mPending.size()) + " pending Auth_d x "
             + std::to_string(2 * kOtpWindow + 1) + " slots around t = " + std::to_string(tNow) + "): ignored");
         return;
     }
 
     const long long slotOffset = static_cast<long long>(tMatch) - static_cast<long long>(tNow);
-    printCheck(true, "OTP_dt matches the Auth_d of the activation of " + match->first + " with t = "
-        + std::to_string(tMatch) + " (my slot " + (slotOffset >= 0 ? "+" : "") + std::to_string(slotOffset) + ")");
+    printCheck(true, "OTP_dt matches the K_dg of the ECDH with " + session + " and the Auth_d of the activation of "
+        + match->first + ", with t = " + std::to_string(tMatch) + " (my slot " + (slotOffset >= 0 ? "+" : "")
+        + std::to_string(slotOffset) + ")");
 
-    // the session (and its K_dg) is now bound to that Auth_d: status active
-    mActive[received.getVehicle()] = match->second;
+    // that K_dg is now bound to that Auth_d: status active
+    mActive[session] = match->second;
     mPending.erase(match);
 
-    AuthGranted(received);
+    AuthGranted(received, session);
 }
 
-void BootstrapService::AuthGranted(const BootstrapMsg& received)
+void BootstrapService::AuthGranted(const BootstrapMsg& received, const std::string& session)
 {
-    // RSU, at the end of SaveRSU
+    // RSU, at the end of SaveRSU; "session": the ECDH session whose K_dg the OTP matched
     printStep("AuthGranted", &received);
 
     // the RSU confirmed it's the vehicle
     // 1. generate message
     // all the informations being passed on the message is available
-    // M = { Auth_Granted, OTP_dt, K_dg, K_g, CY_e }
+    // M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }     (the paper's (10): Auth_Granted(Auth_eg, OTP_dt, K_G, CY_e))
 
+    const Bytes& kDg = mKdg.at(session);
     AuthGrantedPayload m;
     m.type = Auth_Granted;
     m.otp = unpackAuthRequest(getPayload(received)).otp;    // OTP_dt: the one SaveRSU matched
-    m.kDg = mKdg.at(received.getVehicle());                 // K_dg: of this session
     m.kG = mGroupKey;                                       // K_g
     m.esaPublicKey = mEsaPublicKey;                         // CY_e
-    m.authEg = mActive.at(received.getVehicle()).authEg;    // Auth_eg: lets the vehicle check CY_e (SaveVehicle)
+    m.authEg = mActive.at(session).authEg;                  // Auth_eg: lets the vehicle check CY_e (SaveVehicle)
     if (m.esaPublicKey.empty()) {
         throw std::runtime_error(myName() + ": no CY_e (HTTPS session with the ESA not established)");
     }
@@ -506,9 +523,8 @@ void BootstrapService::AuthGranted(const BootstrapMsg& received)
     }
 
     // 2. Encrypt the message M using K_dg (key formed on ECDH)
-    // you can use AES-128 CBC for example or other chain considered better
     // AES-256-GCM with the whole K_dg (32 bytes): authenticated, so the vehicle also detects any change on air
-    const Bytes sealed = aesGcmEncrypt(m.kDg, pack(m));
+    const Bytes sealed = aesGcmEncrypt(kDg, pack(m));
     printDetail("E_K_dg(M) = AES-256-GCM, " + std::to_string(sealed.size()) + " bytes (nonce | ciphertext | tag)");
 
     sendBootstrap(Auth_Granted, received.getSender(), received.getAckNum(), received.getSeqNum() + 1, "", sealed);
@@ -552,8 +568,9 @@ void BootstrapService::SaveVehicle(const BootstrapMsg& received)
     }
     printCheck(true, "OTP_dt is the one I sent");
 
-    // 3. Auth_eg = AES(Id_d, CY_e): only who knows Id_d (the ESA, from my Activation_Request) makes it,
-    //    so recomputing it with my Id_d and the CY_e received proves CY_e is the ESA's key
+    // 3. Auth_eg = AES(Id_d, CY_e): only who knows Id_d (the ESA, from the operator's Activation_Request) makes
+    //    it, so recomputing it with my Id_d and the CY_e received proves CY_e is the ESA's key (here the vehicle
+    //    sends the Activation_Request in the operator's place, so a radio listener could also derive Id_d)
     const Sha256 idD = computeIdD(mTraits.uuid, mTraits.firmwareHash);
     const Bytes authEg = aes256Encrypt(idD, m.esaPublicKey);
     if (authEg.size() != m.authEg.size() || CRYPTO_memcmp(authEg.data(), m.authEg.data(), authEg.size()) != 0) {
@@ -651,20 +668,23 @@ void BootstrapService::Active02(const BootstrapMsg& received)
 
 // ---------------------------------------------------------------------------------------------
 
-bool BootstrapService::withinDeadline(const std::string& vehicle)
+bool BootstrapService::withinWindow(const std::string& vehicle)
 {
-    auto deadline = mDeadlines.find(vehicle);
-    if (deadline != mDeadlines.end() && localClock() <= deadline->second) {
-        printCheck(true, "t = " + localClock().str() + " s <= t_f = " + deadline->second.str() + " s");
+    const simtime_t now = localClock();
+    auto window = mWindows.find(vehicle);
+    if (window != mWindows.end() && window->second.t0 <= now && now <= window->second.tf) {
+        printCheck(true, "t_0 = " + window->second.t0.str() + " s <= t = " + now.str() + " s <= t_f = "
+            + window->second.tf.str() + " s");
         return true;
     }
 
-    // past t_f (or no t_f known for this vehicle): the protocol ends here for this vehicle
-    if (deadline == mDeadlines.end()) {
-        trace::end(myName(), "aborted: no t_f for " + vehicle);
+    // outside [t_0, t_f] (or no window known for this vehicle): the protocol ends here for this vehicle
+    if (window == mWindows.end()) {
+        trace::end(myName(), "aborted: no activation window for " + vehicle);
     } else {
-        trace::end(myName(), "aborted: t_f exceeded (" + localClock().str() + " s > t_f = " + deadline->second.str() + " s)");
-        mDeadlines.erase(deadline);
+        trace::end(myName(), "aborted: t = " + now.str() + " s outside [t_0, t_f] = [" + window->second.t0.str()
+            + " s, " + window->second.tf.str() + " s]");
+        mWindows.erase(window);
     }
     mKdg.erase(vehicle); // an aborted bootstrap leaves no key
     mPending.erase(vehicle);
@@ -799,7 +819,7 @@ void BootstrapService::printKeep(const std::string& name, const Bytes& value, co
 
 void BootstrapService::notifyCompleted(const std::string& vehicle, const std::string& rsu)
 {
-    mDeadlines.erase(vehicle);
+    mWindows.erase(vehicle);
 
     trace::end(myName(), mRole == Role::Vehicle ? "vehicle ready (with " + rsu + ")" : "RSU ready (" + vehicle + ")");
 

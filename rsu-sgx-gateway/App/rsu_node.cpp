@@ -86,10 +86,12 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
     RawSocket backhaul(options.iface, kBackhaulEtherType);
     PacketManager gateway(eid, options.name);
 
-    // HTTPS session with the ESA first: its Session_Ack carries CY_e, which goes into the enclave
-    const Bytes esaPublicKey = openHttpsSession(backhaul, options.name, sessionKey(), options.iface,
-        [] { return gStop != 0; });
-    const int init = gateway.initGateway({}, esaPublicKey);
+    // HTTPS session with the ESA first: Session_Hello with my certificate (CY_g); its Session_Ack carries CY_e,
+    // which goes into the enclave with the certificate
+    const GatewayCertificate certificate = newGatewayCertificate(options.name);
+    const Bytes esaPublicKey = openHttpsSession(backhaul, options.name, sessionKey(), certificate.certificate,
+        options.iface, [] { return gStop != 0; });
+    const int init = gateway.initGateway(certificate.certificate, esaPublicKey);
     if (init != GW_OK) {
         throw std::runtime_error(std::string("ecall_init_gateway: ") + statusName(init));
     }
@@ -130,7 +132,7 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
             options.cloudAddress.c_str(), options.cloudPort, cloudSession.c_str(), options.cloudCertificate.c_str());
     }
     std::fflush(stdout);
-    signalReady(options.readyFd);
+    signalReady(options.readyFd, certificate.publicKey); // CY_g: what the operator (here, the vehicle) sends
 
     Reassembler reassembler;
     auto step = [&] {

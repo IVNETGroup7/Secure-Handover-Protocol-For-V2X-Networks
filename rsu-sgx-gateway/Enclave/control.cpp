@@ -5,7 +5,7 @@
 //   ECDHResponse                 ECDH_Request  -> ECDH_Response   (X_g and K_dg stay here)
 //   SaveRSU + AuthGranted        Auth_Request  -> Auth_Granted    (OTP search, K_g, E_K_dg(M))
 //   Active02                     Active_01     -> Active_02       (D_K_dg, M for the ESA)
-//   withinDeadline               t <= t_f, before each of them
+//   withinWindow                 t_0 <= t <= t_f, before each of them
 // On an OTP match the state (K_g and every active session) is sealed (sgx_seal_data) and handed to the App to
 // keep on disk; ecall_init_gateway unseals it (reboot recovery, tee.pdf step 5).
 // The other RSU steps (relay to the ESA, PTP) have no secrets: the App runs them (App/packet_manager.cpp).
@@ -220,8 +220,8 @@ bool loadState(bool keepGroupKey)
     return true;
 }
 
-// BootstrapService::withinDeadline (RSU): from ECDH on, a message after t_f ends the protocol for that session
-bool withinDeadline(const std::string& session, uint64_t now)
+// BootstrapService::withinWindow (RSU): from ECDH on, a message outside [t_0, t_f] ends the protocol for that session
+bool withinWindow(const std::string& session, uint64_t now)
 {
     const Activation* activation = nullptr;
     if (auto pending = gGateway.pending.find(session); pending != gGateway.pending.end()) {
@@ -229,13 +229,14 @@ bool withinDeadline(const std::string& session, uint64_t now)
     } else if (auto active = gGateway.active.find(session); active != gGateway.active.end()) {
         activation = &active->second;
     }
-    if (activation && now <= activation->tf) {
-        check(true, session + ": t = " + seconds(now) + " <= t_f = " + seconds(activation->tf));
+    if (activation && activation->t0 <= now && now <= activation->tf) {
+        check(true, session + ": t_0 = " + seconds(activation->t0) + " <= t = " + seconds(now) + " <= t_f = "
+            + seconds(activation->tf));
         return true;
     }
 
-    check(false, session + ": aborted: " + (activation ? "t_f exceeded (" + seconds(now) + " > t_f = "
-        + seconds(activation->tf) + ")" : std::string("no t_f for this session")));
+    check(false, session + ": aborted: " + (activation ? "t = " + seconds(now) + " outside [t_0, t_f] = ["
+        + seconds(activation->t0) + ", " + seconds(activation->tf) + "]" : std::string("no activation window for this session")));
     gGateway.kdg.erase(session); // an aborted bootstrap leaves no key
     gGateway.pending.erase(session);
     gGateway.active.erase(session);
@@ -251,6 +252,7 @@ Bytes ecdhResponse(const std::string& session, const Bytes& in)
 
     const auto keyG = newEcKey(kEcdhCurve);  // X_g and Y_g, fresh for this vehicle
     gGateway.kdg[session] = ecdh(keyG.get(), publicKeyFromDer(request.publicKey).get());
+    gGateway.active.erase(session); // a new K_dg, not yet authenticated: the old one's binding goes with it
     print(session + ": ECDH done, K_dg kept in the enclave");
 
     return wire::pack(wire::Ecdh{ ECDH_Response, publicKeyDer(keyG.get()) });
@@ -262,13 +264,9 @@ std::optional<Bytes> authGranted(const std::string& session, const Bytes& in, ui
 {
     const wire::AuthRequest request = wire::unpackAuthRequest(in);
 
-    // no identifier goes in clear, so the session (its K_dg) does not say which pending activation it belongs
-    // to: every pending Auth_d, with every t in +-kOtpWindow slots around my own truncated clock
-    auto kDg = gGateway.kdg.find(session);
-    if (kDg == gGateway.kdg.end()) {
-        check(false, session + ": no K_dg for this session: ignored");
-        return std::nullopt;
-    }
+    // as the paper (BootstrapService::SaveRSU): every K_dg of an ECDH not yet bound to an activation, with every
+    // pending Auth_d and every t in +-kOtpWindow slots around my own truncated clock; a match binds that K_dg to
+    // that Auth_d (status active)
     const uint64_t tNow = otpSlot(now);
 
     // past its t_f an activation is no longer pending
@@ -276,42 +274,55 @@ std::optional<Bytes> authGranted(const std::string& session, const Bytes& in, ui
         pending = now > pending->second.tf ? gGateway.pending.erase(pending) : std::next(pending);
     }
 
+    std::string bound;              // the ECDH session whose K_dg matched
     auto match = gGateway.pending.end();
     uint64_t tMatch = 0;
-    for (auto pending = gGateway.pending.begin(); pending != gGateway.pending.end() && match == gGateway.pending.end();
-         ++pending) {
-        for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow; ++t) {
-            const Block candidate = poly1305Aes(kDg->second, otpNonce(pending->second.authD, t), otpMessage());
-            if (CRYPTO_memcmp(candidate.data(), request.otp.data(), candidate.size()) == 0) { // constant time
-                match = pending;
-                tMatch = t;
-                break;
+    size_t unauthenticated = 0;
+    for (const auto& [candidate, kDg] : gGateway.kdg) {
+        if (gGateway.active.count(candidate) != 0) {
+            continue; // K_dg already bound to an activation
+        }
+        ++unauthenticated;
+        for (auto pending = gGateway.pending.begin(); pending != gGateway.pending.end() && match == gGateway.pending.end();
+             ++pending) {
+            for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow; ++t) {
+                const Block otp = poly1305Aes(kDg, otpNonce(pending->second.authD, t), otpMessage());
+                if (CRYPTO_memcmp(otp.data(), request.otp.data(), otp.size()) == 0) { // constant time
+                    bound = candidate;
+                    match = pending;
+                    tMatch = t;
+                    break;
+                }
             }
+        }
+        if (match != gGateway.pending.end()) {
+            break;
         }
     }
     if (match == gGateway.pending.end()) {
-        check(false, session + ": OTP_dt matches no pending Auth_d (" + std::to_string(gGateway.pending.size())
-            + " pending x " + std::to_string(2 * kOtpWindow + 1) + " slots around t = " + std::to_string(tNow)
-            + "): ignored");
+        check(false, session + ": OTP_dt matches no combination (" + std::to_string(unauthenticated)
+            + " K_dg not yet authenticated x " + std::to_string(gGateway.pending.size()) + " pending Auth_d x "
+            + std::to_string(2 * kOtpWindow + 1) + " slots around t = " + std::to_string(tNow) + "): ignored");
         return std::nullopt;
     }
     const long long slotOffset = static_cast<long long>(tMatch) - static_cast<long long>(tNow);
-    check(true, session + ": OTP_dt matches the Auth_d of the activation of " + match->first + " with t = "
-        + std::to_string(tMatch) + " (my slot " + (slotOffset >= 0 ? "+" : "") + std::to_string(slotOffset) + ")");
+    check(true, session + ": OTP_dt matches the K_dg of the ECDH with " + bound + " and the Auth_d of the activation of "
+        + match->first + ", with t = " + std::to_string(tMatch) + " (my slot " + (slotOffset >= 0 ? "+" : "")
+        + std::to_string(slotOffset) + ")");
 
-    // the session (and its K_dg) is now bound to that Auth_d: status active, sealed for a restart
-    gGateway.active[session] = match->second;
+    // that K_dg is now bound to that Auth_d: status active, sealed for a restart
+    gGateway.active[bound] = match->second;
     gGateway.pending.erase(match);
     saveState();
 
+    // M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }    (the paper's (10))
     wire::AuthGranted m;
     m.type = Auth_Granted;
     m.otp = request.otp;                                // OTP_dt: the one matched
-    m.kDg = kDg->second;                                // K_dg
     m.kG = gGateway.groupKey;                           // K_g
     m.esaPublicKey = gGateway.esaPublicKey;             // CY_e
-    m.authEg = gGateway.active[session].authEg;         // Auth_eg: lets the vehicle check CY_e
-    Bytes sealed = aesGcmEncrypt(kDg->second, wire::pack(m)); // E_K_dg(M): AES-256-GCM
+    m.authEg = gGateway.active[bound].authEg;           // Auth_eg: lets the vehicle check CY_e
+    Bytes sealed = aesGcmEncrypt(gGateway.kdg.at(bound), wire::pack(m)); // E_K_dg(M): AES-256-GCM
     print(session + ": Auth_Granted = E_K_dg(M), " + std::to_string(sealed.size()) + " bytes");
     return sealed;
 }
@@ -518,7 +529,7 @@ int ecall_control_handle_bootstrap(int msg_type, const char* session, const uint
         const std::string name = session;
         const Bytes in(in_pkt, in_pkt + in_len);
     
-        if (msg_type != Forwarding_Request && !withinDeadline(name, current_ptp_time)) {
+        if (msg_type != Forwarding_Request && !withinWindow(name, current_ptp_time)) {
             return GW_IGNORED;
         }
 

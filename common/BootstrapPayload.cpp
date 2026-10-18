@@ -231,8 +231,6 @@ Bytes pack(const AuthGrantedPayload& m)
     Bytes out;
     putUint(out, m.type, 1);
     out.insert(out.end(), m.otp.begin(), m.otp.end());
-    putUint(out, m.kDg.size(), 2);
-    out.insert(out.end(), m.kDg.begin(), m.kDg.end());
     putUint(out, m.kG.size(), 2);
     out.insert(out.end(), m.kG.begin(), m.kG.end());
     putUint(out, m.esaPublicKey.size(), 2);
@@ -248,7 +246,6 @@ AuthGrantedPayload unpackAuthGranted(const Bytes& in)
     AuthGrantedPayload m;
     m.type = reader.uint(1);
     m.otp = reader.array<16>();
-    m.kDg = reader.bytes(reader.uint(2));
     m.kG = reader.bytes(reader.uint(2));
     m.esaPublicKey = reader.bytes(reader.uint(2));
     m.authEg = reader.bytes(reader.uint(2));
@@ -258,9 +255,8 @@ AuthGrantedPayload unpackAuthGranted(const Bytes& in)
 std::vector<std::string> describe(const AuthGrantedPayload& m)
 {
     return {
-        "M = { " + std::string(stageName(m.type)) + ", OTP_dt, K_dg, K_g, CY_e, Auth_eg }",
+        "M = { " + std::string(stageName(m.type)) + ", OTP_dt, K_g, CY_e, Auth_eg }",
         "OTP_dt  = " + toHex(m.otp.data(), m.otp.size()),
-        "K_dg    = " + toHex(m.kDg.data(), m.kDg.size()),
         "K_g     = " + toHex(m.kG.data(), m.kG.size()),
         "CY_e    = " + toHex(m.esaPublicKey.data(), m.esaPublicKey.size()),
         "Auth_eg = " + toHex(m.authEg.data(), m.authEg.size()),

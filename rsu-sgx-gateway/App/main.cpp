@@ -3,8 +3,10 @@
 //
 //   ./app [selftest]       the bootstrap of the repository's vehicle and ESA against the enclave, in memory
 //   ./app rsu [--iface lo] [--name rsu[0]] [--ready-fd <fd>] [--events]
+//             [--cloud-cert <cloud.crt> [--cloud-address 127.0.0.1] [--cloud-port 8443]]
 //                          the gateway as the RSU node on the raw sockets (needs CAP_NET_RAW);
-//                          ../bootstrap --rsu-exec <this app> runs it in place of its own RSU
+//                          ../bootstrap --rsu-exec <this app> runs it in place of its own RSU;
+//                          with --cloud-cert, the marshaled SmartData goes to the cloud (HTTPS)
 //   common options: [--enclave <enclave.signed.so>] [--sealed <file>]   (default: next to this program)
 
 #include "modes.h"
@@ -87,6 +89,9 @@ int main(int argc, char** argv)
             rsu.iface = option("--iface", rsu.iface);
             rsu.name = option("--name", rsu.name);
             rsu.readyFd = std::stoi(option("--ready-fd", "-1"));
+            rsu.cloudCertificate = option("--cloud-cert", "");
+            rsu.cloudAddress = option("--cloud-address", rsu.cloudAddress);
+            rsu.cloudPort = static_cast<uint16_t>(std::stoi(option("--cloud-port", std::to_string(rsu.cloudPort))));
             code = runRsuNode(eid, rsu);
         } else {
             std::printf("enclave %s created (eid %llu)\n", enclavePath.c_str(), static_cast<unsigned long long>(eid));

@@ -43,11 +43,13 @@ if [ -z "$host" ]; then
     exit 1
 fi
 
-# sources only: build outputs, keys and state of each side stay where they are (excluded: not deleted either)
-rsync -a --delete -e "${SSH[*]}" \
+# sources only: build outputs, keys and state of each side stay where they are (excluded: not deleted either).
+# Compared by content, and what changed gets the VM's current time (no -t): a file put back to an older version
+# is still newer than its object files, so make rebuilds it
+rsync -rlp --checksum --delete -e "${SSH[*]}" \
     --exclude=.git --exclude=.vscode --exclude='*.pdf' --exclude=/bootstrap --exclude=build/ \
     --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude=/rsu-sgx-gateway/app \
-    --exclude='.config_*' --exclude='.caps_*' --exclude=gateway.sealed --exclude=Enclave_private.pem \
+    --exclude='.config_*' --exclude='.caps_*' --exclude=gateway.sealed --exclude=cloud.crt --exclude=Enclave_private.pem \
     --exclude='Enclave_u.*' --exclude='Enclave_t.*' \
     "$REPO/" "$host:$VM_DIR/"
 

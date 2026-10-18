@@ -10,8 +10,7 @@
 #include <cstring>
 #include <stdexcept>
 
-// Ethernet payload up to the usual MTU, so the frames also fit a real (or virtual) NIC
-static constexpr size_t kMaxData = ETH_DATA_LEN - 2;
+static_assert(kMaxFrameData == ETH_DATA_LEN - 2, "RawSocket.h: the Ethernet payload minus len(data)");
 
 static std::runtime_error systemError(const std::string& what)
 {
@@ -64,7 +63,7 @@ RawSocket::~RawSocket()
 
 void RawSocket::send(const Bytes& data)
 {
-    if (data.size() > kMaxData) {
+    if (data.size() > kMaxFrameData) {
         throw std::runtime_error("raw frame too large (" + std::to_string(data.size()) + " bytes)");
     }
 

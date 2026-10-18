@@ -17,11 +17,13 @@ int ecall_secure_marshal_ot_to_it(const uint8_t* ot_pkt, size_t ot_pkt_len, uint
     }
     (void) current_ptp_time;
 
-    // 1. split Message(AES(K_G, Data), Auth_d, OTP_dt)
+    // 1. split Message(AES(K_G, Data), Auth_d, OTP_dt): unpackDataMessage (common/SmartData.h)
     // 2. Auth_d -> K_dg, K_G of that vehicle (kept by the control component)
-    // 3. OTP_dt == Poly1305(K_dg, Auth_d xor t, m), t = current_ptp_time +- 1 slot; else GW_IGNORED
-    // 4. Data = AES(K_G)^-1: SmartData (location, timing, metadata, value, Auth_d)
+    // 3. OTP_dt == dataOtp(K_dg, Auth_d, t, AES(K_G, Data)), t = dataOtpSlot(current_ptp_time) +- kOtpWindow;
+    //    else GW_IGNORED
+    // 4. Data = aesGcmDecrypt(K_G, AES(K_G, Data)) -> unpackSmartData: location, timing, metadata, value, Auth_d
     // 5. JSON
-    // 6. encrypted for the cloud (TLS session / K_eg) into it_https_pkt
+    // 6. into it_https_pkt: for now the JSON itself (the App POSTs it over its TLS session, net/Https.h);
+    //    later encrypted for the cloud here (TLS session / K_eg)
     return GW_ERR_NOT_IMPLEMENTED;
 }

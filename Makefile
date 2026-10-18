@@ -19,7 +19,7 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -g
 CPPFLAGS += -Icommon -Iprotocol -Inet -MMD -MP
 LDFLAGS  += -static -Wl,--no-warnings   # static: runs in an empty image (no-warnings: libcrypto's dlopen notes)
-LDLIBS   += -lcrypto
+LDLIBS   += -lssl -lcrypto   # libssl: the HTTPS of the cloud (net/Https.h)
 
 BUILD := build
 LIB   := $(BUILD)/libbootstrap.a

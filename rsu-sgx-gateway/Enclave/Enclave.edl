@@ -74,7 +74,10 @@ enclave {
 
         /* 4. Secure Marshaling (data path after the bootstrap, step 4 of tee.pdf):
          *    OT packet Message(AES(K_G, Data), Auth_d, OTP_dt) -> OTP check -> decrypt -> JSON -> encrypted
-         *    HTTPS packet for the IT queue (to the cloud). */
+         *    HTTPS packet for the IT queue (to the cloud).
+         *    ot_pkt: the OT packet as common/SmartData.h packs it (packDataMessage), reassembled by the App.
+         *    it_https_pkt: while TLS is in the App (net/Https.h), the body of the POST /smartdata
+         *    (application/json) the App sends to the cloud; GW_OK sends it, any other status sends nothing. */
         public int ecall_secure_marshal_ot_to_it(
             [in, size=ot_pkt_len] const uint8_t* ot_pkt, size_t ot_pkt_len,
             uint64_t current_ptp_time,

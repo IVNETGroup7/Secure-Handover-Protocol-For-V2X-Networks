@@ -766,6 +766,9 @@ void BootstrapService::notifyCompleted(const std::string& vehicle, const std::st
         result.kDg = mKdg[vehicle];
         result.kG = mGroupKey;
         result.kDe = mKde;
+        if (mRole == Role::Vehicle) {
+            result.authD = mTraits.authD;
+        }
         mOnCompleted(result);
     }
 }

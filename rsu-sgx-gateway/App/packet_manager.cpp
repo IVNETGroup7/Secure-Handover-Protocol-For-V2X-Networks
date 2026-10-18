@@ -5,7 +5,9 @@
 #include "SimTime.h"
 #include "Trace.h"
 #include "gateway.h"
+#include <chrono>
 #include <cstdio>
+#include <exception>
 #include <stdexcept>
 
 namespace
@@ -31,6 +33,93 @@ uint64_t now()
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------------------------
+// OT queue
+
+void PacketManager::onOtPacket(const OtPacket& packet)
+{
+    if (packet.kind == OtPacket::Kind::SmartData) {
+        onSmartData(packet);
+        return;
+    }
+    BootstrapMsg msg;
+    try {
+        msg = deserialize(packet.bytes);
+    } catch (const std::exception& e) { // another program on the link: reported, not fatal
+        std::fprintf(stderr, "[%s] frame dropped: %s\n", mName.c_str(), e.what());
+        return;
+    }
+    if (msg.getSender() != mName) { // the link also returns our own frames
+        onRadio(msg);
+    }
+}
+
+// Secure Marshaling (Fig. 5): Message(AES(K_G, Data), Auth_d, OTP_dt) into the enclave, which returns the packet
+// for the cloud (or refuses it); the first packet of each size is traced, every one measured
+void PacketManager::onSmartData(const OtPacket& packet)
+{
+    using std::chrono::duration_cast;
+    using std::chrono::nanoseconds;
+    const auto dequeued = Clock::now();
+    const bool traced = mTracedSizes.insert(packet.bytes.size()).second;
+    if (traced) {
+        trace::step(mName, "SecureMarshaling (enclave)", "SmartData", packet.from, packet.from);
+        trace::detail(mName, "OT packet = " + std::to_string(packet.bytes.size())
+            + " B, reassembled from the radio frames -> OT queue -> ecall_secure_marshal_ot_to_it");
+    }
+
+    const auto start = std::chrono::high_resolution_clock::now();
+    const Reply reply = marshal(packet.bytes, now());
+    const auto ecall = duration_cast<nanoseconds>(std::chrono::high_resolution_clock::now() - start);
+    mBenchmark.ecall(packet.bytes.size(), ecall, reply.status);
+    if (traced) {
+        char text[96];
+        std::snprintf(text, sizeof(text), "ECALL: %.1f us, %s", ecall.count() / 1e3, statusName(reply.status));
+        trace::detail(mName, text);
+    }
+
+    switch (reply.status) {
+        case GW_OK:
+            break;
+        case GW_IGNORED:
+            ++mIgnored;
+            if (traced) {
+                trace::detail(mName, "the enclave refused it: nothing for the cloud"); // its reason: the enclave's check
+            }
+            return;
+        case GW_ERR_NOT_IMPLEMENTED:
+            if (traced) {
+                trace::detail(mName, "the Secure Marshaling is not written yet (tee.pdf step 4, Enclave/marshaling.cpp): "
+                    "nothing for the cloud");
+            }
+            return;
+        default:
+            if (traced) {
+                trace::check(mName, false, std::string("ecall_secure_marshal_ot_to_it: ") + statusName(reply.status));
+            }
+            return;
+    }
+
+    if (!mTransport.cloud) {
+        if (traced) {
+            trace::detail(mName, "IT packet = " + std::to_string(reply.payload.size()) + " B, but no cloud: dropped");
+        }
+        return;
+    }
+    if (traced) {
+        trace::detail(mName, "IT packet = " + std::to_string(reply.payload.size()) + " B -> IT queue -> cloud");
+    }
+    ItPacket it;
+    it.to = ItPacket::To::Cloud;
+    it.vehicle = packet.from;
+    it.bytes = reply.payload;
+    it.received = packet.received;
+    it.otSize = packet.bytes.size();
+    it.traced = traced;
+    mTransport.cloud(std::move(it));
+    mBenchmark.queued(packet.bytes.size(), duration_cast<nanoseconds>(Clock::now() - dequeued));
+}
 
 // ---------------------------------------------------------------------------------------------
 // RSU steps (BootstrapService, role Rsu)

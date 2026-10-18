@@ -2,6 +2,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <algorithm>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -52,6 +53,121 @@ Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::s
         });
     }
     return esaPublicKey;
+}
+
+namespace
+{
+
+constexpr auto kReassemblyTimeout = std::chrono::seconds(2);   // a piece this late is taken as lost
+
+void putUint(Bytes& out, uint32_t value, int size)
+{
+    for (int i = size - 1; i >= 0; --i) {
+        out.push_back(static_cast<uint8_t>(value >> (8 * i)));
+    }
+}
+
+void putName(Bytes& out, const std::string& name)
+{
+    if (name.size() > 255) {
+        throw std::runtime_error("node name longer than 255 bytes: " + name);
+    }
+    out.push_back(static_cast<uint8_t>(name.size()));
+    out.insert(out.end(), name.begin(), name.end());
+}
+
+} // namespace
+
+size_t sendData(RawSocket& link, const std::string& from, const std::string& to, const Bytes& packet)
+{
+    static uint32_t nextId = std::random_device()();     // per process: a restarted sender does not collide
+
+    Bytes header;
+    putName(header, from);
+    putName(header, to);
+    const size_t room = kMaxFrameData - 1 - header.size() - 8; // kind, header, id, index, count
+    const size_t count = std::max<size_t>(1, (packet.size() + room - 1) / room);
+    if (count > 0xFFFF) {
+        throw std::runtime_error("data packet too large for the fragment header");
+    }
+
+    const uint32_t id = nextId++;
+    for (size_t index = 0; index < count; ++index) {
+        Bytes body = header;
+        putUint(body, id, 4);
+        putUint(body, static_cast<uint32_t>(index), 2);
+        putUint(body, static_cast<uint32_t>(count), 2);
+        const size_t start = index * room;
+        const size_t end = std::min(packet.size(), start + room);
+        body.insert(body.end(), packet.begin() + start, packet.begin() + end);
+        sendFrame(link, FrameKind::Data_Fragment, body);
+    }
+    return count;
+}
+
+std::optional<Reassembler::Packet> Reassembler::add(const Bytes& body)
+{
+    const auto now = std::chrono::steady_clock::now();
+    for (auto partial = mPartials.begin(); partial != mPartials.end();) {
+        if (now - partial->second.started > kReassemblyTimeout) {
+            partial = mPartials.erase(partial);
+            ++mDropped;
+        } else {
+            ++partial;
+        }
+    }
+
+    // len | from | len | to | id (4) | index (2) | count (2) | piece
+    size_t pos = 0;
+    auto name = [&]() -> std::optional<std::string> {
+        if (pos >= body.size() || body.size() - pos - 1 < body[pos]) {
+            return std::nullopt;
+        }
+        std::string text(body.begin() + pos + 1, body.begin() + pos + 1 + body[pos]);
+        pos += 1 + body[pos];
+        return text;
+    };
+    const auto from = name();
+    const auto to = name();
+    if (!from || !to || body.size() - pos < 8) {
+        return std::nullopt; // not a fragment of ours (another program on the link)
+    }
+    auto uint = [&](int size) {
+        uint32_t value = 0;
+        for (int i = 0; i < size; ++i) {
+            value = (value << 8) | body[pos++];
+        }
+        return value;
+    };
+    const uint32_t id = uint(4);
+    const size_t index = uint(2);
+    const size_t count = uint(2);
+    if (count == 0 || index >= count) {
+        return std::nullopt;
+    }
+
+    Partial& partial = mPartials[{ *from, id }];
+    if (partial.pieces.empty()) {
+        partial.to = *to;
+        partial.pieces.resize(count);
+        partial.have.resize(count);
+        partial.started = now;
+    }
+    if (partial.pieces.size() != count || partial.have[index]) {
+        return std::nullopt; // inconsistent or repeated piece
+    }
+    partial.pieces[index].assign(body.begin() + pos, body.end());
+    partial.have[index] = true;
+    if (++partial.received < count) {
+        return std::nullopt;
+    }
+
+    Packet packet{ *from, partial.to, {} };
+    for (const Bytes& piece : partial.pieces) {
+        packet.bytes.insert(packet.bytes.end(), piece.begin(), piece.end());
+    }
+    mPartials.erase({ *from, id });
+    return packet;
 }
 
 void signalReady(int fd)

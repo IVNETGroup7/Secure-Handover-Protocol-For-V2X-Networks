@@ -17,6 +17,10 @@
 constexpr uint16_t kRadioEtherType = 0x88B5;     // vehicle <-> RSU (radio)
 constexpr uint16_t kBackhaulEtherType = 0x88B6;  // RSU <-> ESA (HTTPS session)
 
+// most data one frame carries: the Ethernet payload of the usual MTU (1500) minus len(data), so the frames
+// also fit a real (or virtual) NIC; larger packets go in fragments (Link.h)
+constexpr size_t kMaxFrameData = 1500 - 2;
+
 class RawSocket
 {
     public:

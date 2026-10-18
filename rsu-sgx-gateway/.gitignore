@@ -11,6 +11,7 @@ Enclave/Enclave_t.*
 Enclave/Enclave_private.pem
 # runtime
 gateway.sealed
+cloud.crt
 build/
 *.d
 .caps_*

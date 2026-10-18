@@ -1,15 +1,21 @@
 #ifndef PACKET_MANAGER_H_
 #define PACKET_MANAGER_H_
 
-// Packet Manager (Non-Secure World): the RSU side of the bootstrap with the secrets moved into the enclave.
-//   here (no secrets): relay of the Activation_Request to the ESA, PTP (master), routing of every reply
-//   in the enclave, through the ECALLs of Enclave.edl: ECDH, OTP search, Auth_Granted, Active_02 (Enclave/control.cpp)
+// Packet Manager (Non-Secure World, Fig. 5 of the paper): takes the packets of the OT queue and, by their
+// header (tee.pdf step 3.3), hands them to the enclave
+//   bootstrap messages   the RSU side of the bootstrap with the secrets moved into the enclave
+//                        here (no secrets): relay of the Activation_Request to the ESA, PTP (master), routing
+//                        in the enclave (Enclave/control.cpp): ECDH, OTP search, Auth_Granted, Active_02
+//   SmartData            ecall_secure_marshal_ot_to_it (Enclave/marshaling.cpp): what it returns goes into the
+//                        IT queue, for the cloud
 // It never sees the keys, only what an ECALL copies out.
 
 #include "BootstrapMsg.h"
+#include "benchmark.h"
 #include "packet_queue.h"
 #include <sgx_eid.h>
 #include <functional>
+#include <set>
 #include <string>
 
 // what an ECALL gave back: status (gateway.h) and, for GW_OK, the packet to send and its BootstrapType
@@ -28,12 +34,15 @@ class PacketManager
         {
             std::function<void(const BootstrapMsg&)> radio;     // to the vehicles
             std::function<void(const BootstrapMsg&)> https;     // to the ESA (pre-established HTTPS session)
+            std::function<void(ItPacket)> cloud;                // marshaled SmartData, to the cloud (IT queue)
         };
 
         PacketManager(sgx_enclave_id_t eid, std::string name) : mEid(eid), mName(std::move(name)) {}
         void setTransport(Transport transport) { mTransport = std::move(transport); }
         const std::string& name() const { return mName; }
 
+        // a packet of the OT queue: bootstrap message or SmartData, by its kind
+        void onOtPacket(const OtPacket&);
         // incoming bootstrap messages: over the radio (filtered by destination) or over HTTPS (from the ESA)
         void onRadio(const BootstrapMsg&);
         void onHttps(const BootstrapMsg&);
@@ -46,9 +55,11 @@ class PacketManager
         Reply marshal(const Bytes& otPacket, uint64_t ptpTimeNs);
 
         int ignored() const { return mIgnored; }    // messages the enclave refused (a validation failed)
+        Benchmark& benchmark() { return mBenchmark; }
 
     private:
         void enclaveStep(const char* step, const BootstrapMsg& received);
+        void onSmartData(const OtPacket&);
         void send(int type, const std::string& destination, int seqNum, int ackNum, const std::string& vehicle,
             const Bytes& payload);
 
@@ -56,6 +67,8 @@ class PacketManager
         std::string mName;
         Transport mTransport;
         int mIgnored = 0;
+        Benchmark mBenchmark;
+        std::set<size_t> mTracedSizes;      // SmartData: the first packet of each size is traced, the others counted
 };
 
 // "GW_OK", "GW_ERR_NOT_IMPLEMENTED"... (gateway.h)

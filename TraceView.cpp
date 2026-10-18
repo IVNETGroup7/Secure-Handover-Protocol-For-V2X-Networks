@@ -57,10 +57,11 @@ std::vector<std::string> wrap(const std::string& text, size_t width)
     return lines;
 }
 
-// lane of a node in the diagram: vehicles, RSUs, the ESA, the user
+// lane of a node in the diagram: vehicles, RSUs, the ESA, the cloud, the user
 int laneKind(const std::string& node)
 {
-    if (node == "user") return 3;
+    if (node == "user") return 4;
+    if (node == "cloud") return 3;
     if (node == "esa") return 2;
     if (node.rfind("rsu", 0) == 0) return 1;
     return 0;
@@ -229,6 +230,7 @@ void TraceView::render(std::ostream& out) const
     std::map<size_t, size_t> sendOf; // step index -> send index
     std::set<size_t> received;       // send indexes some step reacted to
     std::map<std::string, std::vector<std::string>> lastTrigger; // node -> { onType, from, vehicle }
+    std::map<std::string, size_t> lastStart;    // node -> index where its last trigger started (step or send)
     std::set<size_t> subSteps;       // steps run on the same message as the step before them (e.g. PTP -> PTPSync)
     for (size_t i = 0; i < events.size(); ++i) {
         const Event& event = events[i];
@@ -236,19 +238,29 @@ void TraceView::render(std::ostream& out) const
             continue;
         }
         const std::vector<std::string> trigger{ field(event, 1), field(event, 2), field(event, 3) };
-        if (lastTrigger[event.node] == trigger) {
-            subSteps.insert(i);
-            continue;
-        }
-        lastTrigger[event.node] = trigger;
-        for (size_t j = i; j-- > 0;) {
+        const bool sameTrigger = lastTrigger[event.node] == trigger;
+        // a new message of that type from that sender (sent after the last one this node reacted to) opens a
+        // block even with the same trigger (e.g. one SmartData after another); otherwise it is a sub-step
+        const size_t floor = sameTrigger ? lastStart[event.node] + 1 : 0;
+        bool found = false;
+        for (size_t j = i; j-- > floor;) {
             const Event& send = events[j];
             if (send.kind == "send" && !received.count(j) && field(send, 0) == trigger[0] && send.node == trigger[1]) {
                 sendOf[i] = j;
                 received.insert(j);
+                lastStart[event.node] = j;
+                found = true;
                 break;
             }
         }
+        if (!found && sameTrigger) {
+            subSteps.insert(i);
+            continue;
+        }
+        if (!found) {
+            lastStart[event.node] = i;
+        }
+        lastTrigger[event.node] = trigger;
     }
 
     int block = 0;

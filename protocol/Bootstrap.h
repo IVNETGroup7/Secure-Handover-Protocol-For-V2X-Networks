@@ -17,6 +17,7 @@ struct BootstrapResult
     std::vector<uint8_t> kDg;   // K_dg: ECDH key shared by the vehicle and the RSU
     std::vector<uint8_t> kG;    // K_g: group key (AES-128-GCM) for vehicle <-> vehicle messages
     std::vector<uint8_t> kDe;   // K_de: vehicle <-> ESA key (vehicle only)
+    std::vector<uint8_t> authD; // Auth_d: the vehicle's token, carried by its data messages (vehicle only)
     // add protocol outputs here (token, keys, certificates...)
 };
 

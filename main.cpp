@@ -1,18 +1,3 @@
-// Secure bootstrap between 3 processes (ESA, RSU, vehicle) over raw Ethernet sockets (needs CAP_NET_RAW)
-//
-//   ./bootstrap [--pretty | --view [--color]] [--rsu-exec <program>]
-//                                forks ESA, RSU and vehicle (in this order) and waits for the vehicle's bootstrap;
-//                                --pretty: a bar with the component's name whenever the speaker changes
-//                                --view: at the end, the protocol as a sequence diagram (TraceView.h)
-//                                --rsu-exec: the RSU is that program instead (e.g. rsu-sgx-gateway/app, the SGX
-//                                gateway), run as "<program> rsu --iface lo --ready-fd <fd> [--events]"
-//   ./bootstrap esa     [--iface lo]
-//   ./bootstrap rsu     [--iface lo] [--name rsu[0]] [--seed 2]
-//   ./bootstrap vehicle [--iface lo] [--name node[0]] [--seed 1] [--clock-offset 0] [--timeout 5]
-//   (separately: start the ESA, then the RSU, then the vehicles; the servers stop on Ctrl+C)
-//
-// links and frames: net/Link.h
-
 #include "Bootstrap.h"
 #include "BootstrapMsg.h"
 #include "BootstrapService.h"

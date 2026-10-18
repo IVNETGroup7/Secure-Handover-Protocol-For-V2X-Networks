@@ -106,6 +106,19 @@ if [ ! -f "$LOCAL_IMG" ]; then
 fi
 
 echo "=== Step 5: Preparing VM Disk and Cloud-Init Configuration ==="
+# An existing VM is kept: recreating it erases its disk (SGX SDK, SGX-SSL and everything else installed in it).
+# While it runs, libvirt hands its disk to libvirt-qemu, so it must also be stopped before it can be replaced.
+if virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
+    if [ "$RECREATE" != "1" ]; then
+        echo "VM '$VM_NAME' already exists: nothing to do."
+        echo "  start it:      virsh -c qemu:///system start $VM_NAME"
+        echo "  recreate it:   RECREATE=1 $0   (erases the VM's disk)"
+        exit 0
+    fi
+    virsh destroy "$VM_NAME" 2>/dev/null || true
+    virsh undefine "$VM_NAME"
+fi
+rm -f "$DISK_PATH"   # the folder is ours, so this works even when libvirt owns the file
 qemu-img create -f qcow2 -F qcow2 -b "$LOCAL_IMG" "$DISK_PATH" "$DISK_SIZE"
 
 # Guest-side script: installs Intel SGX SDK for SIMULATION mode only
@@ -201,11 +214,6 @@ rm -f "$CLOUD_ISO"
 genisoimage -output "$CLOUD_ISO" -volid cidata -joliet -rock "$IMG_DIR/user-data" "$IMG_DIR/meta-data" >/dev/null
 
 echo "=== Step 6: Defining and Launching VM via libvirt ==="
-if virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
-    virsh destroy "$VM_NAME" || true
-    virsh undefine "$VM_NAME" || true
-fi
-
 virt-install \
     --name "$VM_NAME" \
     --memory "$VM_RAM" \

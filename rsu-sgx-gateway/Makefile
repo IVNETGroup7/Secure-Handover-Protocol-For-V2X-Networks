@@ -13,12 +13,26 @@
 #   make SGX_MODE=HW    on a CPU with SGX (driver + PSW installed)
 #
 # Needs the Intel SGX SDK (/opt/intel/sgxsdk) and Intel SGX-SSL (/opt/intel/sgxssl); setup-vm.sh installs both
-# in the VM. Based on the SDK's SampleCode/SampleEnclave/Makefile and SGX-SSL's Linux/sgx/test_app/sgx_{t,u}.mk.
+# in the VM. Without the SDK on this machine, make runs in that VM (vm-make.sh): same targets, same output.
+# Based on the SDK's SampleCode/SampleEnclave/Makefile and SGX-SSL's Linux/sgx/test_app/sgx_{t,u}.mk.
 
 SGX_SDK ?= /opt/intel/sgxsdk
 SGXSSL ?= /opt/intel/sgxssl
 SGX_MODE ?= SIM
 SGX_DEBUG ?= 1
+
+ifeq ($(wildcard $(SGX_SDK)/buildenv.mk),)
+
+######## no SDK here: the same make in the VM ########
+# one run of vm-make.sh with all the goals (the first goal runs it, the others have nothing left to do)
+VM_GOALS := $(or $(MAKECMDGOALS),all)
+.PHONY: $(VM_GOALS)
+$(firstword $(VM_GOALS)):
+	@$(CURDIR)/vm-make.sh $(MAKECMDGOALS) SGX_MODE=$(SGX_MODE) SGX_DEBUG=$(SGX_DEBUG)
+$(wordlist 2,$(words $(VM_GOALS)),$(VM_GOALS)):
+	@:
+
+else
 
 include $(SGX_SDK)/buildenv.mk
 
@@ -192,3 +206,5 @@ clean:
 
 # header dependencies (-MMD)
 -include $(App_Objects:.o=.d) $(Enclave_Objects:.o=.d)
+
+endif

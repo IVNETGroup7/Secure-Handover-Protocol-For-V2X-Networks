@@ -93,12 +93,6 @@ void PacketManager::onSmartData(const OtPacket& packet)
                 trace::detail(mName, "the enclave refused it: nothing for the cloud"); // its reason: the enclave's check
             }
             return;
-        case GW_ERR_NOT_IMPLEMENTED:
-            if (traced) {
-                trace::detail(mName, "the Secure Marshaling is not written yet (tee.pdf step 4, Enclave/marshaling.cpp): "
-                    "nothing for the cloud");
-            }
-            return;
         default:
             if (traced) {
                 trace::check(mName, false, std::string("ecall_secure_marshal_ot_to_it: ") + statusName(reply.status));
@@ -295,7 +289,6 @@ const char* statusName(int status)
         case GW_ERR_BUFFER: return "GW_ERR_BUFFER";
         case GW_ERR_CRYPTO: return "GW_ERR_CRYPTO";
         case GW_ERR_STATE: return "GW_ERR_STATE";
-        case GW_ERR_NOT_IMPLEMENTED: return "GW_ERR_NOT_IMPLEMENTED";
         default: return "?";
     }
 }

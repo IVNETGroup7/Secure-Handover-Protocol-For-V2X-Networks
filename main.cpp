@@ -308,9 +308,9 @@ std::string preview(const std::string& body)
 }
 
 // the cloud of Fig. 5: an HTTPS server that receives the marshaled SmartData (POST /smartdata), as the RSU's
-// enclave made it: HTTPS Header | AES(K_eg, JSON). Its key X_c and certificate CY_c are fresh per run; the
+// enclave made it: HTTPS Header | AES(K_eg, JSON). Its key X_e and certificate CY_e are fresh per run; the
 // certificate goes to --cert-out, which the RSU is configured with (its enclave pins it). Each session key Y_s
-// of the header gives K_eg = SHA256(ECDH(X_c, Y_s)) (common/SmartData.h), which opens the body.
+// of the header gives K_eg = SHA256(ECDH(X_e, Y_s)) (common/SmartData.h), which opens the body.
 // The first request of each size is printed, the others only counted
 int runCloud(const Options& options)
 {
@@ -327,7 +327,7 @@ int runCloud(const Options& options)
         }
     }
     HttpsServer server(address, port, identity);
-    std::cout << "[cloud] HTTPS on " << address << ":" << port << ", self-signed P-256 certificate CY_c in "
+    std::cout << "[cloud] HTTPS on " << address << ":" << port << ", self-signed P-256 certificate CY_e in "
         << certificate << std::endl;
     signalReady(options);
 
@@ -371,7 +371,7 @@ int runCloud(const Options& options)
                     + header("Content-Type") + ", " + header("X-Encrypted"));
             }
 
-            // K_eg of this session: SHA256(ECDH(X_c, Y_s)), derived once per Y_s
+            // K_eg of this session: SHA256(ECDH(X_e, Y_s)), derived once per Y_s
             const std::string ys = header(kSessionKeyHeader);
             auto session = sessions.find(ys);
             if (session == sessions.end()) {
@@ -387,7 +387,7 @@ int runCloud(const Options& options)
                     return refuse(std::string("bad session key: ") + e.what());
                 }
                 trace::detail("cloud", "HTTPS session #" + std::to_string(session->second.number) + ": Y_s = "
-                    + ys.substr(36, 16) + "..., K_eg = SHA256(ECDH(X_c, Y_s))");
+                    + ys.substr(36, 16) + "..., K_eg = SHA256(ECDH(X_e, Y_s))");
             }
 
             const auto json = aesGcmDecrypt(session->second.kEg, Bytes(request.body.begin(), request.body.end()));

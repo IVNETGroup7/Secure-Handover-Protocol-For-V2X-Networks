@@ -73,7 +73,7 @@ class PacketManager
         std::set<size_t> mTracedSizes;      // SmartData: the first packet of each size is traced, the others counted
 };
 
-// "GW_OK", "GW_ERR_NOT_IMPLEMENTED"... (gateway.h)
+// "GW_OK", "GW_IGNORED"... (gateway.h)
 const char* statusName(int status);
 
 #endif /* PACKET_MANAGER_H_ */

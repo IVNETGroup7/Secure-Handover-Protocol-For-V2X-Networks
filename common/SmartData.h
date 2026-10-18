@@ -9,10 +9,11 @@
 //              this vehicle (K_g is shared by every vehicle of the group); t as in the bootstrap (slots of
 //              kOtpTimeStep s of the PTP-synchronized clock)
 //   IT packet  HTTPS Header | AES(K_eg, JSON)   (Fig. 5): built in the enclave, for the cloud
-//              K_eg = SHA256(ECDH(X_s, Y_c)): the key of the HTTPS session of Fig. 5, between the enclave and the
+//              K_eg = SHA256(ECDH(X_s, Y_e)): the key of the HTTPS session of Fig. 5, between the enclave and the
 //              cloud; X_s / Y_s: the enclave's key pair of that session (Y_s goes in the header, kSessionKeyHeader),
-//              Y_c: the public key of the cloud's certificate (pinned in the enclave). The cloud derives the same
-//              K_eg = SHA256(ECDH(X_c, Y_s)); the body is AES-256-GCM(K_eg, JSON)
+//              Y_e: the public key of the cloud's certificate CY_e (Fig. 5 names the HTTPS Session { CY_e, K_eg };
+//              here its other end is the cloud), pinned in the enclave. The cloud derives the same
+//              K_eg = SHA256(ECDH(X_e, Y_s)); the body is AES-256-GCM(K_eg, JSON)
 // No I/O: compiled into the vehicle, the App, the cloud and the enclave (the Secure Marshaling unpacks with it).
 //
 // encoding: integers big endian; variable fields with a 4-byte length (value goes up to 64 KB - 1)
@@ -58,7 +59,7 @@ Block dataOtp(const Bytes& kDg, const Bytes& authD, uint64_t slot, const Bytes& 
 // vehicle: the OT packet of "data", at time "nowNs" (its PTP-synchronized clock)
 DataMessage sealSmartData(const SmartData& data, const Bytes& kG, const Bytes& kDg, int64_t nowNs);
 
-// K_eg = SHA256(ECDH(own private key, peer public key)): the enclave with (X_s, Y_c), the cloud with (X_c, Y_s)
+// K_eg = SHA256(ECDH(own private key, peer public key)): the enclave with (X_s, Y_e), the cloud with (X_e, Y_s)
 Bytes computeKEg(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey);
 
 #endif /* BOOTSTRAP_SMARTDATA_H_ */

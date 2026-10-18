@@ -125,7 +125,7 @@ std::string expectedJson(const SmartData& data)
         + "\",\"Trust\":\"" + toHex(data.authD.data(), data.authD.size()) + "\"}";
 }
 
-// what the cloud does with an IT packet (HTTPS Header | AES(K_eg, JSON)): K_eg from Y_s and its own X_c,
+// what the cloud does with an IT packet (HTTPS Header | AES(K_eg, JSON)): K_eg from Y_s and its own X_e,
 // then the JSON. "ys": the session key of the header. nullopt: not such a packet, or it does not open
 std::optional<std::string> openAsCloud(const CloudIdentity& cloud, const Bytes& itPacket, std::string* ys = nullptr)
 {

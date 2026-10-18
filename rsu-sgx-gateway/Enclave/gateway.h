@@ -9,7 +9,6 @@ constexpr int GW_ERR_ARGS = -1;             // bad arguments (null pointer, empt
 constexpr int GW_ERR_BUFFER = -2;           // out buffer too small
 constexpr int GW_ERR_CRYPTO = -3;           // crypto failure (bad key, OpenSSL error)
 constexpr int GW_ERR_STATE = -4;            // gateway not initialized (ecall_init_gateway first)
-constexpr int GW_ERR_NOT_IMPLEMENTED = -5;  // skeleton: not written yet
 
 // ocall_print lines that start with these are validations (ok / failed), the rest is plain output
 constexpr const char* kCheckOk = "check:ok:";

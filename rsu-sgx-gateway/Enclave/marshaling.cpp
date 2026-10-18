@@ -9,9 +9,10 @@
 //   6. IT packet    HTTPS Header | AES(K_eg, JSON): the whole POST /smartdata, into it_https_pkt; the body is
 //                   AES-256-GCM with K_eg, the key of the HTTPS Session below. The App only sends it (inside its
 //                   own TLS, the transport) and cannot read the JSON
-// HTTPS Session (Fig. 5), here too: the cloud's certificate CY_c, pinned by ecall_init_cloud_session, and K_eg =
-// SHA256(ECDH(X_s, Y_c)) (common/SmartData.h). X_s is fresh per session and dropped once K_eg is derived; Y_s
-// goes in the header (kSessionKeyHeader) so the cloud derives the same K_eg with its X_c. A new session every
+// HTTPS Session { CY_e, K_eg } (Fig. 5), here too: CY_e, the certificate of the session's other end (the cloud),
+// pinned by ecall_init_cloud_session, and K_eg =
+// SHA256(ECDH(X_s, Y_e)) (common/SmartData.h). X_s is fresh per session and dropped once K_eg is derived; Y_s
+// goes in the header (kSessionKeyHeader) so the cloud derives the same K_eg with its X_e. A new session every
 // kMessagesPerSession packets (the paper's evaluation, Section 6.1).
 // A packet that fails 1-4 is refused (GW_IGNORED): nothing goes to the cloud.
 // Output: every failure, but only the first packet of each size when it passes (ocall_print leaves the enclave,
@@ -38,11 +39,11 @@ namespace
 
 std::set<size_t> gTraced;   // OT packet sizes already printed
 
-// HTTPS Session of Fig. 5: { CY_c, K_eg }
+// HTTPS Session of Fig. 5: { CY_e, K_eg }
 struct CloudSession
 {
     bool ready = false;
-    std::shared_ptr<EVP_PKEY> cloudKey;     // Y_c, from the pinned CY_c
+    std::shared_ptr<EVP_PKEY> cloudKey;     // Y_e, from the pinned CY_e
     std::string host;                       // Host header
     std::string gateway;                    // X-Gateway header
     Bytes kEg;                              // K_eg of the current session
@@ -53,7 +54,7 @@ struct CloudSession
 
 CloudSession gCloud;
 
-// a new session: X_s, Y_s fresh; K_eg = SHA256(ECDH(X_s, Y_c)); X_s dropped when this returns
+// a new session: X_s, Y_s fresh; K_eg = SHA256(ECDH(X_s, Y_e)); X_s dropped when this returns
 void newCloudSession()
 {
     const auto xs = newEcKey(kEcdhCurve);
@@ -65,7 +66,7 @@ void newCloudSession()
     gCloud.messages = 0;
     ++gCloud.number;
     enclavePrint("HTTPS session #" + std::to_string(gCloud.number) + " with the cloud: Y_s = " + gCloud.ys.substr(36, 16)
-        + "..., K_eg = SHA256(ECDH(X_s, Y_c)) kept in the enclave, X_s dropped");
+        + "..., K_eg = SHA256(ECDH(X_s, Y_e)) kept in the enclave, X_s dropped");
 }
 
 std::string hex(const Bytes& data)
@@ -235,7 +236,7 @@ int ecall_init_cloud_session(const uint8_t* cloud_cert_pem, size_t cert_len, con
         return GW_ERR_ARGS;
     }
     try {
-        // CY_c: a self-signed P-256 certificate (PEM), pinned: no other key will do for K_eg
+        // CY_e: a self-signed P-256 certificate (PEM), pinned: no other key will do for K_eg
         std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new_mem_buf(cloud_cert_pem, static_cast<int>(cert_len)),
             BIO_free);
         std::unique_ptr<X509, decltype(&X509_free)> cert(bio ? PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr)
@@ -262,7 +263,7 @@ int ecall_init_cloud_session(const uint8_t* cloud_cert_pem, size_t cert_len, con
         gCloud.ready = true;
         char subject[128] = "?";
         X509_NAME_oneline(X509_get_subject_name(cert.get()), subject, sizeof(subject));
-        enclaveCheck(true, std::string("HTTPS session: CY_c of the cloud pinned (") + subject
+        enclaveCheck(true, std::string("HTTPS session: CY_e of the cloud pinned (") + subject
             + ", P-256, self-signature valid)");
         newCloudSession();
         return GW_OK;

@@ -73,7 +73,7 @@ enclave {
         );
 
         /* 4. Secure Marshaling (data path after the bootstrap, step 4 of tee.pdf):
-         *    OT packet Message(AES(K_G, Data), Auth_d, OTP_dt) -> OTP check -> decrypt -> JSON -> encrypted
+         *    OT packet Message(AES(K_G, Data), Auth_d, OTP_dt) -> decrypt -> OTP check -> JSON -> encrypted
          *    HTTPS packet for the IT queue (to the cloud).
          *    ot_pkt: the OT packet as common/SmartData.h packs it (packDataMessage), reassembled by the App.
          *    it_https_pkt: HTTPS Header | AES(K_eg, JSON) (Fig. 5): the whole POST /smartdata request, made here
@@ -103,9 +103,10 @@ enclave {
             [out] size_t* yg_len
         );
 
-        /* 7. HTTPS Session of the Secure Marshaling (Fig. 5): the cloud's certificate CY_c (PEM), configured
-         *    before deployment, pinned here. Its key Y_c is the one the session key is agreed with:
-         *    K_eg = SHA256(ECDH(X_s, Y_c)) (common/SmartData.h), X_s fresh per session and dropped once K_eg is
+        /* 7. HTTPS Session { CY_e, K_eg } of the Secure Marshaling (Fig. 5): CY_e, the certificate (PEM) of the
+         *    session's other end, the cloud, configured before deployment, pinned here. Its key Y_e is the one
+         *    the session key is agreed with:
+         *    K_eg = SHA256(ECDH(X_s, Y_e)) (common/SmartData.h), X_s fresh per session and dropped once K_eg is
          *    derived; K_eg never leaves the enclave. host: the cloud's address (Host header); gateway: this RSU's
          *    name (X-Gateway header) */
         public int ecall_init_cloud_session(

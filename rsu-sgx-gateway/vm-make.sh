@@ -14,6 +14,9 @@ VM_DIR=${VM_DIR:-v2x}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export LIBVIRT_DEFAULT_URI=qemu:///system
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new)
+for key in "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_ed25519"; do
+    [ -f "$key" ] && SSH+=(-i "$key")
+done
 
 if ! virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
     echo "error: no Intel SGX SDK here and no VM '$VM_NAME': create it with ../setup-vm.sh" >&2

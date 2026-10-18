@@ -207,6 +207,7 @@ wget -q "https://github.com/openssl/openssl/releases/download/$OPENSSL_VER/$OPEN
 echo "$OPENSSL_SHA256  /tmp/intel-sgx-ssl/openssl_source/$OPENSSL_VER.tar.gz" | sha256sum -c -
 make -C /tmp/intel-sgx-ssl/Linux all test SGX_MODE=SIM
 make -C /tmp/intel-sgx-ssl/Linux install
+chown -R ubuntu:ubuntu /home/ubuntu || true
 touch /var/log/sgx-sdk-installed
 GUEST
 
@@ -216,7 +217,7 @@ cat <<EOF > "$IMG_DIR/user-data"
 users:
   - name: ubuntu
     ssh_authorized_keys:
-      - $(cat ~/.ssh/id_rsa.pub 2>/dev/null || cat ~/.ssh/id_ed25519.pub 2>/dev/null || echo "")
+$(for k in ~/.ssh/id_rsa.pub ~/.ssh/id_ed25519.pub; do [ -f "$k" ] && echo "      - $(cat "$k")"; done)
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
     shell: /bin/bash
     lock_passwd: false

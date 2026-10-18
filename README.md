@@ -28,8 +28,26 @@
 ### Usage
 
 ```bash
-./setup-vm.sh
+./setup-vm.sh              # first run: builds the VM; later runs: just start/reuse it
+./setup-vm.sh --recreate   # DESTROY the VM and build a fresh one (asks for confirmation)
 ```
+
+The VM is **persistent**: everything inside it survives shutdowns and reboots. Running the
+script again without `--recreate` only starts the existing VM and prints its IP.
+
+### Shared project folder
+
+This repository (the folder containing `setup-vm.sh`) is shared into the VM via **virtiofs**
+and mounted at `/home/ubuntu/project`. Edit code on the host with your usual editor, then
+build and test inside the VM:
+
+```bash
+ssh ubuntu@<IP>
+cd ~/project
+make SGX_MODE=SIM
+```
+
+Changes are live in both directions, and your code is safe even if the VM is recreated.
 
 You'll be asked for your `sudo` password. On success you'll see:
 
@@ -39,8 +57,8 @@ SGX SDK (simulation mode) installed and SampleEnclave test passed.
 ```
 
 > [!WARNING]
-> Re-running the script **destroys and recreates** the VM (fresh disk). Don't keep
-> un-pushed work only inside the VM.
+> `--recreate` **destroys** the VM disk. Keep your work in `~/project` (the shared repo),
+> not elsewhere in the VM.
 
 > [!NOTE]
 > After the first run, log out and back in so the `libvirt` group membership takes effect.
@@ -112,3 +130,4 @@ Logs:
 | `Host key verification failed` | `ssh-keygen -R <IP>` then SSH again (answer `yes`) |
 | `poweroff`: *Interactive authentication required* | Use `sudo poweroff` |
 | Script errors with strange syntax errors | Don't edit `setup-vm.sh` while it's running |
+| `~/project` is empty in the VM | VM was created before virtiofs support: run `./setup-vm.sh --recreate`. Otherwise try `sudo mount -a` |

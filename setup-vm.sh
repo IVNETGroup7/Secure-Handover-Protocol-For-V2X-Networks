@@ -11,6 +11,24 @@ IMG_DIR="$HOME/.libvirt/images"
 DISK_PATH="$IMG_DIR/$VM_NAME.qcow2"
 CLOUD_ISO="$IMG_DIR/seed.iso"
 
+# Host directory shared into the VM (via virtiofs) at /home/ubuntu/project
+SHARE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHARE_TAG="project"
+GUEST_MOUNT="/home/ubuntu/project"
+
+RECREATE=false
+for arg in "$@"; do
+    case "$arg" in
+        --recreate) RECREATE=true ;;
+        -h|--help)
+            echo "Usage: $0 [--recreate]"
+            echo "  (default)   Reuse the existing VM if it exists (just start it)."
+            echo "  --recreate  DESTROY the existing VM and its disk, then build a fresh one."
+            exit 0 ;;
+        *) echo "Unknown option: $arg (see --help)"; exit 1 ;;
+    esac
+done
+
 echo "=== Step 1: Detecting Linux Distribution ==="
 if [ -f /etc/os-release ]; then
     . /etc/os-release
@@ -30,14 +48,14 @@ case "$DISTRO" in
         sudo apt-get install -y \
             build-essential cmake libssl-dev git wget curl \
             ocaml ocamlbuild automake autoconf libtool \
-            qemu-kvm qemu-utils libvirt-daemon-system libvirt-clients virtinst genisoimage
+            qemu-kvm qemu-utils libvirt-daemon-system libvirt-clients virtinst genisoimage virtiofsd
         ;;
 
     fedora|rhel|centos)
         sudo dnf install -y \
             gcc gcc-c++ make cmake openssl-devel wget curl \
             ocaml ocamlbuild autoconf automake libtool \
-            qemu-kvm libvirt virt-install genisoimage
+            qemu-kvm libvirt virt-install genisoimage virtiofsd
         ;;
 
     arch|manjaro|endeavouros)
@@ -45,7 +63,7 @@ case "$DISTRO" in
         sudo pacman -S --needed --noconfirm \
             base-devel cmake openssl git wget curl \
             ocaml ocamlbuild autoconf automake libtool \
-            qemu-full libvirt virt-install cdrtools dnsmasq
+            qemu-full libvirt virt-install cdrtools dnsmasq virtiofsd
         ;;
 
     *)
@@ -86,6 +104,30 @@ mkdir -p "$IMG_DIR"
 # Allow libvirt-qemu to traverse $HOME to reach the disk images
 if command -v setfacl >/dev/null 2>&1; then
     setfacl -m u:libvirt-qemu:x "$HOME" 2>/dev/null || setfacl -m u:qemu:x "$HOME" 2>/dev/null || true
+fi
+
+# Reuse the existing VM unless --recreate was given (keeps all work inside it)
+if virsh dominfo "$VM_NAME" >/dev/null 2>&1 && [ "$RECREATE" = false ]; then
+    echo "=== VM '$VM_NAME' already exists: reusing it (use --recreate to rebuild from scratch) ==="
+    if ! virsh domstate "$VM_NAME" | grep -q running; then
+        virsh start "$VM_NAME"
+    fi
+    printf 'Waiting for IP'
+    for _ in $(seq 1 30); do
+        VM_IP=$(virsh domifaddr "$VM_NAME" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}')
+        [ -n "$VM_IP" ] && break
+        printf '.'; sleep 2
+    done
+    echo
+    echo "VM is running. IP: ${VM_IP:-unknown}"
+    echo "SSH: ssh ubuntu@${VM_IP:-<VM-IP>}   (repo mounted at $GUEST_MOUNT)"
+    exit 0
+fi
+
+if [ "$RECREATE" = true ] && virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
+    echo "WARNING: --recreate will DELETE '$VM_NAME' and everything inside it (files in $SHARE_DIR are safe)."
+    read -r -p "Type 'yes' to continue: " CONFIRM
+    [ "$CONFIRM" = "yes" ] || { echo "Aborted."; exit 1; }
 fi
 
 echo "=== Step 4: Downloading official Ubuntu 24.04 Cloud Image ==="
@@ -163,6 +205,9 @@ output:
   all: ">> /var/log/cloud-init-output.log"
 bootcmd:
   - [ sh, -c, "echo 3 > /proc/sys/kernel/printk" ]
+# Mount the host repo shared via virtiofs
+mounts:
+  - [ $SHARE_TAG, $GUEST_MOUNT, virtiofs, "defaults,nofail", "0", "0" ]
 # Don't dump SSH host keys/fingerprints to the console
 ssh:
   emit_keys_to_console: false
@@ -179,7 +224,7 @@ genisoimage -output "$CLOUD_ISO" -volid cidata -joliet -rock "$IMG_DIR/user-data
 
 echo "=== Step 6: Defining and Launching VM via libvirt ==="
 if virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
-    virsh destroy "$VM_NAME" || true
+    virsh destroy "$VM_NAME" 2>/dev/null || true
     virsh undefine "$VM_NAME" || true
 fi
 
@@ -191,6 +236,8 @@ virt-install \
     --disk path="$CLOUD_ISO",device=cdrom \
     --os-variant ubuntu24.04 \
     --network network=default,model=virtio \
+    --memorybacking source.type=memfd,access.mode=shared \
+    --filesystem source="$SHARE_DIR",target="$SHARE_TAG",driver.type=virtiofs \
     --graphics none \
     --noautoconsole \
     --import
@@ -217,7 +264,9 @@ else
     echo "WARNING: SGX SDK install did not complete. See /var/log/sgx-sdk-install.log in the VM."
 fi
 
+VM_IP=$(virsh domifaddr "$VM_NAME" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}')
 echo "=== Success! Environment configured and VM '$VM_NAME' is running ==="
-echo "To check IP address: sudo virsh domifaddr $VM_NAME"
-echo "To attach to console: virsh console $VM_NAME"
-echo "To SSH into VM (default login: ubuntu / ubuntu): ssh ubuntu@<VM-IP>"
+echo "IP address: ${VM_IP:-unknown}  (virsh domifaddr $VM_NAME)"
+echo "SSH (login: ubuntu / ubuntu): ssh ubuntu@${VM_IP:-<VM-IP>}"
+echo "Host repo $SHARE_DIR is mounted in the VM at $GUEST_MOUNT"
+echo "Console: virsh console $VM_NAME  (exit with Ctrl + ])"

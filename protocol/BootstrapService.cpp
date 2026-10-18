@@ -14,8 +14,9 @@ const char* stageName(int type)
 {
     static const char* names[] = { "Activation_Request", "HTTPS_Session", "Activation_Token", "PTP",
         "ECDH_Request", "ECDH_Response", "Auth_Request", "Save_RSU", "Auth_Granted", "Save_Vehicle",
-        "Active_01", "Active_02", "Active_03", "PTP_Sync", "PTP_Delay_Request", "PTP_Delay_Response" };
-    return (type >= 0 && type < 16) ? names[type] : "?";
+        "Active_01", "Active_02", "Active_03", "PTP_Sync", "PTP_Delay_Request", "PTP_Delay_Response",
+        "Forwarding_Notice", "Handover_Command", "Forwarding_Request", "Forwarding_Granted" };
+    return (type >= 0 && type < 20) ? names[type] : "?";
 }
 
 // OTP_dt = Poly1305(K_dg, Auth_d xor t, m), the same on both sides: the vehicle (AuthRequest) and the RSU (SaveRSU)
@@ -170,6 +171,8 @@ void BootstrapService::dispatch(const BootstrapMsg& msg)
         case Auth_Request:       SaveRSU(msg); break;            // RSU
         case Auth_Granted:       SaveVehicle(msg); break;        // vehicle
         case Active_01:          Active02(msg); break;           // RSU
+        case Handover_Command:   HandoverCommand(msg); break;    // vehicle
+        case Forwarding_Granted: ForwardingGranted(msg); break;  // vehicle
         default:
             // HTTPS_Session, ::PTP, Save_RSU and Save_Vehicle are never sent;
             // Active_02 (RSU -> ESA) and Active_03 (ESA -> user) never reach a vehicle or an RSU
@@ -380,7 +383,6 @@ void BootstrapService::AuthRequest(const BootstrapMsg& received)
     const Bytes kDg = ecdh(mEcdhKey.get(), publicKeyFromDer(response.publicKey).get());
     mKdg[myName()] = kDg;
     printKeep("K_dg", kDg, myName());
-    mEcdhKey.reset(); // X_d is no longer needed
 
     // 1. we must generate a OneTimePassoword (OTP_dt) 
     // OTP_dt = Poly1305(K_dg, Auth_d xor t, m)
@@ -725,6 +727,54 @@ void BootstrapService::sendBootstrap(int type, const std::string& destination, i
     stampTransmission(msg); // PTP: timestamps of the moment the message leaves
     trace::send(myName(), stageName(type), destination, msg.getVehicle(), "radio", getPayload(msg).size());
     mTransport.radio(msg);
+}
+
+void BootstrapService::HandoverCommand(const BootstrapMsg& received)
+{
+    printStep("HandoverCommand", &received);
+    const HandoverCommandPayload m = unpackHandoverCommand(getPayload(received));
+
+    // K_dh_i = Y_G_next ^ X_V[cite: 39]
+    const Bytes kDh = ecdh(mEcdhKey.get(), publicKeyFromDer(m.targetRsuPublicKey).get());
+
+    // tau is derived exactly as the source RSU did (using K_dg and the recorded t_i)
+    Block nonce{};
+    for (int i = 0; i < 8; ++i) nonce[15 - i] = static_cast<uint8_t>(mTi >> (8 * i));
+    Block tau = poly1305Aes(mKdg[myName()], nonce, otpMessage());
+
+    // KT_i = Poly1305(K_dh, K_dh xor tau)[cite: 39]
+    Block ktNonce{};
+    for(int i=0; i<16; ++i) ktNonce[i] = kDh[i] ^ tau[i];
+    const Block kt = poly1305Aes(kDh, ktNonce, otpMessage());
+    mKt = Bytes(kt.begin(), kt.end());
+
+    Bytes tauBytes(tau.begin(), tau.end());
+    Sha256 auth = sha256(tauBytes);
+
+    ForwardingRequestPayload req;
+    req.type = Forwarding_Request;
+    req.auth = auth;
+    req.otp = poly1305Aes(mKt, otpNonce(Bytes(auth.begin(), auth.end()), otpSlot(localClock())), otpMessage());
+
+    sendBootstrap(Forwarding_Request, "target_rsu", received.getAckNum(), received.getSeqNum() + 1, "", pack(req));
+}
+
+void BootstrapService::ForwardingGranted(const BootstrapMsg& received)
+{
+    printStep("ForwardingGranted", &received);
+    
+    // D_KT_i(E_KT_i(M))[cite: 39]
+    const auto plain = aesGcmDecrypt(mKt, getPayload(received));
+    if (!plain) {
+        printCheck(false, "Forwarding_Granted decryption failed");
+        return;
+    }
+    
+    const ForwardingGrantedPayload m = unpackForwardingGranted(*plain);
+    mGroupKey = m.kG;
+    printKeep("New K_g", mGroupKey, myName());
+    
+    // Handover complete. Vehicle resumes normal CAM operation with target RSU.
 }
 
 void BootstrapService::printStep(const char* step, const BootstrapMsg* received)

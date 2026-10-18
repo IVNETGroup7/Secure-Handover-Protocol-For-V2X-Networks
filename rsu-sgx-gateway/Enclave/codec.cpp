@@ -116,4 +116,25 @@ Active unpackActive(const Bytes& in)
     return m;
 }
 
+Bytes pack(const ForwardingGranted& m)
+{
+    Bytes out;
+    putUint(out, m.type, 1);
+    putField(out, m.nextRsuPublicKey);
+    out.insert(out.end(), m.authPrime.begin(), m.authPrime.end());
+    putField(out, m.kG);
+    out.insert(out.end(), m.otp.begin(), m.otp.end());
+    return out;
+}
+
+ForwardingRequest unpackForwardingRequest(const Bytes& in)
+{
+    Reader reader(in);
+    ForwardingRequest m;
+    m.type = static_cast<uint8_t>(reader.uint(1));
+    m.auth = reader.array<32>();
+    m.otp = reader.block();
+    return m;
+}
+
 } // namespace wire

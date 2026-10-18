@@ -81,6 +81,23 @@ enclave {
             [out, size=it_buf_max] uint8_t* it_https_pkt, size_t it_buf_max,
             [out] size_t* it_pkt_len
         );
+
+        /* 5. Secrecy Forwarding: RSU 1 triggers a handover for a session. Extracts Y_V and computes tau. */
+        public int ecall_trigger_handover(
+            [in, string] const char* session,
+            uint64_t t_i,
+            [out, size=16] uint8_t* out_tau,
+            [out, size=128] uint8_t* out_yv,
+            [out] size_t* yv_len
+        );
+
+        /* 6. Secrecy Forwarding: Target RSU 2 receives the notice from RSU 1. Pre-computes KT_i and returns its Y_G. */
+        public int ecall_receive_forwarding_notice(
+            [in, size=yv_len] const uint8_t* yv, size_t yv_len,
+            [in, size=16] const uint8_t* tau,
+            [out, size=128] uint8_t* out_yg,
+            [out] size_t* yg_len
+        );
     };
 
     untrusted {

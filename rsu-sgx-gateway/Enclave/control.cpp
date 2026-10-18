@@ -44,15 +44,24 @@ struct Activation
     Bytes authEg;       // Auth_eg
 };
 
+struct HandoverSession
+{
+    Sha256 authExpected;
+    Block kt;
+    Bytes vehiclePublicKey;
+};
+
 struct Gateway
 {
     bool ready = false;
-    Bytes gatewayCert;                              // CY_g
-    Bytes esaPublicKey;                             // CY_e
-    Bytes groupKey;                                 // K_g
-    std::map<std::string, Activation> pending;      // waiting for an OTP (searched by SaveRSU)
-    std::map<std::string, Activation> active;       // an OTP matched: bound to that session
-    std::map<std::string, Bytes> kdg;               // K_dg per session
+    Bytes gatewayCert;                                  // CY_g
+    Bytes esaPublicKey;                                 // CY_e
+    Bytes groupKey;                                     // K_g
+    std::map<std::string, Activation> pending;          // waiting for an OTP (searched by SaveRSU)
+    std::map<std::string, Activation> active;           // an OTP matched: bound to that session
+    std::map<std::string, Bytes> kdg;                   // K_dg per session
+    std::map<std::string, Bytes> yv;                    // Y_V per session (saved during ECDH)
+    std::map<std::string, HandoverSession> handovers;   // Pre-computed handovers indexed by stringified Auth expected
 };
 
 Gateway gGateway;
@@ -237,6 +246,8 @@ Bytes ecdhResponse(const std::string& session, const Bytes& in)
 {
     const wire::Ecdh request = wire::unpackEcdh(in);
 
+    gGateway.yv[session] = request.publicKey; // Save Y_V for future roaming
+
     const auto keyG = newEcKey(kEcdhCurve);  // X_g and Y_g, fresh for this vehicle
     gGateway.kdg[session] = ecdh(keyG.get(), publicKeyFromDer(request.publicKey).get());
     print(session + ": ECDH done, K_dg kept in the enclave");
@@ -325,6 +336,61 @@ std::optional<Bytes> active02(const std::string& session, const Bytes& in)
     return wire::pack(m);
 }
 
+std::optional<Bytes> forwardingRequest(const std::string& session, const Bytes& in, uint64_t now)
+{
+    const wire::ForwardingRequest request = wire::unpackForwardingRequest(in);
+    const std::string authStr(request.auth.begin(), request.auth.end());
+    auto it = gGateway.handovers.find(authStr);
+    if (it == gGateway.handovers.end()) {
+        check(false, session + ": Forwarding_Request auth matches no pending handover session: ignored");
+        return std::nullopt;
+    }
+
+    const uint64_t tNow = otpSlot(now);
+    bool otpValid = false;
+    uint64_t tMatch = 0;
+    const Bytes authBytes(request.auth.begin(), request.auth.end());
+    const Bytes ktBytes(it->second.kt.begin(), it->second.kt.end());
+    for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow; ++t) {
+        const Block candidate = poly1305Aes(ktBytes, otpNonce(authBytes, t), otpMessage());
+        if (CRYPTO_memcmp(candidate.data(), request.otp.data(), candidate.size()) == 0) {
+            otpValid = true;
+            tMatch = t;
+            break;
+        }
+    }
+    if (!otpValid) {
+        check(false, session + ": Forwarding_Request OTP failed verification: ignored");
+        return std::nullopt;
+    }
+
+    check(true, session + ": Forwarding_Request OTP verified with t = " + std::to_string(tMatch));
+
+    // Derive auth' = SHA256(auth)
+    Sha256 authPrime = sha256(authBytes);
+
+    // Fresh OTP'
+    Block otpPrime = poly1305Aes(ktBytes, otpNonce(Bytes(authPrime.begin(), authPrime.end()), tNow), otpMessage());
+
+    wire::ForwardingGranted m;
+    m.type = Forwarding_Granted;
+    m.nextRsuPublicKey = {}; // optional pre-load
+    m.authPrime = authPrime;
+    m.kG = gGateway.groupKey;
+    m.otp = otpPrime;
+
+    // Encrypted with KT_i
+    Bytes sealed = aesGcmEncrypt(ktBytes, wire::pack(m));
+
+    // Bind session
+    gGateway.kdg[session] = ktBytes;
+    gGateway.yv[session] = it->second.vehiclePublicKey;
+    gGateway.handovers.erase(it);
+
+    print(session + ": Forwarding_Granted = E_KT(M), " + std::to_string(sealed.size()) + " bytes");
+    return sealed;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -406,7 +472,8 @@ int ecall_control_handle_bootstrap(int msg_type, const char* session, const uint
     if (!session || !in_pkt || in_len == 0 || !out_pkt || out_max_len == 0) {
         return GW_ERR_ARGS;
     }
-    if (msg_type != ECDH_Request && msg_type != Auth_Request && msg_type != Active_01) {
+    
+    if (msg_type != ECDH_Request && msg_type != Auth_Request && msg_type != Active_01 && msg_type != Forwarding_Request) {
         return GW_ERR_ARGS; // not a message the gateway handles in the enclave
     }
 
@@ -414,17 +481,32 @@ int ecall_control_handle_bootstrap(int msg_type, const char* session, const uint
     try {
         const std::string name = session;
         const Bytes in(in_pkt, in_pkt + in_len);
-        if (!withinDeadline(name, current_ptp_time)) {
+    
+        if (msg_type != Forwarding_Request && !withinDeadline(name, current_ptp_time)) {
             return GW_IGNORED;
         }
 
         std::optional<Bytes> out;
         int type = -1;
         switch (msg_type) {
-            case ECDH_Request: out = ecdhResponse(name, in); type = ECDH_Response; break;
-            case Auth_Request: out = authGranted(name, in, current_ptp_time); type = Auth_Granted; break;
-            case Active_01:    out = active02(name, in); type = Active_02; break;
+            case ECDH_Request:       
+                out = ecdhResponse(name, in); 
+                type = ECDH_Response; 
+                break;
+            case Auth_Request:       
+                out = authGranted(name, in, current_ptp_time); 
+                type = Auth_Granted; 
+                break;
+            case Active_01:          
+                out = active02(name, in); 
+                type = Active_02; 
+                break;
+            case Forwarding_Request: 
+                out = forwardingRequest(name, in, current_ptp_time); 
+                type = Forwarding_Granted; 
+                break;
         }
+        
         if (!out) {
             return GW_IGNORED;
         }
@@ -439,4 +521,59 @@ int ecall_control_handle_bootstrap(int msg_type, const char* session, const uint
         print(std::string(session) + ": error: " + e.what());
         return GW_ERR_CRYPTO;
     }
+}
+
+int ecall_trigger_handover(const char* session, uint64_t t_i, uint8_t* out_tau, uint8_t* out_yv, size_t* yv_len)
+{
+    if (!gGateway.ready) return GW_ERR_STATE;
+    auto kDg = gGateway.kdg.find(session);
+    auto yV = gGateway.yv.find(session);
+    if (kDg == gGateway.kdg.end() || yV == gGateway.yv.end()) return GW_IGNORED;
+
+    // tau_{i+2} = Poly1305_AES(K_dg, padding(t_i))[cite: 39]
+    Block nonce{};
+    for (int i = 0; i < 8; ++i) nonce[15 - i] = static_cast<uint8_t>(t_i >> (8 * i));
+    Block tau = poly1305Aes(kDg->second, nonce, otpMessage());
+
+    std::memcpy(out_tau, tau.data(), 16);
+    std::memcpy(out_yv, yV->second.data(), yV->second.size());
+    *yv_len = yV->second.size();
+    return GW_OK;
+}
+
+int ecall_receive_forwarding_notice(const uint8_t* yv, size_t yv_len, const uint8_t* tau, uint8_t* out_yg, size_t* yg_len)
+{
+    if (!gGateway.ready) return GW_ERR_STATE;
+
+    Bytes vehicleKey(yv, yv + yv_len);
+    Block tauBlock;
+    std::memcpy(tauBlock.data(), tau, 16);
+
+    // 1. Generate Y_G_i+2 and X_G_i+2
+    const auto keyG = newEcKey(kEcdhCurve);
+    Bytes yg = publicKeyDer(keyG.get());
+    
+    // 2. K_dh_i = Y_V ^ X_G[cite: 39]
+    Bytes kDh = ecdh(keyG.get(), publicKeyFromDer(vehicleKey).get());
+
+    // 3. KT_i = Poly1305(K_dh_i, K_dh_i xor tau)[cite: 39]
+    Block nonce{};
+    for(int i=0; i<16; ++i) nonce[i] = kDh[i] ^ tauBlock[i];
+    Block kt = poly1305Aes(kDh, nonce, otpMessage());
+
+    // 4. auth_{i+2} = SHA256(tau)[cite: 39]
+    Bytes tauBytes(tauBlock.begin(), tauBlock.end());
+    Sha256 auth = sha256(tauBytes);
+
+    HandoverSession hs;
+    hs.authExpected = auth;
+    hs.kt = kt;
+    hs.vehiclePublicKey = vehicleKey;
+    
+    std::string authStr(auth.begin(), auth.end());
+    gGateway.handovers[authStr] = hs;
+
+    std::memcpy(out_yg, yg.data(), yg.size());
+    *yg_len = yg.size();
+    return GW_OK;
 }

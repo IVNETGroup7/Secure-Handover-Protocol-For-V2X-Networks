@@ -22,6 +22,10 @@ enum BootstrapType
     PTP_Sync = 13,
     PTP_Delay_Request = 14,
     PTP_Delay_Response = 15,
+    Forwarding_Notice = 16,
+    Handover_Command = 17,
+    Forwarding_Request = 18,
+    Forwarding_Granted = 19,
 };
 
 #endif /* BOOTSTRAP_BOOTSTRAPTYPE_H_ */

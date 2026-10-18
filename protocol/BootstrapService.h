@@ -93,6 +93,8 @@ class BootstrapService
         void SaveVehicle(const BootstrapMsg& received);
         void Active01(const BootstrapMsg& received);
         void Active02(const BootstrapMsg& received);
+        void HandoverCommand(const BootstrapMsg& received);
+        void ForwardingGranted(const BootstrapMsg& received);
         // activationToken() and active03() live in ExternalSecurityAgent
 
         // destination "esa" goes over HTTPS, anything else over the radio
@@ -131,6 +133,8 @@ class BootstrapService
         Block mOtpSent{};                           // OTP_dt sent in Auth_Request, checked in SaveVehicle
         Bytes mAuthDe;                              // Auth_de (SaveVehicle), sent in Active_01
         Bytes mKde;                                 // K_de: vehicle <-> ESA key (SaveVehicle)
+        uint64_t mTi = 0;                           // timestamp of Handover / Forwarding Notice
+        Bytes mKt;                                  // handover transient key KT_i
 
         // t_f per vehicle: after PTP the protocol must end before it (vehicle: its own entry; RSU: from the token)
         std::map<std::string, simtime_t> mDeadlines;

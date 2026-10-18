@@ -22,6 +22,15 @@ class Reader
         Block block();
         Bytes field();
         bool done() const { return mPos == mIn.size(); }
+        template <size_t N>
+        std::array<uint8_t, N> array()
+        {
+            need(N);
+            std::array<uint8_t, N> out;
+            std::copy_n(mIn.begin() + static_cast<long>(mPos), N, out.begin());
+            mPos += N;
+            return out;
+        }
 
     private:
         void need(size_t size) const;
@@ -66,13 +75,34 @@ struct Active
     Bytes authDe;
 };
 
+// { Forwarding_Request, auth, OTP }: type (1) | auth (32) | OTP (16)
+struct ForwardingRequest
+{
+    uint8_t type;
+    Sha256 auth;
+    Block otp;
+};
+
+// { Forwarding_Granted, Y_G_next, auth', K_G, OTP' }:
+//   type (1) | len(Y_G_next) (2) | Y_G_next | auth' (32) | len(K_G) (2) | K_G | OTP' (16)
+struct ForwardingGranted
+{
+    uint8_t type;
+    Bytes nextRsuPublicKey;
+    Sha256 authPrime;
+    Bytes kG;
+    Block otp;
+};
+
 Bytes pack(const Ecdh&);
 Bytes pack(const AuthGranted&);
 Bytes pack(const Active&);
+Bytes pack(const ForwardingGranted&);
 
 Ecdh unpackEcdh(const Bytes&);
 AuthRequest unpackAuthRequest(const Bytes&);
 Active unpackActive(const Bytes&);
+ForwardingRequest unpackForwardingRequest(const Bytes&);
 
 } // namespace wire
 

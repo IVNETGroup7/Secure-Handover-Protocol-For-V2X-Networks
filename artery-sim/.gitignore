@@ -1,0 +1,7 @@
+# setup_artery.sh: OMNeT++ and Artery builds
+deps/
+# runtime of the scenario
+scenario/results/
+scenario/*.sealed
+scenario/.cmdenv-log
+scenario/.qtenvrc

@@ -124,54 +124,76 @@ std::vector<std::string> describe(const Active03Payload&);
 void setPayload(BootstrapMsg&, const Bytes&);
 Bytes getPayload(const BootstrapMsg&);
 
-// M = { Forwarding_Notice, Y_V, tau } (RSU -> RSU over HTTPS)
+// Secrecy Forwarding (common/Handover.h): handover of an activated vehicle from RSU G_{i+1} to RSU G_{i+2}
+
+// M = { Forwarding_Notice, Y_V, tau_{i+2}, Auth_d }   (G_{i+1} -> G_{i+2}, in clear inside the HTTPS backhaul)
+//   type (1) | len(Y_V) (2) | Y_V | tau_{i+2} (16) | len(Auth_d) (2) | Auth_d
 struct ForwardingNoticePayload
 {
     uint8_t type;
-    Bytes vehiclePublicKey; // Y_V
-    Block tau;              // tau_{i+2}
+    Bytes vehiclePublicKey;     // Y_V: the vehicle's ECDH public key of its bootstrap (DER, curve kEcdhCurve)
+    Block tau;                  // tau_{i+2} = Poly1305(K_dg, t_i, m)
+    Bytes authD;                // Auth_d: lets G_{i+2} marshal the vehicle's SmartData afterwards
 };
 
 Bytes pack(const ForwardingNoticePayload&);
 ForwardingNoticePayload unpackForwardingNotice(const Bytes&);
 std::vector<std::string> describe(const ForwardingNoticePayload&);
 
-// M = { Handover_Command, Y_G } (RSU -> Vehicle)
+// M = { Handover_Command, G_{i+2}, Y_G_{i+2} }   (RSU -> vehicle, in clear: Y_G_{i+2} is public)
+//   type (1) | len(G_{i+2}) (2) | G_{i+2} | len(Y_G_{i+2}) (2) | Y_G_{i+2}
 struct HandoverCommandPayload
 {
     uint8_t type;
-    Bytes targetRsuPublicKey; // Y_G_{i+2}
+    std::string targetRsu;      // G_{i+2}: where the Forwarding_Request goes (e.g. "rsu[1]")
+    Bytes targetRsuPublicKey;   // Y_G_{i+2}: G_{i+2}'s ECDH public key for this handover (DER)
 };
 
 Bytes pack(const HandoverCommandPayload&);
 HandoverCommandPayload unpackHandoverCommand(const Bytes&);
 std::vector<std::string> describe(const HandoverCommandPayload&);
 
-// M = { Forwarding_Request, auth, OTP } (Vehicle -> Target RSU)
+// M = { Forwarding_Request, auth_{i+2}, OTP }   (vehicle -> G_{i+2})
+//   type (1) | auth_{i+2} (32) | OTP (16)
 struct ForwardingRequestPayload
 {
     uint8_t type;
-    Sha256 auth;            // auth_{i+2} = SHA256(tau)
-    Block otp;              // OTP = Poly1305(KT_i, auth ^ t_c, m)
+    Sha256 auth;                // auth_{i+2} = SHA256(tau_{i+2})
+    Block otp;                  // OTP = Poly1305(KT_i^32, auth_{i+2} xor t_c, m)
 };
 
 Bytes pack(const ForwardingRequestPayload&);
 ForwardingRequestPayload unpackForwardingRequest(const Bytes&);
 std::vector<std::string> describe(const ForwardingRequestPayload&);
 
-// M = { Forwarding_Granted, Y_G_next, auth', K_G, OTP' } (Target RSU -> Vehicle)
-// Encrypted on air as E_KT_i(M)
+// M = { Forwarding_Granted, Y_G_{i+3}, auth'_{i+2}, K_G_{i+2}, OTP }   (G_{i+2} -> vehicle)
+//   type (1) | len(Y_G_{i+3}) (2) | Y_G_{i+3} | auth'_{i+2} (32) | len(K_G) (2) | K_G | OTP (16)
+//   on air only as E_KT_i(M) = aesGcmEncrypt(KT_i, pack(M)): AES-128-GCM (Crypto.h)
 struct ForwardingGrantedPayload
 {
     uint8_t type;
-    Bytes nextRsuPublicKey; // Y_{G_{i+3}} (optional pre-load)
-    Sha256 authPrime;       // auth'_{i+2}
-    Bytes kG;               // K_{G_{i+2}}
-    Block otp;              // Fresh OTP'
+    Bytes nextRsuPublicKey;     // Y_G_{i+3}: the next RSU's key, pre-loaded (empty: none yet)
+    Sha256 authPrime;           // auth'_{i+2} = SHA256(auth_{i+2})
+    Bytes kG;                   // K_G_{i+2}: G_{i+2}'s group key
+    Block otp;                  // OTP: the one of the Forwarding_Request, echoed (freshness)
 };
 
 Bytes pack(const ForwardingGrantedPayload&);
 ForwardingGrantedPayload unpackForwardingGranted(const Bytes&);
 std::vector<std::string> describe(const ForwardingGrantedPayload&);
+
+// M = { Secure_Data, AES(K_G, Data), Auth_d, OTP_dt }   (vehicle -> RSU: the OT packet of common/SmartData.h)
+//   type (1) | OT packet (packDataMessage: len (4) | AES(K_G, Data) | len (4) | Auth_d | OTP_dt (16))
+struct SecureDataPayload
+{
+    uint8_t type;
+    Bytes cipherData;           // AES(K_G, Data): AES-128-GCM of packSmartData(Data)
+    Bytes authD;                // Auth_d
+    Block otp;                  // OTP_dt = Poly1305(K_dg, Auth_d xor t, AES(K_G, Data))
+};
+
+Bytes pack(const SecureDataPayload&);
+SecureDataPayload unpackSecureData(const Bytes&);
+std::vector<std::string> describe(const SecureDataPayload&);
 
 #endif /* BOOTSTRAP_BOOTSTRAPPAYLOAD_H_ */

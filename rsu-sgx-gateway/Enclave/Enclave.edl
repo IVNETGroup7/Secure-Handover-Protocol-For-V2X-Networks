@@ -6,7 +6,8 @@
  *
  * What lives inside the enclave (the RSU part of protocol/BootstrapService.cpp that holds
  * secrets): the ECDH private key X_g, K_dg per session, the group key K_g, CY_e, the pending activations
- * (Auth_d, Auth_eg, t_0, t_f), the OTP search and the encryption of the Auth_Granted.
+ * (Auth_d, Auth_eg, t_0, t_f), the OTP search and the encryption of the Auth_Granted; for the Secrecy
+ * Forwarding (common/Handover.h), Y_V and t_i per session and the pre-computed handovers (K_dh_i, KT_i).
  * What stays outside: sockets, the OT/IT queues, PTP, the relay to the ESA.
  *
  * Buffers: [in, size=n] copies n bytes App -> enclave; [out, size=n] gives the enclave n bytes that are
@@ -59,6 +60,7 @@ enclave {
          *      ECDH_Request  in: { ECDH_Request, Y_d }               out: ECDH_Response { Y_g }   (K_dg stays inside)
          *      Auth_Request  in: { Auth_Request, OTP_dt }            out: Auth_Granted E_K_dg(M)  (OTP search, K_g)
          *      Active_01     in: E_K_dg({ Auth_d, OTP_dt, Auth_de }) out: Active_02 M, for the ESA
+         *      Forwarding_Request  in: { auth_{i+2}, OTP }           out: Forwarding_Granted E_KT_i(M) (ECALL 6 first)
          *    in_pkt / out_pkt: the payload of BootstrapMsg (common/BootstrapPayload.h).
          *    out_type: the BootstrapType of the reply, so the App knows where it goes (radio or HTTPS).
          *    current_ptp_time: t of the OTP window and of the t_f check (the enclave trusts the App for it). */
@@ -75,7 +77,8 @@ enclave {
         /* 4. Secure Marshaling (data path after the bootstrap, step 4 of tee.pdf):
          *    OT packet Message(AES(K_G, Data), Auth_d, OTP_dt) -> decrypt -> OTP check -> JSON -> encrypted
          *    HTTPS packet for the IT queue (to the cloud).
-         *    ot_pkt: the OT packet as common/SmartData.h packs it (packDataMessage), reassembled by the App.
+         *    ot_pkt: the OT packet as common/SmartData.h packs it (packDataMessage), reassembled by the App, or the
+         *    payload of a Secure_Data message (common/BootstrapPayload.h: its type, then that OT packet).
          *    it_https_pkt: HTTPS Header | AES(K_eg, JSON) (Fig. 5): the whole POST /smartdata request, made here
          *    with the session of ECALL 7; the App sends it as it is (inside its TLS, only the transport) and
          *    cannot read the JSON. GW_OK sends it, any other status sends nothing. */
@@ -86,21 +89,29 @@ enclave {
             [out] size_t* it_pkt_len
         );
 
-        /* 5. Secrecy Forwarding: RSU 1 triggers a handover for a session. Extracts Y_V and computes tau. */
+        /* 5. Secrecy Forwarding, source RSU G_{i+1} (common/Handover.h): the Forwarding_Notice of an activated
+         *    session, for the target RSU G_{i+2}: Y_V (the vehicle's ECDH key of its bootstrap), Auth_d and
+         *    tau_{i+2} = Poly1305(K_dg, t_i, m). t_i: the slot of the OTP that activated the session; 0 = the one
+         *    the enclave kept when it matched (the normal case). The App sends them to G_{i+2} over the HTTPS
+         *    backhaul; K_dg stays here. GW_IGNORED: no activated session of that name. */
         public int ecall_trigger_handover(
             [in, string] const char* session,
             uint64_t t_i,
             [out, size=16] uint8_t* out_tau,
-            [out, size=128] uint8_t* out_yv,
-            [out] size_t* yv_len
+            [out, size=yv_max] uint8_t* out_yv, size_t yv_max, [out] size_t* yv_len,
+            [out, size=authd_max] uint8_t* out_authd, size_t authd_max, [out] size_t* authd_len
         );
 
-        /* 6. Secrecy Forwarding: Target RSU 2 receives the notice from RSU 1. Pre-computes KT_i and returns its Y_G. */
+        /* 6. Secrecy Forwarding, target RSU G_{i+2}: the Forwarding_Notice { Y_V, tau_{i+2}, Auth_d } of G_{i+1}.
+         *    A fresh key pair (X_G, Y_G) for this handover; K_dh_i = ECDH(X_G, Y_V), KT_i, KT_i^32 and auth_{i+2}
+         *    are pre-computed and kept here until the vehicle's Forwarding_Request (ECALL 3); out_yg: Y_G_{i+2},
+         *    for the Handover_Command. */
         public int ecall_receive_forwarding_notice(
+            [in, string] const char* session,
             [in, size=yv_len] const uint8_t* yv, size_t yv_len,
             [in, size=16] const uint8_t* tau,
-            [out, size=128] uint8_t* out_yg,
-            [out] size_t* yg_len
+            [in, size=authd_len] const uint8_t* auth_d, size_t authd_len,
+            [out, size=yg_max] uint8_t* out_yg, size_t yg_max, [out] size_t* yg_len
         );
 
         /* 7. HTTPS Session { CY_e, K_eg } of the Secure Marshaling (Fig. 5): CY_e, the certificate (PEM) of the

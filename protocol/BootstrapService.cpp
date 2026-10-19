@@ -15,8 +15,8 @@ const char* stageName(int type)
     static const char* names[] = { "Activation_Request", "HTTPS_Session", "Activation_Token", "PTP",
         "ECDH_Request", "ECDH_Response", "Auth_Request", "Save_RSU", "Auth_Granted", "Save_Vehicle",
         "Active_01", "Active_02", "Active_03", "PTP_Sync", "PTP_Delay_Request", "PTP_Delay_Response",
-        "Forwarding_Notice", "Handover_Command", "Forwarding_Request", "Forwarding_Granted" };
-    return (type >= 0 && type < 20) ? names[type] : "?";
+        "Forwarding_Notice", "Handover_Command", "Forwarding_Request", "Forwarding_Granted", "Secure_Data" };
+    return (type >= 0 && type < static_cast<int>(sizeof(names) / sizeof(names[0]))) ? names[type] : "?";
 }
 
 // OTP_dt = Poly1305(K_dg, Auth_d xor t, m), the same on both sides: the vehicle (AuthRequest) and the RSU (SaveRSU)
@@ -53,6 +53,7 @@ BootstrapService::BootstrapService(const Config& config) :
 {
     if (mRole == Role::Vehicle) {
         mAutoStart = config.autoStart;
+        mDeferHandover = config.deferHandover;
         mClockOffset = config.clockOffset;
         mGatewayPublicKey = config.gatewayPublicKey;
         mTraits = manufactureVehicle(mRng);
@@ -172,11 +173,14 @@ void BootstrapService::dispatch(const BootstrapMsg& msg)
         case Auth_Request:       SaveRSU(msg); break;            // RSU
         case Auth_Granted:       SaveVehicle(msg); break;        // vehicle
         case Active_01:          Active02(msg); break;           // RSU
+        // Secrecy Forwarding, once activated (no activation window: the vehicle is already active)
         case Handover_Command:   HandoverCommand(msg); break;    // vehicle
         case Forwarding_Granted: ForwardingGranted(msg); break;  // vehicle
         default:
             // HTTPS_Session, ::PTP, Save_RSU and Save_Vehicle are never sent;
-            // Active_02 (RSU -> ESA) and Active_03 (ESA -> user) never reach a vehicle or an RSU
+            // Active_02 (RSU -> ESA) and Active_03 (ESA -> user) never reach a vehicle or an RSU;
+            // Forwarding_Notice (RSU <-> RSU), Forwarding_Request and Secure_Data: the SGX gateway's
+            // (rsu-sgx-gateway/), not this RSU's
             std::cerr << myName() << ": unexpected message type " << stageName(msg.getType()) << std::endl;
             break;
     }
@@ -419,6 +423,8 @@ void BootstrapService::AuthRequest(const BootstrapMsg& received)
     otp.type = Auth_Request;
     otp.otp = poly1305Aes(mKdg[myName()], nonce, otpMessage()); // OTP_dt
     mOtpSent = otp.otp;                                     // checked against the Auth_Granted (SaveVehicle)
+    mOtpSlot = t;                                           // t_i once the RSU echoes this OTP_dt (SaveVehicle)
+    // X_d (mEcdhKey) stays: K_dh_i = ECDH(X_V, Y_G_{i+2}) of the Secrecy Forwarding needs it after the bootstrap
     printDetail("t = " + std::to_string(t) + " (slots of " + std::to_string(kOtpTimeStep) + " s), Auth_d xor t = "
         + toHex(nonce.data(), nonce.size()));
 
@@ -588,6 +594,12 @@ void BootstrapService::SaveVehicle(const BootstrapMsg& received)
     mEsaPublicKey = m.esaPublicKey;
     printKeep("K_g", mGroupKey, myName());
 
+    // activated with this RSU: the OTP_dt it echoed matched with my slot t, which is t_i of tau_{i+2}, the token
+    // of my first handover (Secrecy Forwarding); the RSU kept the same slot
+    mCurrentRsu = received.getSender();
+    mLastAuthSlot = mOtpSlot;
+    printDetail("t_i = " + std::to_string(mLastAuthSlot) + " (the slot of the OTP_dt the RSU matched)");
+
     // 5. K_de = SHA256(Id_d + Auth_d + Auth_de + OTP_dt), Auth_de with the CY_e verified in 3.
     //    the ESA derives the same key from what the Active_01 carries
     mAuthDe = computeAuthDe(idD, mTraits.uuid, mTraits.firmwareHash, mEsaPublicKey); // also sent in Active_01
@@ -743,52 +755,171 @@ void BootstrapService::sendBootstrap(int type, const std::string& destination, i
     mTransport.radio(msg);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Secrecy Forwarding (common/Handover.h), vehicle side: RSU G_{i+1} (the one I am activated with) sent a
+// Forwarding_Notice { Y_V, tau_{i+2}, Auth_d } to G_{i+2}, which pre-computed K_dh_i, KT_i and auth_{i+2} and
+// answered with its Y_G_{i+2}; a Handover_Command brings it to me
+
 void BootstrapService::HandoverCommand(const BootstrapMsg& received)
 {
+    // vehicle, on Handover_Command from the RSU I am activated with
     printStep("HandoverCommand", &received);
+
+    // M = { Handover_Command, G_{i+2}, Y_G_{i+2} }
     const HandoverCommandPayload m = unpackHandoverCommand(getPayload(received));
+    for (const std::string& line : describe(m)) {
+        printDetail(line);
+    }
 
-    // K_dh_i = Y_G_next ^ X_V[cite: 39]
-    const Bytes kDh = ecdh(mEcdhKey.get(), publicKeyFromDer(m.targetRsuPublicKey).get());
+    // any failed check: the message is ignored (no Forwarding_Request)
+    const auto kDg = mKdg.find(myName());
+    if (mCurrentRsu.empty() || kDg == mKdg.end() || !mEcdhKey) {
+        printCheck(false, "not activated with any RSU: ignored");
+        return;
+    }
+    if (received.getSender() != mCurrentRsu) {
+        printCheck(false, "not from " + mCurrentRsu + ", the RSU I am activated with: ignored");
+        return;
+    }
+    printCheck(true, "from " + mCurrentRsu + ", the RSU I am activated with");
 
-    // tau is derived exactly as the source RSU did (using K_dg and the recorded t_i)
-    Block nonce{};
-    for (int i = 0; i < 8; ++i) nonce[15 - i] = static_cast<uint8_t>(mTi >> (8 * i));
-    Block tau = poly1305Aes(mKdg[myName()], nonce, otpMessage());
+    // tau_{i+2} = Poly1305(K_dg, t_i, m): the token G_{i+1} gave G_{i+2}, from what only G_{i+1} and I know
+    const Block tau = forwardingToken(kDg->second, mLastAuthSlot);
+    // K_dh_i = ECDH(X_V, Y_G_{i+2}) (X_V: the ECDH key of my bootstrap), then KT_i, KT_i^32 and auth_{i+2}
+    Handover handover;
+    handover.target = m.targetRsu;
+    handover.keys = handoverKeys(ecdh(mEcdhKey.get(), publicKeyFromDer(m.targetRsuPublicKey).get()), tau);
+    mHandover = handover;
+    printDetail("tau_{i+2} = Poly1305(K_dg, t_i = " + std::to_string(mLastAuthSlot)
+        + ", m); K_dh_i = ECDH(X_V, Y_G_{i+2}); KT_i = Poly1305(K_dh_i, K_dh_i xor tau_{i+2}, m)");
 
-    // KT_i = Poly1305(K_dh, K_dh xor tau)[cite: 39]
-    Block ktNonce{};
-    for(int i=0; i<16; ++i) ktNonce[i] = kDh[i] ^ tau[i];
-    const Block kt = poly1305Aes(kDh, ktNonce, otpMessage());
-    mKt = Bytes(kt.begin(), kt.end());
+    if (mDeferHandover) {
+        printDetail("Forwarding_Request to " + m.targetRsu + " held until requestForwarding()");
+        return;
+    }
+    requestForwarding();
+}
 
-    Bytes tauBytes(tau.begin(), tau.end());
-    Sha256 auth = sha256(tauBytes);
+const std::string& BootstrapService::handoverTarget() const
+{
+    static const std::string none;
+    return mHandover ? mHandover->target : none;
+}
 
-    ForwardingRequestPayload req;
-    req.type = Forwarding_Request;
-    req.auth = auth;
-    req.otp = poly1305Aes(mKt, otpNonce(Bytes(auth.begin(), auth.end()), otpSlot(localClock())), otpMessage());
+void BootstrapService::requestForwarding()
+{
+    // vehicle, after a Handover_Command: right away, or when its owner decides (deferHandover)
+    if (!mHandover) {
+        throw std::runtime_error(myName() + ": requestForwarding() without a Handover_Command");
+    }
+    printStep("ForwardingRequest");
 
-    sendBootstrap(Forwarding_Request, "target_rsu", received.getAckNum(), received.getSeqNum() + 1, "", pack(req));
+    // OTP = Poly1305(KT_i^32, auth_{i+2} xor t_c, m): t_c, the slot I send it in (G_{i+2} tries its own +-1)
+    const uint64_t t = otpSlot(localClock());
+    ForwardingRequestPayload m;
+    m.type = Forwarding_Request;
+    m.auth = mHandover->keys.auth;                          // auth_{i+2} = SHA256(tau_{i+2})
+    m.otp = forwardingOtp(mHandover->keys, t);
+    mHandover->otp = m.otp;                                 // echoed by the Forwarding_Granted
+    mHandover->slot = t;                                    // my t_i once G_{i+2} grants it
+    mHandover->requested = true;
+    for (const std::string& line : describe(m)) {
+        printDetail(line);
+    }
+    printDetail("t_c = " + std::to_string(t));
+
+    // M = { Forwarding_Request, auth_{i+2}, OTP }
+    sendBootstrap(Forwarding_Request, mHandover->target, 0, 0, "", pack(m));
 }
 
 void BootstrapService::ForwardingGranted(const BootstrapMsg& received)
 {
+    // vehicle, on Forwarding_Granted from G_{i+2}
     printStep("ForwardingGranted", &received);
-    
-    // D_KT_i(E_KT_i(M))[cite: 39]
-    const auto plain = aesGcmDecrypt(mKt, getPayload(received));
-    if (!plain) {
-        printCheck(false, "Forwarding_Granted decryption failed");
+
+    // any failed check: the message is ignored (I stay with my RSU)
+    if (!mHandover || !mHandover->requested) {
+        printCheck(false, "no Forwarding_Request sent: ignored");
         return;
     }
-    
+    if (received.getSender() != mHandover->target) {
+        printCheck(false, "not from " + mHandover->target + ", the RSU I asked: ignored");
+        return;
+    }
+
+    // 1. M = D_KT_i(E_KT_i(M)): AES-128-GCM, so a changed message or another key fails here
+    const Bytes kt(mHandover->keys.kt.begin(), mHandover->keys.kt.end());
+    const auto plain = aesGcmDecrypt(kt, getPayload(received));
+    if (!plain) {
+        printCheck(false, "E_KT_i(M) does not decrypt with my KT_i: ignored");
+        return;
+    }
+    printCheck(true, "E_KT_i(M) decrypts with my KT_i (GCM tag valid)");
     const ForwardingGrantedPayload m = unpackForwardingGranted(*plain);
+    for (const std::string& line : describe(m)) {
+        printDetail(line);
+    }
+
+    // 2. G_{i+2} echoes the OTP it matched: it must be the one I sent
+    if (CRYPTO_memcmp(m.otp.data(), mHandover->otp.data(), m.otp.size()) != 0) {
+        printCheck(false, "OTP is not the one I sent: ignored");
+        return;
+    }
+    printCheck(true, "OTP is the one I sent");
+
+    // 3. auth'_{i+2} = SHA256(auth_{i+2}): G_{i+2} knew auth_{i+2} before my request (from tau_{i+2})
+    const Sha256 authPrime = sha256(Bytes(mHandover->keys.auth.begin(), mHandover->keys.auth.end()));
+    if (CRYPTO_memcmp(authPrime.data(), m.authPrime.data(), authPrime.size()) != 0) {
+        printCheck(false, "auth'_{i+2} != SHA256(auth_{i+2}): ignored");
+        return;
+    }
+    printCheck(true, "auth'_{i+2} = SHA256(auth_{i+2})");
+
+    // 4. K_G_{i+2}
+    if (m.kG.size() != kGroupKeySize) {
+        printCheck(false, "K_G_{i+2} has " + std::to_string(m.kG.size()) + " bytes: ignored");
+        return;
+    }
+
+    // activated with G_{i+2}: its K_g, K_dh_i as my K_dg with it, and t_c as t_i of my next handover
     mGroupKey = m.kG;
-    printKeep("New K_g", mGroupKey, myName());
-    
-    // Handover complete. Vehicle resumes normal CAM operation with target RSU.
+    mKdg[myName()] = mHandover->keys.kDh;
+    mCurrentRsu = received.getSender();
+    mLastAuthSlot = mHandover->slot;
+    mHandover.reset();
+    printKeep("K_g", mGroupKey, myName());
+    printKeep("K_dg", mKdg[myName()], myName());
+    trace::end(myName(), "handover done (now with " + mCurrentRsu + ")");
+
+    if (mOnHandoverCompleted) {
+        mOnHandoverCompleted(result(myName(), mCurrentRsu));
+    }
+}
+
+SmartData BootstrapService::sendSecureData(const Bytes& value, uint32_t location, uint32_t metadata)
+{
+    // vehicle, once activated: the data path after the bootstrap (tee.pdf step 4), to the RSU I am activated with
+    const auto kDg = mKdg.find(myName());
+    if (mRole != Role::Vehicle || mCurrentRsu.empty() || kDg == mKdg.end()) {
+        throw std::runtime_error(myName() + ": Secure_Data before the bootstrap");
+    }
+
+    SmartData data;
+    data.location = location;
+    data.timing = static_cast<uint64_t>(localClock().ns());
+    data.metadata = metadata;
+    data.value = value;
+    data.authD = mTraits.authD;
+
+    // Message(AES(K_G, Data), Auth_d, OTP_dt), OTP_dt over AES(K_G, Data) with my PTP-synchronized clock
+    const DataMessage message = sealSmartData(data, mGroupKey, kDg->second, localClock().ns());
+    SecureDataPayload m;
+    m.type = Secure_Data;
+    m.cipherData = message.sealedData;
+    m.authD = message.authD;
+    m.otp = message.otp;
+    sendBootstrap(Secure_Data, mCurrentRsu, 0, 0, "", pack(m));
+    return data;
 }
 
 void BootstrapService::printStep(const char* step, const BootstrapMsg* received)
@@ -824,17 +955,22 @@ void BootstrapService::notifyCompleted(const std::string& vehicle, const std::st
     trace::end(myName(), mRole == Role::Vehicle ? "vehicle ready (with " + rsu + ")" : "RSU ready (" + vehicle + ")");
 
     if (mOnCompleted) {
-        BootstrapResult result;
-        result.vehicle = vehicle;
-        result.rsu = rsu;
-        result.kDg = mKdg[vehicle];
-        result.kG = mGroupKey;
-        result.kDe = mKde;
-        if (mRole == Role::Vehicle) {
-            result.authD = mTraits.authD;
-        }
-        mOnCompleted(result);
+        mOnCompleted(result(vehicle, rsu));
     }
+}
+
+BootstrapResult BootstrapService::result(const std::string& vehicle, const std::string& rsu)
+{
+    BootstrapResult result;
+    result.vehicle = vehicle;
+    result.rsu = rsu;
+    result.kDg = mKdg[vehicle];
+    result.kG = mGroupKey;
+    result.kDe = mKde;
+    if (mRole == Role::Vehicle) {
+        result.authD = mTraits.authD;
+    }
+    return result;
 }
 
 std::string BootstrapService::myName() const

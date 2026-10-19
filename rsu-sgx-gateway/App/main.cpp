@@ -10,6 +10,7 @@
 //   common options: [--enclave <enclave.signed.so>] [--sealed <file>]   (default: next to this program)
 
 #include "modes.h"
+#include "ocalls.h"
 #include <sgx_urts.h>
 #include <unistd.h>
 #include <climits>
@@ -63,7 +64,8 @@ int main(int argc, char** argv)
 
     const std::string dir = programDir();
     const std::string enclavePath = option("--enclave", dir + "/enclave.signed.so");
-    setSealedStatePath(option("--sealed", dir + "/gateway.sealed"));
+    const std::string sealedPath = option("--sealed", dir + "/gateway.sealed");
+    setSealedStatePath(sealedPath);
     const std::string label = mode == "rsu" ? option("--name", "rsu[0]") : "gateway";
 
     sgx_enclave_id_t eid = 0;
@@ -88,7 +90,7 @@ int main(int argc, char** argv)
             code = runRsuNode(eid, rsu);
         } else {
             std::printf("enclave %s created (eid %llu)\n", enclavePath.c_str(), static_cast<unsigned long long>(eid));
-            code = runSelfTest(eid);
+            code = runSelfTest(eid, enclavePath, sealedPath);
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[%s] error: %s\n", label.c_str(), e.what());

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- node[0]: enters at x = 50 m driving east at a constant 25 m/s (sigma 0, no speed deviation), so it is at
+     x = 500 m (the handover point) about 18 s later and leaves the road at x = 1000 m about 38 s after it entered -->
+<routes>
+    <vType id="car" accel="2.6" decel="4.5" sigma="0" length="4.5" maxSpeed="25" speedFactor="1" speedDev="0"/>
+    <route id="eastbound" edges="highway"/>
+    <vehicle id="v0" type="car" route="eastbound" depart="0.00" departPos="50" departLane="0" departSpeed="25"/>
+</routes>

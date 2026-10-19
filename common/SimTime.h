@@ -2,7 +2,11 @@
 #define BOOTSTRAP_SIMTIME_H_
 
 // Time used by the bootstrap protocols (replaces omnetpp::simtime_t): signed nanoseconds
+// Compiled with -DWITH_OMNETPP (artery-sim/), now() is OMNeT++'s simulation time instead of the wall clock
 
+#ifdef WITH_OMNETPP
+#include <omnetpp/csimulation.h>
+#endif
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -17,11 +21,16 @@ class SimTime
 
         static SimTime fromNs(int64_t ns) { SimTime t; t.mNs = ns; return t; }
 
-        // wall clock (CLOCK_REALTIME): the same in every process of the machine
+        // wall clock (CLOCK_REALTIME): the same in every process of the machine;
+        // in an OMNeT++ simulation (WITH_OMNETPP), the simulation time: the same for every module
         static SimTime now()
         {
+#ifdef WITH_OMNETPP
+            return fromNs(omnetpp::simTime().inUnit(omnetpp::SIMTIME_NS));
+#else
             using namespace std::chrono;
             return fromNs(duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count());
+#endif
         }
 
         int64_t ns() const { return mNs; }
@@ -59,7 +68,7 @@ class SimTime
 
 using simtime_t = SimTime;
 
-// current time of this process (wall clock); replaces OMNeT++'s simTime()
+// current time of this process (wall clock, or the simulation time with WITH_OMNETPP); replaces OMNeT++'s simTime()
 inline SimTime simTime()
 {
     return SimTime::now();

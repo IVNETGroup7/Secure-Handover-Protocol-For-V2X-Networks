@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- netconvert -c highway.netccfg: highway.net.xml, with the coordinates of highway.nod.xml kept as they are (no
+     offset), so the x of SUMO is the x of the RSUs in omnetpp.ini -->
+<configuration>
+    <input>
+        <node-files value="highway.nod.xml"/>
+        <edge-files value="highway.edg.xml"/>
+    </input>
+    <output>
+        <output-file value="highway.net.xml"/>
+    </output>
+    <processing>
+        <offset.disable-normalization value="true"/>
+    </processing>
+</configuration>

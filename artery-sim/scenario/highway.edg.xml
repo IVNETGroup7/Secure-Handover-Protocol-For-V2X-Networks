@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- eastbound, two lanes, 120 km/h limit (the vehicle's own maximum is 25 m/s, highway.rou.xml) -->
+<edges>
+    <edge id="highway" from="west" to="east" numLanes="2" speed="33.33"/>
+</edges>

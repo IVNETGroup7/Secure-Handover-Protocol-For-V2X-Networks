@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <input>
+        <net-file value="highway.net.xml"/>
+        <route-files value="highway.rou.xml"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="60"/>
+        <step-length value="0.1"/>
+    </time>
+    <report>
+        <no-step-log value="true"/>
+    </report>
+</configuration>

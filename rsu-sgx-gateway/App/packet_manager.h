@@ -6,11 +6,18 @@
 //   bootstrap messages   the RSU side of the bootstrap with the secrets moved into the enclave
 //                        here (no secrets): relay of the Activation_Request to the ESA, PTP (master), routing
 //                        in the enclave (Enclave/control.cpp): ECDH, OTP search, Auth_Granted, Active_02
+//   Secrecy Forwarding   handover of an activated vehicle to the next RSU (common/Handover.h), over the HTTPS
+//                        sessions between RSUs (the backhaul) and the radio
+//                        here: routing; source RSU: Forwarding_Notice out (startHandover), Handover_Command relayed
+//                        to the vehicle; target RSU: Handover_Command back to the source
+//                        in the enclave: tau_{i+2} (source), K_dh_i / KT_i / auth_{i+2}, Forwarding_Granted (target)
 //   SmartData            ecall_secure_marshal_ot_to_it (Enclave/marshaling.cpp): what it returns, HTTPS Header |
-//                        AES(K_eg, JSON) made in the enclave, goes into the IT queue, for the cloud
+//                        AES(K_eg, JSON) made in the enclave, goes into the IT queue, for the cloud; it comes
+//                        reassembled from data frames (OtPacket::Kind::SmartData) or as a Secure_Data message
 // It never sees the keys, only what an ECALL copies out.
 
 #include "BootstrapMsg.h"
+#include "BootstrapPayload.h"
 #include "benchmark.h"
 #include "packet_queue.h"
 #include <sgx_eid.h>
@@ -33,7 +40,8 @@ class PacketManager
         struct Transport
         {
             std::function<void(const BootstrapMsg&)> radio;     // to the vehicles
-            std::function<void(const BootstrapMsg&)> https;     // to the ESA (pre-established HTTPS session)
+            std::function<void(const BootstrapMsg&)> https;     // to the ESA or another RSU (destination): the
+                                                                // pre-established HTTPS sessions of the backhaul
             std::function<void(ItPacket)> cloud;                // marshaled SmartData, to the cloud (IT queue)
         };
 
@@ -43,9 +51,14 @@ class PacketManager
 
         // a packet of the OT queue: bootstrap message or SmartData, by its kind
         void onOtPacket(const OtPacket&);
-        // incoming bootstrap messages: over the radio (filtered by destination) or over HTTPS (from the ESA)
+        // incoming bootstrap messages: over the radio (filtered by destination) or over HTTPS (from the ESA:
+        // Activation_Token; from another RSU: Forwarding_Notice, Handover_Command)
         void onRadio(const BootstrapMsg&);
         void onHttps(const BootstrapMsg&);
+
+        // Secrecy Forwarding, source RSU: the Forwarding_Notice of an activated "session" to "targetRsu";
+        // false: the enclave refused it (no such active session)
+        bool startHandover(const std::string& session, const std::string& targetRsu);
 
         // the ECALLs (Enclave.edl)
         int initGateway(const Bytes& gatewayCert, const Bytes& esaPublicKey, const Bytes& groupKey = {});
@@ -55,6 +68,10 @@ class PacketManager
             const Bytes& authEg);
         Reply handleBootstrap(int type, const std::string& session, const Bytes& payload, uint64_t ptpTimeNs);
         Reply marshal(const Bytes& otPacket, uint64_t ptpTimeNs);
+        // Secrecy Forwarding: the source's Forwarding_Notice (authSlot: t_i, 0 = the enclave's own) and the target's
+        // answer to it (GW_OK: payload = Y_G_{i+2})
+        int triggerHandover(const std::string& session, uint64_t authSlot, ForwardingNoticePayload& notice);
+        Reply receiveForwardingNotice(const std::string& session, const ForwardingNoticePayload& notice);
 
         int ignored() const { return mIgnored; }    // messages the enclave refused (a validation failed)
         Benchmark& benchmark() { return mBenchmark; }
@@ -62,8 +79,12 @@ class PacketManager
     private:
         void enclaveStep(const char* step, const BootstrapMsg& received);
         void onSmartData(const OtPacket&);
+        void activationToken(const BootstrapMsg& received);
+        void forwardingNotice(const BootstrapMsg& received);
+        // over the HTTPS sessions (the ESA, another RSU) or over the radio (the vehicles)
+        enum class Via { Radio, Https };
         void send(int type, const std::string& destination, int seqNum, int ackNum, const std::string& vehicle,
-            const Bytes& payload);
+            const Bytes& payload, Via via);
 
         sgx_enclave_id_t mEid;
         std::string mName;

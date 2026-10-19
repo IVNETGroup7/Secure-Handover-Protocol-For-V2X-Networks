@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- vehicles: the protocol's vehicle (VehicleTeeService.ned) on BTP port 2025 -->
+<services>
+    <service type="VehicleTeeService">
+        <listener port="2025" />
+    </service>
+</services>

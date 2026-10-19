@@ -2,7 +2,8 @@
 #define GATEWAY_CODEC_H_
 
 // Byte layout of the bootstrap payloads the enclave reads and writes: the same layouts as
-// common/BootstrapPayload.h (that file needs BootstrapService and the system clock, which the enclave has not).
+// common/BootstrapPayload.h (that file needs BootstrapService and the system clock, which the enclave has not);
+// SecureData wraps the OT packet of common/SmartData.h (compiled into the enclave too).
 // Integers in big endian; unpack throws std::runtime_error on a truncated payload.
 
 #include "Crypto.h"
@@ -74,7 +75,7 @@ struct Active
     Bytes authDe;
 };
 
-// { Forwarding_Request, auth, OTP }: type (1) | auth (32) | OTP (16)
+// { Forwarding_Request, auth_{i+2}, OTP }:  type (1) | auth_{i+2} (32) | OTP (16)
 struct ForwardingRequest
 {
     uint8_t type;
@@ -82,8 +83,8 @@ struct ForwardingRequest
     Block otp;
 };
 
-// { Forwarding_Granted, Y_G_next, auth', K_G, OTP' }:
-//   type (1) | len(Y_G_next) (2) | Y_G_next | auth' (32) | len(K_G) (2) | K_G | OTP' (16)
+// { Forwarding_Granted, Y_G_{i+3}, auth'_{i+2}, K_G_{i+2}, OTP }:
+//   type (1) | len(Y_G_{i+3}) (2) | Y_G_{i+3} | auth'_{i+2} (32) | len(K_G) (2) | K_G | OTP (16)
 struct ForwardingGranted
 {
     uint8_t type;
@@ -93,15 +94,29 @@ struct ForwardingGranted
     Block otp;
 };
 
+// { Secure_Data, AES(K_G, Data), Auth_d, OTP_dt }:  type (1) | the OT packet of common/SmartData.h
+//   (packDataMessage: len (4) | AES(K_G, Data) | len (4) | Auth_d | OTP_dt (16))
+struct SecureData
+{
+    uint8_t type;
+    Bytes cipherData;
+    Bytes authD;
+    Block otp;
+};
+
 Bytes pack(const Ecdh&);
 Bytes pack(const AuthGranted&);
 Bytes pack(const Active&);
+Bytes pack(const ForwardingRequest&);
 Bytes pack(const ForwardingGranted&);
+Bytes pack(const SecureData&);
 
 Ecdh unpackEcdh(const Bytes&);
 AuthRequest unpackAuthRequest(const Bytes&);
 Active unpackActive(const Bytes&);
 ForwardingRequest unpackForwardingRequest(const Bytes&);
+ForwardingGranted unpackForwardingGranted(const Bytes&);
+SecureData unpackSecureData(const Bytes&);
 
 } // namespace wire
 

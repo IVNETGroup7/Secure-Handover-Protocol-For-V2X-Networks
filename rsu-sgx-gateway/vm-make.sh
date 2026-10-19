@@ -52,8 +52,10 @@ fi
 rsync -rlp --checksum --delete -e "${SSH[*]}" \
     --exclude=.git --exclude=.vscode --exclude='*.pdf' --exclude=/bootstrap --exclude=build/ \
     --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude=/rsu-sgx-gateway/app \
-    --exclude='.config_*' --exclude='.caps_*' --exclude=gateway.sealed --exclude=cloud.crt --exclude=Enclave_private.pem \
+    --exclude='.config_*' --exclude='.caps_*' --exclude='gateway.sealed*' --exclude=cloud.crt --exclude=Enclave_private.pem \
     --exclude='Enclave_u.*' --exclude='Enclave_t.*' \
+    --exclude=/artery-sim/deps/ --exclude=/artery-sim/scenario/results/ --exclude='/artery-sim/scenario/*.sealed' \
+    --exclude=/artery-sim/scenario/.cmdenv-log --exclude=/artery-sim/scenario/.qtenvrc \
     "$REPO/" "$host:$VM_DIR/"
 
 # a terminal: ssh -t, so Ctrl-C reaches make

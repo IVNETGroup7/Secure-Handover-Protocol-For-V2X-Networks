@@ -8,8 +8,9 @@
 #include <cstdint>
 #include <string>
 
-// in-memory bootstrap against the repository's own vehicle and ESA (App/selftest.cpp)
-int runSelfTest(sgx_enclave_id_t eid);
+// in-memory bootstrap against the repository's own vehicle and ESA (App/selftest.cpp); "enclavePath" and
+// "sealedPath": those of "eid", for the second RSU (another enclave) of the Secrecy Forwarding
+int runSelfTest(sgx_enclave_id_t eid, const std::string& enclavePath, const std::string& sealedPath);
 
 // the gateway as the RSU node on the raw sockets, with the frames of net/Link.h (App/rsu_node.cpp)
 struct RsuOptions
@@ -22,8 +23,5 @@ struct RsuOptions
     uint16_t cloudPort = kCloudPort;
 };
 int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options);
-
-// where ocall_save_sealed_state / ocall_load_sealed_state keep the sealed state (App/ocalls.cpp)
-void setSealedStatePath(const std::string& path);
 
 #endif /* GATEWAY_MODES_H_ */

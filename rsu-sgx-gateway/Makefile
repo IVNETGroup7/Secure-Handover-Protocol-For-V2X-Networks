@@ -3,7 +3,8 @@
 #   Enclave/  Secure World     -> enclave.signed.so   (control: bootstrap; marshaling: data path)
 #
 #   make            builds in simulation mode (SGX_MODE=SIM: no SGX hardware needed)
-#   make run        builds and runs ./app: the self-test (the repository's vehicle and ESA against the enclave)
+#   make run        builds and runs ./app: the self-test (the repository's vehicle and ESA against the enclave, and the
+#                   Secrecy Forwarding of that vehicle to a second RSU: another enclave in the same process)
 #   make network    ESA, RSU, vehicle and cloud (tee.pdf step 6): the bootstrap on the raw sockets with this gateway
 #                   as the RSU, then the vehicle sends SmartData (32 B, 1 KB, 64 KB - 1) over the radio, which the
 #                   gateway marshals in the enclave and POSTs to the cloud over HTTPS (../bootstrap --pretty)
@@ -93,9 +94,11 @@ App_Link_Flags := -L$(SGX_LIBRARY_PATH) -l$(Urts_Library) -l$(Uae_Library) \
 ######## Enclave (Secure World) ########
 
 # crypto: common/Crypto.cpp, the same code as the vehicle and the ESA (OpenSSL from SGX-SSL here);
-# common/SmartData.cpp: the format of the vehicles' data packets, for the Secure Marshaling
+# common/SmartData.cpp: the format of the vehicles' data packets, for the Secure Marshaling;
+# common/Handover.cpp: the Secrecy Forwarding equations, the same as the vehicle's
 Enclave_Cpp_Files := $(wildcard Enclave/*.cpp)
-Enclave_Bootstrap_Files := $(BOOTSTRAP_COMMON)/Crypto.cpp $(BOOTSTRAP_COMMON)/SmartData.cpp
+Enclave_Bootstrap_Files := $(BOOTSTRAP_COMMON)/Crypto.cpp $(BOOTSTRAP_COMMON)/SmartData.cpp \
+                           $(BOOTSTRAP_COMMON)/Handover.cpp
 Enclave_Objects := Enclave/Enclave_t.o $(Enclave_Cpp_Files:.cpp=.o) \
                    $(patsubst ../%.cpp,$(BUILD)/enclave/%.o,$(Enclave_Bootstrap_Files))
 Enclave_Include := -IEnclave -I$(BOOTSTRAP_COMMON) -I$(SGX_SDK)/include -I$(SGX_SDK)/include/tlibc \
@@ -211,7 +214,7 @@ $(Signed_Enclave_Name): $(Enclave_Name) $(Enclave_Key) $(Enclave_Config)
 
 clean:
 	rm -rf .config_* app $(Enclave_Name) $(Signed_Enclave_Name) $(App_Objects) $(Enclave_Objects) \
-		App/Enclave_u.* Enclave/Enclave_t.* App/*.d Enclave/*.d $(BUILD) gateway.sealed .caps_* cloud.crt
+		App/Enclave_u.* Enclave/Enclave_t.* App/*.d Enclave/*.d $(BUILD) gateway.sealed* .caps_* cloud.crt
 
 # header dependencies (-MMD)
 -include $(App_Objects:.o=.d) $(Enclave_Objects:.o=.d)

@@ -55,7 +55,7 @@ static const EVP_CIPHER* aesGcm(const Bytes& key)
 Bytes aesGcmEncrypt(const Bytes& key, const Bytes& plaintext)
 {
     const EVP_CIPHER* cipher = aesGcm(key);
-    Bytes sealed = randomBytes(kGcmNonceSize); // a fresh nonce per message: never reused with the same key
+    Bytes sealed = randomBytes(kGcmNonceSize);
 
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     check(ctx != nullptr, "EVP_CIPHER_CTX_new");
@@ -92,7 +92,7 @@ std::optional<Bytes> aesGcmDecrypt(const Bytes& key, const Bytes& sealed)
         "EVP_DecryptUpdate");
     check(EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, kGcmTagSize, tag.data()) == 1, "EVP_CTRL_GCM_SET_TAG");
     if (EVP_DecryptFinal_ex(ctx.get(), plaintext.data() + length, &finalLength) != 1) {
-        return std::nullopt; // tag mismatch
+        return std::nullopt;
     }
     plaintext.resize(length + finalLength);
     return plaintext;
@@ -109,7 +109,7 @@ Bytes selfSignedCertificate(EVP_PKEY* key, const std::string& commonName)
 {
     std::unique_ptr<X509, decltype(&X509_free)> cert(X509_new(), X509_free);
     check(cert != nullptr, "X509_new");
-    X509_set_version(cert.get(), 2); // X.509 v3
+    X509_set_version(cert.get(), 2);
     const Bytes serial = randomBytes(8);
     std::unique_ptr<BIGNUM, decltype(&BN_free)> number(BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr),
         BN_free);
@@ -178,7 +178,6 @@ Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& m)
         throw std::runtime_error("Poly1305-AES needs a 32-byte key (got " + std::to_string(key.size()) + ")");
     }
 
-    // s = AES_k(n): one AES-128 block, no padding
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> aes(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     check(aes != nullptr, "EVP_CIPHER_CTX_new");
     check(EVP_EncryptInit_ex(aes.get(), EVP_aes_128_ecb(), nullptr, key.data(), nullptr) == 1, "EVP_EncryptInit_ex");
@@ -188,7 +187,6 @@ Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& m)
     check(EVP_EncryptUpdate(aes.get(), s.data(), &length, nonce.data(), nonce.size()) == 1 && length == 16,
         "EVP_EncryptUpdate");
 
-    // Poly1305 with the one-time key r || s (OpenSSL clamps r)
     Bytes oneTimeKey(key.begin() + 16, key.end());
     oneTimeKey.insert(oneTimeKey.end(), s.begin(), s.end());
     std::unique_ptr<EVP_MAC, decltype(&EVP_MAC_free)> mac(EVP_MAC_fetch(nullptr, "POLY1305", nullptr), EVP_MAC_free);

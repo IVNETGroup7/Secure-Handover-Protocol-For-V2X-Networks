@@ -1,7 +1,7 @@
 #ifndef BOOTSTRAP_BOOTSTRAPMSG_H_
 #define BOOTSTRAP_BOOTSTRAPMSG_H_
 
-// Bootstrap message exchanged by vehicle, RSU and ESA (replaces BootstrapMsg.msg)
+// Bootstrap message exchanged by vehicle, RSU and ESA
 
 #include "BootstrapType.h"
 #include "Crypto.h"
@@ -36,10 +36,7 @@ class BootstrapMsg
         Bytes mPayload;
 };
 
-// wire format (e.g. for a socket), integers in big endian:
-//   type (1) | seqNum (4) | ackNum (4) | len(sender) (2) | sender | len(destination) (2) | destination
-//   | len(vehicle) (2) | vehicle | len(payload) (4) | payload
 Bytes serialize(const BootstrapMsg&);
-BootstrapMsg deserialize(const Bytes&);   // throws std::runtime_error if truncated
+BootstrapMsg deserialize(const Bytes&);   // throws error if truncated
 
 #endif /* BOOTSTRAP_BOOTSTRAPMSG_H_ */

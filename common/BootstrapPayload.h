@@ -1,7 +1,7 @@
 #ifndef BOOTSTRAP_BOOTSTRAPPAYLOAD_H_
 #define BOOTSTRAP_BOOTSTRAPPAYLOAD_H_
 
-// Byte layout of the bootstrap messages (BootstrapMsg.payload)
+// Byte layout of the bootstrap messages
 
 #include "SimTime.h"
 #include "Traits.h"
@@ -9,31 +9,28 @@
 class BootstrapMsg;
 
 // M = { Activation_Request, CY_g, t_0, t_f, UUID, SHA256(f_w) }
-//   type (1) | len(CY_g) (2) | CY_g | t_0 (8, ns) | t_f (8, ns) | UUID (16) | SHA256(f_w) (32)
-//   integers in big endian
 struct ActivationRequestPayload
 {
     uint8_t type;
     Bytes gatewayPublicKey;     // CY_g: public key (DER) of the target gateway's (RSU's) certificate
-    simtime_t t0;      // t_0
-    simtime_t tf;      // t_f
+    simtime_t t0;               // t_0
+    simtime_t tf;               // t_f
     Uuid uuid;                  // UUID
     Sha256 firmwareHash;        // SHA256(f_w)
 };
 
 Bytes pack(const ActivationRequestPayload&);
 ActivationRequestPayload unpackActivationRequest(const Bytes&);
-std::vector<std::string> describe(const ActivationRequestPayload&); // one line per field, for printing
+std::vector<std::string> describe(const ActivationRequestPayload&);
 
 // M = { Activation_Token, t_0, t_f, Auth_d, Auth_eg }
-//   type (1) | t_0 (8, ns) | t_f (8, ns) | len(Auth_d) (2) | Auth_d | len(Auth_eg) (2) | Auth_eg
 struct ActivationTokenPayload
 {
     uint8_t type;
     simtime_t t0;      // t_0
     simtime_t tf;      // t_f
-    Bytes authD;                // Auth_d = AES(Id_d, Id_d)
-    Bytes authEg;               // Auth_eg = AES(Id_d, CY_e)
+    Bytes authD;       // Auth_d = AES(Id_d, Id_d)
+    Bytes authEg;      // Auth_eg = AES(Id_d, CY_e)
 };
 
 Bytes pack(const ActivationTokenPayload&);
@@ -41,7 +38,6 @@ ActivationTokenPayload unpackActivationToken(const Bytes&);
 std::vector<std::string> describe(const ActivationTokenPayload&);
 
 // M = { PTP_Sync, t_1 } | { PTP_Delay_Request } | { PTP_Delay_Response, t_4 }
-//   type (1) [| timestamp (8, ns)]  -- PTP_Delay_Request carries no timestamp
 struct PtpPayload
 {
     uint8_t type;
@@ -53,7 +49,6 @@ PtpPayload unpackPtp(const Bytes&);
 std::vector<std::string> describe(const PtpPayload&);
 
 // M = { ECDH_Request, Y_d } | { ECDH_Response, Y_g }
-//   type (1) | len(Y) (2) | Y   -- Y: ECDH public key (DER SubjectPublicKeyInfo, curve kEcdhCurve)
 struct EcdhPayload
 {
     uint8_t type;
@@ -65,7 +60,6 @@ EcdhPayload unpackEcdh(const Bytes&);
 std::vector<std::string> describe(const EcdhPayload&);
 
 // M = { Auth_Request, OTP_dt }
-//   type (1) | OTP_dt (16)
 struct AuthRequestPayload
 {
     uint8_t type;
@@ -77,8 +71,6 @@ AuthRequestPayload unpackAuthRequest(const Bytes&);
 std::vector<std::string> describe(const AuthRequestPayload&);
 
 // M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }     (the paper's (10): Auth_Granted(Auth_eg, OTP_dt, K_G, CY_e))
-//   type (1) | OTP_dt (16) | len(K_g) (2) | K_g | len(CY_e) (2) | CY_e | len(Auth_eg) (2) | Auth_eg
-//   on air only as E_K_dg(M) = aesGcmEncrypt(K_dg, pack(M)) (Crypto.h)
 struct AuthGrantedPayload
 {
     uint8_t type;
@@ -93,9 +85,6 @@ AuthGrantedPayload unpackAuthGranted(const Bytes&);
 std::vector<std::string> describe(const AuthGrantedPayload&);
 
 // M = { Active_01, Auth_d, OTP_dt, Auth_de } | { Active_02, Auth_d, OTP_dt, Auth_de }
-//   type (1) | len(Auth_d) (2) | Auth_d | OTP_dt (16) | len(Auth_de) (2) | Auth_de
-//   Active_01 (vehicle -> RSU): on air only as E_K_dg(M) = aesGcmEncrypt(K_dg, pack(M)) (Crypto.h)
-//   Active_02 (RSU -> ESA): the same M, in clear inside the HTTPS session
 struct Active01Payload
 {
     uint8_t type;
@@ -108,8 +97,7 @@ Bytes pack(const Active01Payload&);
 Active01Payload unpackActive01(const Bytes&);
 std::vector<std::string> describe(const Active01Payload&);
 
-// M = { Active_03, UUID, SHA256(f_w) }   (ESA -> user, in clear inside the user's HTTPS connection)
-//   type (1) | UUID (16) | SHA256(f_w) (32)
+// M = { Active_03, UUID, SHA256(f_w) }   
 struct Active03Payload
 {
     uint8_t type;
@@ -124,10 +112,10 @@ std::vector<std::string> describe(const Active03Payload&);
 void setPayload(BootstrapMsg&, const Bytes&);
 Bytes getPayload(const BootstrapMsg&);
 
-// Secrecy Forwarding (common/Handover.h): handover of an activated vehicle from RSU G_{i+1} to RSU G_{i+2}
+// Secrecy Forwarding
 
-// M = { Forwarding_Notice, Y_V, tau_{i+2}, Auth_d }   (G_{i+1} -> G_{i+2}, in clear inside the HTTPS backhaul)
-//   type (1) | len(Y_V) (2) | Y_V | tau_{i+2} (16) | len(Auth_d) (2) | Auth_d
+// M = { Forwarding_Notice, Y_V, tau_{i+2}, Auth_d }
+
 struct ForwardingNoticePayload
 {
     uint8_t type;
@@ -140,12 +128,12 @@ Bytes pack(const ForwardingNoticePayload&);
 ForwardingNoticePayload unpackForwardingNotice(const Bytes&);
 std::vector<std::string> describe(const ForwardingNoticePayload&);
 
-// M = { Handover_Command, G_{i+2}, Y_G_{i+2} }   (RSU -> vehicle, in clear: Y_G_{i+2} is public)
-//   type (1) | len(G_{i+2}) (2) | G_{i+2} | len(Y_G_{i+2}) (2) | Y_G_{i+2}
+// M = { Handover_Command, G_{i+2}, Y_G_{i+2} }
+
 struct HandoverCommandPayload
 {
     uint8_t type;
-    std::string targetRsu;      // G_{i+2}: where the Forwarding_Request goes (e.g. "rsu[1]")
+    std::string targetRsu;      // G_{i+2}: where the Forwarding_Request goes
     Bytes targetRsuPublicKey;   // Y_G_{i+2}: G_{i+2}'s ECDH public key for this handover (DER)
 };
 
@@ -153,8 +141,7 @@ Bytes pack(const HandoverCommandPayload&);
 HandoverCommandPayload unpackHandoverCommand(const Bytes&);
 std::vector<std::string> describe(const HandoverCommandPayload&);
 
-// M = { Forwarding_Request, auth_{i+2}, OTP }   (vehicle -> G_{i+2})
-//   type (1) | auth_{i+2} (32) | OTP (16)
+// M = { Forwarding_Request, auth_{i+2}, OTP }
 struct ForwardingRequestPayload
 {
     uint8_t type;
@@ -166,9 +153,8 @@ Bytes pack(const ForwardingRequestPayload&);
 ForwardingRequestPayload unpackForwardingRequest(const Bytes&);
 std::vector<std::string> describe(const ForwardingRequestPayload&);
 
-// M = { Forwarding_Granted, Y_G_{i+3}, auth'_{i+2}, K_G_{i+2}, OTP }   (G_{i+2} -> vehicle)
-//   type (1) | len(Y_G_{i+3}) (2) | Y_G_{i+3} | auth'_{i+2} (32) | len(K_G) (2) | K_G | OTP (16)
-//   on air only as E_KT_i(M) = aesGcmEncrypt(KT_i, pack(M)): AES-128-GCM (Crypto.h)
+// M = { Forwarding_Granted, Y_G_{i+3}, auth'_{i+2}, K_G_{i+2}, OTP }
+
 struct ForwardingGrantedPayload
 {
     uint8_t type;
@@ -182,8 +168,7 @@ Bytes pack(const ForwardingGrantedPayload&);
 ForwardingGrantedPayload unpackForwardingGranted(const Bytes&);
 std::vector<std::string> describe(const ForwardingGrantedPayload&);
 
-// M = { Secure_Data, AES(K_G, Data), Auth_d, OTP_dt }   (vehicle -> RSU: the OT packet of common/SmartData.h)
-//   type (1) | OT packet (packDataMessage: len (4) | AES(K_G, Data) | len (4) | Auth_d | OTP_dt (16))
+// M = { Secure_Data, AES(K_G, Data), Auth_d, OTP_dt }
 struct SecureDataPayload
 {
     uint8_t type;

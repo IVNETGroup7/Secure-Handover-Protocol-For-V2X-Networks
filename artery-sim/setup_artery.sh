@@ -1,23 +1,3 @@
-#!/bin/bash
-# Installs and builds what artery-sim/ needs, then the tee_v2x_handover scenario (2 SGX RSUs, 1 vehicle, a 1 km
-# highway, Secrecy Forwarding at x = 500 m):
-#   1. system packages: compilers, Boost, GeographicLib, Crypto++, CMake, SUMO (Ubuntu 22.04 / 24.04, Arch Linux)
-#   2. OMNeT++ (deps/omnetpp), unless one is already in PATH
-#   3. Artery with its submodules INET, Veins and Vanetza (deps/artery), unless --artery-dir gives one
-#   4. Intel SGX SDK + SGX-SSL in simulation mode (/opt/intel), as ../setup-vm.sh does in its VM (--install-sgx)
-#   5. registers this folder in Artery's scenarios/CMakeLists.txt and builds Artery with it (CMake), which also
-#      builds the enclave (make -C ../rsu-sgx-gateway)
-# Idempotent: every step checks what is already there and skips it; run it again after a failure.
-#
-#   ./setup_artery.sh [--install-sgx] [--artery-dir <dir>] [--with-qtenv] [--jobs <n>] [--skip-packages]
-#     --install-sgx       also install the Intel SGX SDK and SGX-SSL (needs sudo; 10-20 min for SGX-SSL)
-#     --artery-dir <dir>  an Artery already built there (e.g. an opp_env workspace's artery_allinone-*): only
-#                         steps 4-5 (run this script inside its environment: opp_env shell)
-#     --with-qtenv        OMNeT++ with Qtenv (the GUI); default: Cmdenv only
-#     --jobs <n>          parallel build jobs (default: nproc)
-#     --skip-packages     do not touch system packages (step 1)
-#   environment: OMNETPP_VERSION (default 5.7.1: the 5.x line Artery supports, builds with GCC 13+; 5.6.2 works
-#   with older compilers), ARTERY_REF (default master), ARTERY_BUILD_TYPE (default Release)
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -58,7 +38,7 @@ case " ${ID} ${ID_LIKE:-} " in
     *) DISTRO=unknown ;;
 esac
 
-######## 1. system packages ########
+# System packages
 
 install_packages() {
     step "1. system packages ($PRETTY_NAME)"
@@ -74,7 +54,7 @@ install_packages() {
             if [ -z "$(LC_ALL=C apt-cache policy libgeographiclib-dev 2>/dev/null | awk '/Candidate/ && $2 != "(none)"')" ]; then
                 geographic=libgeographic-dev
             fi
-            # python3-dev: the headers of Artery's pybind11 (its storyboard feature)
+            # python3-dev: the headers of Artery's pybind11
             local packages=(build-essential clang lld gdb bison flex perl python3 python3-dev python-is-python3 git wget curl
                 ca-certificates cmake pkg-config libxml2-dev zlib1g-dev libssl-dev
                 libboost-dev libboost-date-time-dev libboost-system-dev "$geographic" libcrypto++-dev
@@ -111,7 +91,7 @@ install_packages() {
     esac
 }
 
-######## 2. OMNeT++ ########
+# OMNeT++
 
 OMNETPP_ROOT=""
 
@@ -141,18 +121,16 @@ install_omnetpp() {
     fi
     ln -sfn "omnetpp-$OMNETPP_VERSION" "$DEPS/omnetpp"
 
-    # configure wants the environment of 'source setenv'; no 3D views (OSG); Qtenv only when asked for
     (
         cd "$OMNETPP_ROOT"
         omnetpp_environment
         ./configure WITH_QTENV="$WITH_QTENV" WITH_OSG=no WITH_OSGEARTH=no
-        # release (opp_run) and debug (opp_run_dbg): Artery picks one by its build type
         make -j"$JOBS" MODE=release
         make -j"$JOBS" MODE=debug
     )
 }
 
-######## 3. Artery ########
+# Artery
 
 install_artery() {
     step "3. Artery (INET, Veins, Vanetza)"
@@ -169,7 +147,7 @@ install_artery() {
     git -C "$ARTERY_DIR" submodule update --init --recursive
 }
 
-######## 4. Intel SGX SDK + SGX-SSL (simulation mode) ########
+# Intel SGX SDK + SGX-SSL (simulation mode)
 
 SGX_SDK=${SGX_SDK:-/opt/intel/sgxsdk}
 SGXSSL=${SGXSSL:-/opt/intel/sgxssl}
@@ -193,7 +171,7 @@ install_sgx() {
     local work
     work=$(mktemp -d)
 
-    # the SDK: the installer of Intel's repository for this Ubuntu (24.04's elsewhere)
+    # SDK
     if [ ! -f "$SGX_SDK/environment" ]; then
         local distro=ubuntu24.04-server
         if [ "$DISTRO" = ubuntu ] && [ "${VERSION_ID:-}" = 22.04 ]; then
@@ -208,7 +186,7 @@ install_sgx() {
         echo yes | sudo "$work/$installer" --prefix="$(dirname "$SGX_SDK")"
     fi
 
-    # SGX-SSL: OpenSSL 3.0 inside the enclave (the same tag and OpenSSL as ../setup-vm.sh)
+    # SGX-SSL
     if [ ! -f "$SGXSSL/lib64/libsgx_usgxssl.a" ]; then
         local tag=3.0_Rev5.4 openssl=openssl-3.0.21
         local sha=617e29af8e421f46649484a4937e48c685e47f46488167c982f88bc4ec1d522f
@@ -225,7 +203,7 @@ install_sgx() {
     rm -rf "$work"
 }
 
-######## 5. the scenario ########
+# the scenario
 
 register_scenario() {
     step "5. tee_v2x_handover in Artery's build"
@@ -237,10 +215,9 @@ register_scenario() {
     else
         echo "already registered in $list"
     fi
-    # for browsing: the scenario next to Artery's own (the build uses the path above)
     ln -sfn "$HERE" "$ARTERY_DIR/scenarios/tee_v2x_handover"
 
-    # the SUMO network, from the node and edge files (kept in the repository; regenerated when missing)
+    # the SUMO network, from the node and edge files (kept in the repository, regenerated when missing)
     if [ ! -f "$HERE/scenario/highway.net.xml" ]; then
         (cd "$HERE/scenario" && netconvert -c highway.netccfg)
     fi
@@ -283,6 +260,5 @@ Run it through CMake (RUN_FLAGS picks the user interface and the configuration):
   cmake --build $build --target run_tee_v2x_handover
 EOF
 if [ -x "$build/run_artery.sh" ]; then
-    # Artery before 2025 also writes this script
     printf 'or directly, from the scenario folder:\n  cd %s/scenario && %s/run_artery.sh -u Cmdenv -c D500m_5G\n' "$HERE" "$build"
 fi

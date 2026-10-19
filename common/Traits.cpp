@@ -6,14 +6,12 @@ VehicleTraits manufactureVehicle(std::mt19937& rng)
 {
     VehicleTraits traits;
 
-    // UUID version 4 (random), from the seeded RNG
     for (auto& byte : traits.uuid) {
         byte = intuniform(rng, 0, 255);
     }
-    traits.uuid[6] = (traits.uuid[6] & 0x0f) | 0x40; // version 4
-    traits.uuid[8] = (traits.uuid[8] & 0x3f) | 0x80; // RFC 4122 variant
+    traits.uuid[6] = (traits.uuid[6] & 0x0f) | 0x40;
+    traits.uuid[8] = (traits.uuid[8] & 0x3f) | 0x80;
 
-    // f_w = ECDSA-SHA256(firmware image), the manufacturer's signature of the firmware
     const auto manufacturerKey = newP256Key();
     const Bytes signedData(kFirmwareImage, kFirmwareImage + std::char_traits<char>::length(kFirmwareImage));
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
@@ -23,12 +21,9 @@ VehicleTraits manufactureVehicle(std::mt19937& rng)
     traits.firmwareSignature.resize(signatureLength);
     check(EVP_DigestSign(ctx.get(), traits.firmwareSignature.data(), &signatureLength, signedData.data(), signedData.size()) == 1,
         "EVP_DigestSign");
-    traits.firmwareSignature.resize(signatureLength); // DER signatures vary in length
+    traits.firmwareSignature.resize(signatureLength);
 
-    // SHA256(f_w): the hash of the firmware signature
     traits.firmwareHash = sha256(traits.firmwareSignature);
-
-    // Auth_d, as the ESA computes it from the Activation_Request
     traits.authD = computeAuthD(computeIdD(traits.uuid, traits.firmwareHash));
 
     return traits;

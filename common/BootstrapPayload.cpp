@@ -12,7 +12,7 @@ static void putUint(Bytes& out, uint64_t value, int size)
     }
 }
 
-// reads the fields of a packed payload in order; throws if the payload is too short
+// reads the fields of a packed payload in order, throws error if the payload is too short
 class Reader
 {
     public:
@@ -86,7 +86,7 @@ ActivationRequestPayload unpackActivationRequest(const Bytes& in)
 
 std::vector<std::string> describe(const ActivationRequestPayload& m)
 {
-    // CY_g is DER SubjectPublicKeyInfo: parsing it also checks that it is a valid key
+    // CY_g is DER SubjectPublicKeyInfo, parsing it also checks that it is a valid key
     const unsigned char* der = m.gatewayPublicKey.data();
     std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> cyG(
         d2i_PUBKEY(nullptr, &der, m.gatewayPublicKey.size()), EVP_PKEY_free);
@@ -340,7 +340,6 @@ ForwardingNoticePayload unpackForwardingNotice(const Bytes& in)
 
 std::vector<std::string> describe(const ForwardingNoticePayload& m)
 {
-    // tau_{i+2} is not printed: with Y_V it is what G_{i+2} derives KT_i from
     return {
         "M = { " + std::string(stageName(m.type)) + ", Y_V, tau_{i+2}, Auth_d }",
         "Y_V    = " + toHex(m.vehiclePublicKey.data(), m.vehiclePublicKey.size()),

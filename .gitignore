@@ -70,4 +70,6 @@ Testing/
 bootstrap
 
 # ignoring TEE pdfs
-*.pdf 
+s10922-023-09723-6.pdf 
+SGX.pdf 
+tee.pdf

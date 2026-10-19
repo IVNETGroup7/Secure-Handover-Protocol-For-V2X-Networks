@@ -39,8 +39,8 @@ struct HttpResponse
     std::string body;
 };
 
-// the cloud's key pair and self-signed certificate, for "address": CY_e, as Fig. 5 names the certificate of the
-// HTTPS Session { CY_e, K_eg } (here its other end is the cloud)
+// the cloud's key pair and self-signed certificate, for "address"
+// HTTPS Session { CY_e, K_eg } 
 struct CloudIdentity
 {
     std::shared_ptr<EVP_PKEY> key;      // X_e (and Y_e)

@@ -1,22 +1,3 @@
-// Control component (Secure World): bootstrap of the vehicles, ECALLs 1-3 of Enclave.edl, and the Secrecy
-// Forwarding of the activated ones to the next RSU (common/Handover.h), ECALLs 5-6 and the Forwarding_Request of 3.
-// Everything declared here lives in enclave memory: the App only sees what an ECALL copies out ([out]).
-//
-// The RSU steps of protocol/BootstrapService.cpp that touch secrets, ported (tee.pdf step 5):
-//   ECDHResponse                 ECDH_Request  -> ECDH_Response   (X_g and K_dg stay here)
-//   SaveRSU + AuthGranted        Auth_Request  -> Auth_Granted    (OTP search, K_g, E_K_dg(M))
-//   Active02                     Active_01     -> Active_02       (D_K_dg, M for the ESA)
-//   withinWindow                 t_0 <= t <= t_f, before each of them
-// Secrecy Forwarding, the RSU side of the vehicle's HandoverCommand / ForwardingGranted:
-//   triggerHandover (source G_{i+1})         activated session -> Forwarding_Notice { Y_V, tau_{i+2}, Auth_d }
-//   receiveForwardingNotice (target G_{i+2}) Forwarding_Notice -> Y_G_{i+2}; K_dh_i, KT_i, auth_{i+2} kept here
-//   forwardingGranted (target G_{i+2})       Forwarding_Request -> Forwarding_Granted E_KT_i(M); session active
-// On an OTP match the state (K_g and every active session) is sealed (sgx_seal_data) and handed to the App to
-// keep on disk; ecall_init_gateway unseals it (reboot recovery, tee.pdf step 5).
-// The other RSU steps (relay to the ESA, PTP) have no secrets: the App runs them (App/packet_manager.cpp).
-// Crypto: common/Crypto.cpp (the same code as the vehicle and the ESA), over SGX-SSL.
-// Output (ocall_print) never carries a secret: no K_dg, K_g or X_g.
-
 #include "Enclave_t.h"
 #include "BootstrapType.h"
 #include "Crypto.h"
@@ -127,14 +108,6 @@ const Bytes& otpMessage()
     static const Bytes m(kOtpMessage, kOtpMessage + std::char_traits<char>::length(kOtpMessage));
     return m;
 }
-
-// ---------------------------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------------------------
-// sealed state: version (1) | K_g | CY_e | count (2) | per active session:
-//   session | K_dg | Auth_d | Auth_eg | t_0 (8) | t_f (8) | Y_V | t_i (8)     (fields with a 2-byte length, codec.h)
-// sgx_seal_data encrypts and MACs it with a key only this enclave (on this CPU, in HW mode) can derive:
-// the App stores bytes it cannot read nor change unnoticed
 
 void saveState()
 {

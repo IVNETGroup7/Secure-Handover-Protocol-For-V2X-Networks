@@ -1,25 +1,3 @@
-# RSU gateway on Intel SGX (tee.pdf): two binaries bound by Enclave/Enclave.edl
-#   App/      Non-Secure World -> ./app               (normal Linux process: queues, packet manager, OCALLs)
-#   Enclave/  Secure World     -> enclave.signed.so   (control: bootstrap; marshaling: data path)
-#
-#   make            builds in simulation mode (SGX_MODE=SIM: no SGX hardware needed)
-#   make run        builds and runs ./app: the self-test (the repository's vehicle and ESA against the enclave, and the
-#                   Secrecy Forwarding of that vehicle to a second RSU: another enclave in the same process)
-#   make network    ESA, RSU, vehicle and cloud (tee.pdf step 6): the bootstrap on the raw sockets with this gateway
-#                   as the RSU, then the vehicle sends SmartData (32 B, 1 KB, 64 KB - 1) over the radio, which the
-#                   gateway marshals in the enclave and POSTs to the cloud over HTTPS (../bootstrap --pretty)
-#   make bench      the same with 100 packets of each size from 32 B to 64 KB - 1: the turn-around table
-#                   (Fig. 6 of the paper)
-#   make clean
-#
-# Raw sockets need CAP_NET_RAW: "network" and "bench" give it to ./app and ../bootstrap with sudo setcap,
-# again only when a binary changes (setcap needs sudo once per build)
-#   make SGX_MODE=HW    on a CPU with SGX (driver + PSW installed)
-#
-# Needs the Intel SGX SDK (/opt/intel/sgxsdk) and Intel SGX-SSL (/opt/intel/sgxssl); setup-vm.sh installs both
-# in the VM. Without the SDK on this machine, make runs in that VM (vm-make.sh): same targets, same output.
-# Based on the SDK's SampleCode/SampleEnclave/Makefile and SGX-SSL's Linux/sgx/test_app/sgx_{t,u}.mk.
-
 SGX_SDK ?= /opt/intel/sgxsdk
 SGXSSL ?= /opt/intel/sgxssl
 SGX_MODE ?= SIM

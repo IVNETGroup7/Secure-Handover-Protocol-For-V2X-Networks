@@ -1,12 +1,6 @@
 #ifndef BOOTSTRAP_RAWSOCKET_H_
 #define BOOTSTRAP_RAWSOCKET_H_
 
-// Raw Ethernet sockets (AF_PACKET, SOCK_RAW): every frame is a broadcast of one EtherType on one interface,
-// so each link behaves as a shared medium (like the radio): every socket on it gets every frame.
-// Needs CAP_NET_RAW: "make" runs the processes in a container that has it
-//
-// frame: dst MAC (6, broadcast) | src MAC (6) | EtherType (2) | len(data) (2) | data
-
 #include "Crypto.h"
 #include <array>
 #include <cstdint>

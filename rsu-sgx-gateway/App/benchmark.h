@@ -1,13 +1,6 @@
 #ifndef GATEWAY_BENCHMARK_H_
 #define GATEWAY_BENCHMARK_H_
 
-// Turn-around times of the Secure Marshaling (tee.pdf step 6.3, Fig. 6 of the paper), per OT packet size:
-//   ECALL          ecall_secure_marshal_ot_to_it alone (std::chrono::high_resolution_clock around it)
-//   OT -> IT       from the OT queue to the IT queue: unpack, ECALL, push (the paper's "marshaling procedure":
-//                  18.4 us for 32 B up to 4307.4 us for 64 KB - 1)
-//   radio -> cloud from the whole packet received to the cloud's answer (the paper's complete turn-around:
-//                  receive, marshal, HTTPS POST)
-
 #include <chrono>
 #include <cstdio>
 #include <map>

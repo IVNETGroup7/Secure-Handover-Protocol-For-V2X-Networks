@@ -1,21 +1,6 @@
 #ifndef PACKET_MANAGER_H_
 #define PACKET_MANAGER_H_
 
-// Packet Manager (Non-Secure World, Fig. 5 of the paper): takes the packets of the OT queue and, by their
-// header (tee.pdf step 3.3), hands them to the enclave
-//   bootstrap messages   the RSU side of the bootstrap with the secrets moved into the enclave
-//                        here (no secrets): relay of the Activation_Request to the ESA, PTP (master), routing
-//                        in the enclave (Enclave/control.cpp): ECDH, OTP search, Auth_Granted, Active_02
-//   Secrecy Forwarding   handover of an activated vehicle to the next RSU (common/Handover.h), over the HTTPS
-//                        sessions between RSUs (the backhaul) and the radio
-//                        here: routing; source RSU: Forwarding_Notice out (startHandover), Handover_Command relayed
-//                        to the vehicle; target RSU: Handover_Command back to the source
-//                        in the enclave: tau_{i+2} (source), K_dh_i / KT_i / auth_{i+2}, Forwarding_Granted (target)
-//   SmartData            ecall_secure_marshal_ot_to_it (Enclave/marshaling.cpp): what it returns, HTTPS Header |
-//                        AES(K_eg, JSON) made in the enclave, goes into the IT queue, for the cloud; it comes
-//                        reassembled from data frames (OtPacket::Kind::SmartData) or as a Secure_Data message
-// It never sees the keys, only what an ECALL copies out.
-
 #include "BootstrapMsg.h"
 #include "BootstrapPayload.h"
 #include "benchmark.h"

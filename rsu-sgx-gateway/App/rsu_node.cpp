@@ -1,15 +1,3 @@
-// The gateway as the RSU node on the raw sockets (tee.pdf step 3, Fig. 5 of the paper): it speaks the same
-// frames as the RSU of the repository's main.cpp (net/Link.h), so ../bootstrap's ESA and vehicle work with it
-// unchanged; with a cloud (net/Https.h), the vehicles' SmartData goes on to it.
-//
-//   radio (vehicles)   -> OT queue -> PacketManager -> enclave: bootstrap (ECDH, OTP, Auth_Granted, Active_02)
-//                                                             or Secure Marshaling (SmartData)
-//                                                  -> replies on the radio, or into the IT queue
-//   IT queue           -> backhaul (HTTPS session with the ESA)  or  the cloud: HTTPS Header | AES(K_eg, JSON) as
-//                         the enclave made it, sent inside the App's TLS (only the transport: K_eg, the cloud's
-//                         pinned certificate and the JSON stay in the enclave)
-//   backhaul (ESA)     -> PacketManager::onHttps (Activation_Token)
-
 #include "modes.h"
 #include "Https.h"
 #include "Link.h"

@@ -1,10 +1,6 @@
 #ifndef GATEWAY_KEY_MANAGER_H_
 #define GATEWAY_KEY_MANAGER_H_
 
-// OT Key Manager (Fig. 5 of the paper), inside the enclave: the keys the control component (control.cpp) set up
-// for each vehicle it activated, as the Secure Marshaling (marshaling.cpp) needs them. The state stays in
-// control.cpp; this is the only way in for the rest of the enclave
-
 #include "Crypto.h"
 #include <optional>
 #include <string>

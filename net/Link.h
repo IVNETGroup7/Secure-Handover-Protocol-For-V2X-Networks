@@ -1,21 +1,6 @@
 #ifndef BOOTSTRAP_LINK_H_
 #define BOOTSTRAP_LINK_H_
 
-// What the nodes exchange over the raw sockets (RawSocket.h); shared by main.cpp and the SGX gateway
-// (rsu-sgx-gateway), so both speak the same frames.
-//
-// links: every frame is a broadcast, every node on the link gets it
-//   radio     (EtherType 0x88B5)  vehicles and RSUs; each one keeps only what is for it (isForMe)
-//   backhaul  (EtherType 0x88B6)  RSUs and ESA: the "HTTPS" session, established by Session_Hello/Session_Ack
-//
-// data of a frame: kind (1) | body
-//   Bootstrap      body = serialize(BootstrapMsg)
-//   Session_Hello  body = "rsu name\nsession key\n" certificate   (RSU -> ESA, repeated until the ack;
-//                  certificate: the RSU's self-signed X.509, DER, whose key is CY_g)
-//   Session_Ack    body = "rsu name\n" CY_e         (ESA -> RSU; CY_e: ESA public key, DER)
-//   Data_Fragment  body = len | from | len | to | id (4) | index (2) | count (2) | piece    (radio)
-//                  a data packet larger than one frame (SmartData.h: up to 64 KB), in pieces; to: its RSU
-
 #include "BootstrapMsg.h"
 #include "RawSocket.h"
 #include <chrono>

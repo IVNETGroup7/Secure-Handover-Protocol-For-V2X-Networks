@@ -1,14 +1,3 @@
-// RSU gateway, Non-Secure World: creates the enclave (Secure World) and talks to it only through the ECALLs
-// of Enclave/Enclave.edl (via PacketManager).
-//
-//   ./app [selftest]       the bootstrap of the repository's vehicle and ESA against the enclave, in memory
-//   ./app rsu [--iface lo] [--name rsu[0]] [--ready-fd <fd>]
-//             [--cloud-cert <cloud.crt> [--cloud-address 127.0.0.1] [--cloud-port 8443]]
-//                          the gateway as the RSU node on the raw sockets (needs CAP_NET_RAW);
-//                          ../bootstrap --rsu-exec <this app> runs it in place of its own RSU;
-//                          with --cloud-cert, the marshaled SmartData goes to the cloud (HTTPS)
-//   common options: [--enclave <enclave.signed.so>] [--sealed <file>]   (default: next to this program)
-
 #include "modes.h"
 #include "ocalls.h"
 #include <sgx_urts.h>

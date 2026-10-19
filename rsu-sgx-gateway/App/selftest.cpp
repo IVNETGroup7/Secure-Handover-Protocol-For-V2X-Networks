@@ -1,22 +1,3 @@
-// Self-test of the port (tee.pdf step 5): the bootstrap of a vehicle with the RSU running in the enclave.
-// The vehicle and the ESA are the repository's own (protocol/BootstrapService, protocol/ExternalSecurityAgent),
-// so the enclave must speak exactly their protocol; the network is in memory. Scenarios:
-//   1. normal                        the vehicle gets ready, the ESA ends the protocol
-//   2. OTP changed on the air        the enclave finds no matching Auth_d: ignored, nothing more
-//   3. Auth_Request after t_f        the enclave aborts the session
-//   4. Secrecy Forwarding + Secure Marshaling, with this test as the cloud
-//      4a-4g  SmartData of the vehicle of 1 (tee.pdf step 4): the IT packet is HTTPS Header | AES(K_eg, JSON),
-//             with no JSON in clear, and the cloud's K_eg opens it to exactly what the vehicle sent; a changed
-//             OTP_dt, a changed AES(K_G, Data), an unknown Auth_d or an old t are refused; a new K_eg every
-//             kMessagesPerSession packets
-//      4h-4m  rsu[1]: a second enclave in this process (its own memory, sealed state and K_g). node[0] bootstraps
-//             with rsu[0] and sends it SmartData; rsu[0] hands it over to rsu[1] (Forwarding_Notice,
-//             Handover_Command, Forwarding_Request, Forwarding_Granted: common/Handover.h); node[0] then holds
-//             rsu[1]'s K_g and its SmartData is marshaled by rsu[1]; a replayed Forwarding_Request and SmartData
-//             with the keys of before the handover are refused by rsu[1]
-//   5. CY_g of no gateway            the ESA issues no Activation_Token: nothing starts
-//   6. before t_0                    the vehicle's window starts in the future: the enclave aborts at ECDH
-
 #include "modes.h"
 #include "Bootstrap.h"
 #include "BootstrapMsg.h"

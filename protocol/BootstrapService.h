@@ -27,10 +27,6 @@ struct PendingVehicles{
     Bytes authEg;       // Auth_eg
 };
 
-// Secure bootstrap between vehicle, RSU and ESA.
-// Stateless and reactive: each message says who it is for (logical unicast) and its type
-// says which step to run (see dispatch). Everything a step needs comes in the message.
-// Applications use it through Bootstrap.h
 class BootstrapService
 {
     public:

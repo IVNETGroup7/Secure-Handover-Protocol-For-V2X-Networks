@@ -1,10 +1,6 @@
 #ifndef PACKET_QUEUE_H_
 #define PACKET_QUEUE_H_
 
-// OT queue (packets from the V2X side) and IT queue (packets to the ESA / cloud): thread-safe FIFOs (tee.pdf
-// step 3.2, Fig. 5 of the paper). Each packet keeps the bytes as they came (or go) and where they came from
-// (or go to): the Packet Manager inspects it to pick the ECALL, the IT side to pick the link
-
 #include <chrono>
 #include <cstdint>
 #include <mutex>

@@ -20,9 +20,6 @@ class ExternalSecurityAgent
         explicit ExternalSecurityAgent(const std::string& name = "esa");
         void setTransport(HttpsTransport transport) { mTransport = std::move(transport); }
 
-        // called once per RSU when its HTTPS session is established (pre-established session); "gatewayPublicKey":
-        // CY_g, the key of the RSU's certificate, verified when the session was established (the paper's arrow 2:
-        // the gateway and the ESA keep each other's certificate key, CY_g and CY_e)
         void registerRsu(const std::string& rsu, const std::string& sessionKey, const Bytes& gatewayPublicKey);
 
         // incoming message over HTTPS

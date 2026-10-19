@@ -1,11 +1,6 @@
 #ifndef GATEWAY_CODEC_H_
 #define GATEWAY_CODEC_H_
 
-// Byte layout of the bootstrap payloads the enclave reads and writes: the same layouts as
-// common/BootstrapPayload.h (that file needs BootstrapService and the system clock, which the enclave has not);
-// SecureData wraps the OT packet of common/SmartData.h (compiled into the enclave too).
-// Integers in big endian; unpack throws std::runtime_error on a truncated payload.
-
 #include "Crypto.h"
 
 namespace wire

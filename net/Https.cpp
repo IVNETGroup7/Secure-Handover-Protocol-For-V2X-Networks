@@ -211,10 +211,7 @@ void writeAll(SSL* ssl, const std::string& data)
     }
 }
 
-} // namespace
-
-// ---------------------------------------------------------------------------------------------
-
+} 
 std::string CloudIdentity::pem() const
 {
     std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
@@ -321,8 +318,6 @@ void HttpsServer::serve(const Handler& handler, const std::function<void(const s
         ::close(fd);
     }
 }
-
-// ---------------------------------------------------------------------------------------------
 
 HttpsClient::HttpsClient(const std::string& address, uint16_t port, const std::string& trustedPem) :
     mAddress(address), mPort(port)

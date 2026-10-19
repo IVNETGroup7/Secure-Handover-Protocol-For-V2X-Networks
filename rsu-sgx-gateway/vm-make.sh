@@ -1,12 +1,4 @@
 #!/bin/bash
-# make on a machine without the Intel SGX SDK: runs the same make in the VM of setup-vm.sh, which has the SDK and
-# SGX-SSL. Starts the VM if needed, copies the repository there (rsync: only what changed), runs make and copies
-# back the headers sgx_edger8r generated, for the editor (App/Enclave_u.h, Enclave/Enclave_t.h).
-#
-#   ./vm-make.sh <make arguments>        (the Makefile calls it when $(SGX_SDK) does not exist)
-#   VM_NAME   libvirt domain             (default: ubuntu24-tee-vm, as in setup-vm.sh)
-#   VM_HOST   user@address               (default: ubuntu@<the VM's address, from libvirt>)
-#   VM_DIR    copy of the repository     (default: v2x, in the VM user's home)
 set -e
 
 VM_NAME=${VM_NAME:-ubuntu24-tee-vm}

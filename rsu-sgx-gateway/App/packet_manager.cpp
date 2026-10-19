@@ -16,8 +16,6 @@ namespace
 
 constexpr size_t kMaxBootstrapReply = 1500;           // a reply goes in one radio frame (net/RawSocket.cpp)
 constexpr size_t kMaxField = 512;                     // Y_V, Y_G, Auth_d of the Secrecy Forwarding (91 / 91 / 48 B)
-// the IT packet of an OT packet (Enclave/marshaling.cpp): its value in base64 (4/3 of it) plus the other JSON
-// fields, the AES-GCM nonce and tag, and the HTTPS header (with Y_s)
 size_t itBufferFor(size_t otPacket)
 {
     return otPacket * 4 / 3 + 2048;
@@ -39,9 +37,7 @@ uint64_t now()
     return static_cast<uint64_t>(SimTime::now().ns());
 }
 
-} // namespace
-
-// ---------------------------------------------------------------------------------------------
+} 
 // OT queue
 
 void PacketManager::onOtPacket(const OtPacket& packet)
@@ -125,9 +121,6 @@ void PacketManager::onSmartData(const OtPacket& packet)
     mBenchmark.queued(packet.bytes.size(), duration_cast<nanoseconds>(Clock::now() - dequeued));
 }
 
-// ---------------------------------------------------------------------------------------------
-// RSU steps (BootstrapService, role Rsu)
-
 void PacketManager::onRadio(const BootstrapMsg& msg)
 {
     // radio: unicast is logical (BootstrapService::isForMe); "esa": the ESA has no radio, the RSU relays it
@@ -202,8 +195,6 @@ void PacketManager::activationToken(const BootstrapMsg& msg)
     send(PTP_Sync, msg.getVehicle(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m), Via::Radio);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Secrecy Forwarding (common/Handover.h)
 
 bool PacketManager::startHandover(const std::string& session, const std::string& targetRsu)
 {
@@ -300,8 +291,6 @@ void PacketManager::send(int type, const std::string& destination, int seqNum, i
     transport(msg);
 }
 
-// ---------------------------------------------------------------------------------------------
-// ECALLs
 
 int PacketManager::initGateway(const Bytes& gatewayCert, const Bytes& esaPublicKey, const Bytes& groupKey)
 {

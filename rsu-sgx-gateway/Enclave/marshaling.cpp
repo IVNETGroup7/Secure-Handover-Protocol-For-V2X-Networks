@@ -1,26 +1,3 @@
-// Secure Marshaling (Secure World): data path after the bootstrap, ECALL 4 of Enclave.edl (tee.pdf step 4,
-// Fig. 5 of the paper). A vehicle's OT packet becomes the JSON the cloud receives:
-//   1. unpack       Message(AES(K_G, Data), Auth_d, OTP_dt)                       (common/SmartData.h), as the
-//                   App reassembled it or inside a Secure_Data message (codec.h wire::SecureData)
-//   2. keys         Auth_d -> K_dg, K_G of that vehicle                           (OT Key Manager, key_manager.h)
-//   3. decrypt      Data = AES(K_G)^-1 (AES-128-GCM): SmartData { location, timing, metadata, value, Auth_d }
-//   4. OTP_dt       == Poly1305(K_dg, Auth_d xor t, AES(K_G, Data)), t = my slot +- kOtpWindow
-//   (3 before 4 as in the paper: "decrypted using K_G (16) ... and authenticated using the OTP key (8)")
-//   5. JSON         { Location, Timing, Metadata, Value, Trust }   (Value in base64, Trust: Auth_d in hex)
-//   6. IT packet    HTTPS Header | AES(K_eg, JSON): the whole POST /smartdata, into it_https_pkt; the body is
-//                   AES-256-GCM with K_eg, the key of the HTTPS Session below. The App only sends it (inside its
-//                   own TLS, the transport) and cannot read the JSON
-// HTTPS Session { CY_e, K_eg } (Fig. 5), here too: CY_e, the certificate of the session's other end (the cloud),
-// pinned by ecall_init_cloud_session, and K_eg =
-// SHA256(ECDH(X_s, Y_e)) (common/SmartData.h). X_s is fresh per session and dropped once K_eg is derived; Y_s
-// goes in the header (kSessionKeyHeader) so the cloud derives the same K_eg with its X_e. A new session every
-// kMessagesPerSession packets (the paper's evaluation, Section 6.1).
-// A packet that fails 1-4 is refused (GW_IGNORED): nothing goes to the cloud.
-// After a Secrecy Forwarding (control.cpp) the vehicle is active here with K_dh_i as its K_dg and this RSU's K_G:
-// 2. finds it by the Auth_d of the Forwarding_Notice, so its data goes on with no new bootstrap.
-// Output: every failure, but only the first packet of each size when it passes (ocall_print leaves the enclave,
-// inside the time the App measures). Nothing secret is printed: no K_dg, K_G, K_eg, Data or JSON.
-
 #include "Enclave_t.h"
 #include "BootstrapType.h"
 #include "SmartData.h"

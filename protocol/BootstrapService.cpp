@@ -177,10 +177,6 @@ void BootstrapService::dispatch(const BootstrapMsg& msg)
         case Handover_Command:   HandoverCommand(msg); break;    // vehicle
         case Forwarding_Granted: ForwardingGranted(msg); break;  // vehicle
         default:
-            // HTTPS_Session, ::PTP, Save_RSU and Save_Vehicle are never sent;
-            // Active_02 (RSU -> ESA) and Active_03 (ESA -> user) never reach a vehicle or an RSU;
-            // Forwarding_Notice (RSU <-> RSU), Forwarding_Request and Secure_Data: the SGX gateway's
-            // (rsu-sgx-gateway/), not this RSU's
             std::cerr << myName() << ": unexpected message type " << stageName(msg.getType()) << std::endl;
             break;
     }
@@ -188,10 +184,6 @@ void BootstrapService::dispatch(const BootstrapMsg& msg)
 
 void BootstrapService::activationRequest()
 {
-    // vehicle, on start(); goes to the ESA through the RSU in range (relayed in HTTPSEstablishment)
-    // in the paper (arrow 1) the operator sends it to the ESA from the IT network; here the vehicle sends it in the
-    // operator's place, for simplicity: the protocol starts as if the operator had already sent it (with that, UUID
-    // and SHA256(f_w) cross the radio in clear, which the paper never allows)
     printStep("activationRequest");
 
     // here we are doing an activation request
@@ -575,7 +567,7 @@ void BootstrapService::SaveVehicle(const BootstrapMsg& received)
     printCheck(true, "OTP_dt is the one I sent");
 
     // 3. Auth_eg = AES(Id_d, CY_e): only who knows Id_d (the ESA, from the operator's Activation_Request) makes
-    //    it, so recomputing it with my Id_d and the CY_e received proves CY_e is the ESA's key (here the vehicle
+    //    it, so recomputing it with Id_d and the CY_e received proves CY_e is the ESA's key (here the vehicle
     //    sends the Activation_Request in the operator's place, so a radio listener could also derive Id_d)
     const Sha256 idD = computeIdD(mTraits.uuid, mTraits.firmwareHash);
     const Bytes authEg = aes256Encrypt(idD, m.esaPublicKey);
@@ -754,11 +746,6 @@ void BootstrapService::sendBootstrap(int type, const std::string& destination, i
     stampTransmission(msg); // PTP: timestamps of the moment the message leaves
     mTransport.radio(msg);
 }
-
-// ---------------------------------------------------------------------------------------------
-// Secrecy Forwarding (common/Handover.h), vehicle side: RSU G_{i+1} (the one I am activated with) sent a
-// Forwarding_Notice { Y_V, tau_{i+2}, Auth_d } to G_{i+2}, which pre-computed K_dh_i, KT_i and auth_{i+2} and
-// answered with its Y_G_{i+2}; a Handover_Command brings it to me
 
 void BootstrapService::HandoverCommand(const BootstrapMsg& received)
 {

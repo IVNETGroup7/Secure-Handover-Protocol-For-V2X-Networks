@@ -36,11 +36,6 @@ void ExternalSecurityAgent::handleMessage(const BootstrapMsg& bootstrap)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// secure bootstrap protocol simulation
-//   reply: sendToRsu(Activation_Token, received.getSender(), received.getVehicle(), ...)
-// ---------------------------------------------------------------------------------------------
-
 void ExternalSecurityAgent::activationToken(const BootstrapMsg& received)
 {
     // 1. we get the t_0 and t_f values (from the message that has arrived)

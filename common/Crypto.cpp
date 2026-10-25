@@ -1,5 +1,5 @@
 #include "Crypto.h"
-#include <openssl/bn.h>
+#include "Traits.h"
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
@@ -55,7 +55,7 @@ static const EVP_CIPHER* aesGcm(const Bytes& key)
 Bytes aesGcmEncrypt(const Bytes& key, const Bytes& plaintext)
 {
     const EVP_CIPHER* cipher = aesGcm(key);
-    Bytes sealed = randomBytes(kGcmNonceSize);
+    Bytes sealed = randomBytes(kGcmNonceSize); // a fresh nonce per message: never reused with the same key
 
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     check(ctx != nullptr, "EVP_CIPHER_CTX_new");
@@ -92,7 +92,7 @@ std::optional<Bytes> aesGcmDecrypt(const Bytes& key, const Bytes& sealed)
         "EVP_DecryptUpdate");
     check(EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, kGcmTagSize, tag.data()) == 1, "EVP_CTRL_GCM_SET_TAG");
     if (EVP_DecryptFinal_ex(ctx.get(), plaintext.data() + length, &finalLength) != 1) {
-        return std::nullopt;
+        return std::nullopt; // tag mismatch
     }
     plaintext.resize(length + finalLength);
     return plaintext;
@@ -105,79 +105,13 @@ Bytes randomBytes(size_t size)
     return out;
 }
 
-Bytes selfSignedCertificate(EVP_PKEY* key, const std::string& commonName)
-{
-    std::unique_ptr<X509, decltype(&X509_free)> cert(X509_new(), X509_free);
-    check(cert != nullptr, "X509_new");
-    X509_set_version(cert.get(), 2);
-    const Bytes serial = randomBytes(8);
-    std::unique_ptr<BIGNUM, decltype(&BN_free)> number(BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr),
-        BN_free);
-    check(number && BN_to_ASN1_INTEGER(number.get(), X509_get_serialNumber(cert.get())), "certificate serial");
-    X509_gmtime_adj(X509_getm_notBefore(cert.get()), 0);
-    X509_gmtime_adj(X509_getm_notAfter(cert.get()), 365L * 24 * 3600);
-    check(X509_set_pubkey(cert.get(), key) == 1, "X509_set_pubkey");
-    X509_NAME* subject = X509_get_subject_name(cert.get());
-    X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(commonName.c_str()),
-        -1, -1, 0);
-    check(X509_set_issuer_name(cert.get(), subject) == 1, "X509_set_issuer_name"); // self-signed
-    check(X509_sign(cert.get(), key, EVP_sha256()) > 0, "X509_sign");
-
-    const int size = i2d_X509(cert.get(), nullptr);
-    check(size > 0, "i2d_X509");
-    Bytes der(static_cast<size_t>(size));
-    unsigned char* out = der.data();
-    check(i2d_X509(cert.get(), &out) == size, "i2d_X509");
-    return der;
-}
-
-std::optional<Bytes> verifiedCertificateKey(const Bytes& certificateDer)
-{
-    const unsigned char* in = certificateDer.data();
-    std::unique_ptr<X509, decltype(&X509_free)> cert(d2i_X509(nullptr, &in, static_cast<long>(certificateDer.size())),
-        X509_free);
-    EVP_PKEY* key = cert ? X509_get0_pubkey(cert.get()) : nullptr;
-    if (!key || X509_verify(cert.get(), key) != 1) {
-        ERR_clear_error();
-        return std::nullopt;
-    }
-    return publicKeyDer(key);
-}
-
-std::string base64Encode(const Bytes& data)
-{
-    std::string text(4 * ((data.size() + 2) / 3), '\0');
-    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(&text[0]), data.data(), static_cast<int>(data.size()));
-    text.resize(static_cast<size_t>(n));
-    return text;
-}
-
-std::optional<Bytes> base64Decode(const std::string& text)
-{
-    if (text.size() % 4 != 0) {
-        return std::nullopt;
-    }
-    Bytes out(3 * (text.size() / 4));
-    const int n = EVP_DecodeBlock(out.data(), reinterpret_cast<const unsigned char*>(text.data()),
-        static_cast<int>(text.size()));
-    if (n < 0) {
-        return std::nullopt;
-    }
-    // EVP_DecodeBlock counts the padding as zero bytes
-    size_t padding = 0;
-    for (size_t i = text.size(); i > 0 && text[i - 1] == '=' && padding < 2; --i) {
-        ++padding;
-    }
-    out.resize(static_cast<size_t>(n) - padding);
-    return out;
-}
-
 Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& m)
 {
     if (key.size() != 32) {
         throw std::runtime_error("Poly1305-AES needs a 32-byte key (got " + std::to_string(key.size()) + ")");
     }
 
+    // s = AES_k(n): one AES-128 block, no padding
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> aes(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     check(aes != nullptr, "EVP_CIPHER_CTX_new");
     check(EVP_EncryptInit_ex(aes.get(), EVP_aes_128_ecb(), nullptr, key.data(), nullptr) == 1, "EVP_EncryptInit_ex");
@@ -187,6 +121,7 @@ Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& m)
     check(EVP_EncryptUpdate(aes.get(), s.data(), &length, nonce.data(), nonce.size()) == 1 && length == 16,
         "EVP_EncryptUpdate");
 
+    // Poly1305 with the one-time key r || s (OpenSSL clamps r)
     Bytes oneTimeKey(key.begin() + 16, key.end());
     oneTimeKey.insert(oneTimeKey.end(), s.begin(), s.end());
     std::unique_ptr<EVP_MAC, decltype(&EVP_MAC_free)> mac(EVP_MAC_fetch(nullptr, "POLY1305", nullptr), EVP_MAC_free);
@@ -203,7 +138,7 @@ Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& m)
 
 std::shared_ptr<EVP_PKEY> newP256Key()
 {
-    return newEcKey("P-256");
+    return newEcKey(kEcdhCurve);
 }
 
 std::shared_ptr<EVP_PKEY> newEcKey(const char* curve)

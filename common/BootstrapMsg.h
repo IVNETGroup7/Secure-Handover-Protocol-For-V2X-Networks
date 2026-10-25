@@ -17,6 +17,7 @@ class BootstrapMsg
         int getSeqNum() const { return mSeqNum; }
         int getAckNum() const { return mAckNum; }
         const Bytes& getPayloadBytes() const { return mPayload; }   // step data, see BootstrapPayload.h
+        const Bytes& payload() const { return mPayload; }
 
         void setType(int type) { mType = type; }
         void setSender(const std::string& sender) { mSender = sender; }
@@ -25,6 +26,7 @@ class BootstrapMsg
         void setSeqNum(int seqNum) { mSeqNum = seqNum; }
         void setAckNum(int ackNum) { mAckNum = ackNum; }
         void setPayloadBytes(const Bytes& payload) { mPayload = payload; }
+        void setPayload(const Bytes& payload) { mPayload = payload; }
 
     private:
         int mType = 0;

@@ -2,7 +2,6 @@
 #include "BootstrapPayload.h"
 #include "BootstrapService.h"
 #include "Enclave_u.h"
-#include "ocalls.h"
 #include "SimTime.h"
 #include "Trace.h"
 #include "gateway.h"
@@ -15,11 +14,7 @@ namespace
 {
 
 constexpr size_t kMaxBootstrapReply = 1500;           // a reply goes in one radio frame (net/RawSocket.cpp)
-constexpr size_t kMaxField = 512;                     // Y_V, Y_G, Auth_d of the Secrecy Forwarding (91 / 91 / 48 B)
-size_t itBufferFor(size_t otPacket)
-{
-    return otPacket * 4 / 3 + 2048;
-}
+constexpr size_t kMaxItPacket = 140 * 1024;    // SmartData up to 64 KB (Hex encoded ~131 KB) + JSON framing
 
 // the ECALL itself failed (enclave lost, bad parameters for the bridge): not a gateway status
 void check(sgx_status_t status, const char* ecall)
@@ -37,7 +32,9 @@ uint64_t now()
     return static_cast<uint64_t>(SimTime::now().ns());
 }
 
-} 
+} // namespace
+
+// ---------------------------------------------------------------------------------------------
 // OT queue
 
 void PacketManager::onOtPacket(const OtPacket& packet)
@@ -68,10 +65,8 @@ void PacketManager::onSmartData(const OtPacket& packet)
     const bool traced = mTracedSizes.insert(packet.bytes.size()).second;
     if (traced) {
         trace::step(mName, "SecureMarshaling (enclave)", "SmartData", packet.from, packet.from);
-        const bool message = !packet.bytes.empty() && packet.bytes[0] == Secure_Data;
-        trace::detail(mName, "OT packet = " + std::to_string(packet.bytes.size()) + " B, "
-            + (message ? "in a Secure_Data message" : "reassembled from the radio frames")
-            + " -> OT queue -> ecall_secure_marshal_ot_to_it");
+        trace::detail(mName, "OT packet = " + std::to_string(packet.bytes.size())
+            + " B, reassembled from the radio frames -> OT queue -> ecall_secure_marshal_ot_to_it");
     }
 
     const auto start = std::chrono::high_resolution_clock::now();
@@ -93,6 +88,12 @@ void PacketManager::onSmartData(const OtPacket& packet)
                 trace::detail(mName, "the enclave refused it: nothing for the cloud"); // its reason: the enclave's check
             }
             return;
+        case GW_ERR_NOT_IMPLEMENTED:
+            if (traced) {
+                trace::detail(mName, "the Secure Marshaling is not written yet (tee.pdf step 4, Enclave/marshaling.cpp): "
+                    "nothing for the cloud");
+            }
+            return;
         default:
             if (traced) {
                 trace::check(mName, false, std::string("ecall_secure_marshal_ot_to_it: ") + statusName(reply.status));
@@ -107,8 +108,7 @@ void PacketManager::onSmartData(const OtPacket& packet)
         return;
     }
     if (traced) {
-        trace::detail(mName, "IT packet = HTTPS Header | AES(K_eg, JSON) = " + std::to_string(reply.payload.size())
-            + " B (made in the enclave: the App cannot read the JSON) -> IT queue -> cloud");
+        trace::detail(mName, "IT packet = " + std::to_string(reply.payload.size()) + " B -> IT queue -> cloud");
     }
     ItPacket it;
     it.to = ItPacket::To::Cloud;
@@ -121,6 +121,9 @@ void PacketManager::onSmartData(const OtPacket& packet)
     mBenchmark.queued(packet.bytes.size(), duration_cast<nanoseconds>(Clock::now() - dequeued));
 }
 
+// ---------------------------------------------------------------------------------------------
+// RSU steps (BootstrapService, role Rsu)
+
 void PacketManager::onRadio(const BootstrapMsg& msg)
 {
     // radio: unicast is logical (BootstrapService::isForMe); "esa": the ESA has no radio, the RSU relays it
@@ -132,8 +135,7 @@ void PacketManager::onRadio(const BootstrapMsg& msg)
         case Activation_Request: {
             // HTTPSEstablishment: relayed unchanged over the HTTPS session; the ESA unpacks M
             trace::step(mName, "HTTPSEstablishment", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
-            send(Activation_Request, "esa", msg.getSeqNum(), msg.getAckNum(), msg.getVehicle(), getPayload(msg),
-                Via::Https);
+            send(Activation_Request, "esa", msg.getSeqNum(), msg.getAckNum(), msg.getVehicle(), getPayload(msg));
             break;
         }
         case PTP_Delay_Request: {
@@ -142,17 +144,13 @@ void PacketManager::onRadio(const BootstrapMsg& msg)
             PtpPayload m;
             m.type = PTP_Delay_Response;
             m.timestamp = SimTime::fromNs(static_cast<int64_t>(now())); // t_4: PTP_Delay_Request received
-            send(PTP_Delay_Response, msg.getSender(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m), Via::Radio);
+            send(PTP_Delay_Response, msg.getSender(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m));
             break;
         }
         case ECDH_Request:       enclaveStep("ECDHResponse", msg); break;
         case Auth_Request:       enclaveStep("SaveRSU + AuthGranted", msg); break;
         case Active_01:          enclaveStep("Active02", msg); break;
-        case Forwarding_Request: enclaveStep("ForwardingGranted", msg); break;   // Secrecy Forwarding, target RSU
-        case Secure_Data:
-            // the OT packet in a bootstrap message (no reassembly): the Secure Marshaling as for the data frames
-            onSmartData({ OtPacket::Kind::SmartData, msg.getSender(), getPayload(msg), Clock::now() });
-            break;
+        case Forwarding_Request: enclaveStep("ForwardingGranted", msg); break;
         default: break;
     }
 }
@@ -162,21 +160,28 @@ void PacketManager::onHttps(const BootstrapMsg& msg)
     if (msg.getDestination() != mName) {
         return;
     }
-    switch (msg.getType()) {
-        case Activation_Token:  activationToken(msg); break;    // from the ESA
-        case Forwarding_Notice: forwardingNotice(msg); break;   // from the source RSU (I am the target)
-        case Handover_Command:
-            // from the target RSU (I am the source): to the vehicle, still in my range (maybe not yet in the target's)
-            trace::step(mName, "HandoverCommand (relay)", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
-            send(Handover_Command, msg.getVehicle(), msg.getAckNum(), msg.getSeqNum() + 1, "", getPayload(msg),
-                Via::Radio);
-            break;
-        default: break;
-    }
-}
 
-void PacketManager::activationToken(const BootstrapMsg& msg)
-{
+    if (msg.getType() == Forwarding_Notice) {
+        trace::step(mName, "ForwardingNotice (enclave)", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
+        const ForwardingNoticePayload notice = unpackForwardingNotice(getPayload(msg));
+        Bytes yg;
+        const int status = receiveForwardingNotice(notice.vehiclePublicKey, notice.tau, yg);
+        if (status != GW_OK) {
+            trace::check(mName, false, std::string("ecall_receive_forwarding_notice: ") + statusName(status));
+            return;
+        }
+        HandoverCommandPayload cmd;
+        cmd.type = Handover_Command;
+        cmd.ti = notice.ti != 0 ? notice.ti : now();
+        cmd.targetRsuPublicKey = yg;
+        send(Handover_Command, msg.getSender(), msg.getAckNum(), msg.getSeqNum() + 1, msg.getVehicle(), pack(cmd));
+        return;
+    }
+
+    if (msg.getType() != Activation_Token) {
+        return;
+    }
+
     // PTP: the activation goes into the enclave (pending until its OTP), then PTPSync starts the clock exchange
     trace::step(mName, "PTP", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
     const ActivationTokenPayload token = unpackActivationToken(getPayload(msg));
@@ -192,52 +197,7 @@ void PacketManager::activationToken(const BootstrapMsg& msg)
     PtpPayload m;
     m.type = PTP_Sync;
     m.timestamp = SimTime::fromNs(static_cast<int64_t>(now()));
-    send(PTP_Sync, msg.getVehicle(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m), Via::Radio);
-}
-
-
-bool PacketManager::startHandover(const std::string& session, const std::string& targetRsu)
-{
-    // source RSU G_{i+1}: { Y_V, tau_{i+2}, Auth_d } from the enclave (K_dg stays there), over HTTPS to G_{i+2}
-    trace::step(mName, "SecrecyForwarding (enclave): " + session + " -> " + targetRsu);
-    ForwardingNoticePayload notice;
-    const int status = triggerHandover(session, 0, notice);
-    if (status != GW_OK) {
-        if (status == GW_IGNORED) {
-            ++mIgnored;
-        }
-        trace::check(mName, false, std::string("ecall_trigger_handover: ") + statusName(status));
-        return false;
-    }
-    for (const std::string& line : describe(notice)) {
-        trace::detail(mName, line);
-    }
-    send(Forwarding_Notice, targetRsu, 0, 0, session, pack(notice), Via::Https);
-    return true;
-}
-
-void PacketManager::forwardingNotice(const BootstrapMsg& msg)
-{
-    // target RSU G_{i+2}: K_dh_i, KT_i and auth_{i+2} pre-computed in the enclave; Y_G_{i+2} goes back to the
-    // source in a Handover_Command for the vehicle
-    trace::step(mName, "ForwardingNotice (enclave)", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
-    const ForwardingNoticePayload notice = unpackForwardingNotice(getPayload(msg));
-    for (const std::string& line : describe(notice)) {
-        trace::detail(mName, line);
-    }
-    const Reply reply = receiveForwardingNotice(msg.getVehicle(), notice);
-    if (reply.status != GW_OK) {
-        trace::check(mName, false, std::string("ecall_receive_forwarding_notice: ") + statusName(reply.status));
-        return;
-    }
-
-    // M = { Handover_Command, G_{i+2}, Y_G_{i+2} }
-    HandoverCommandPayload command;
-    command.type = Handover_Command;
-    command.targetRsu = mName;
-    command.targetRsuPublicKey = reply.payload;
-    send(Handover_Command, msg.getSender(), msg.getAckNum(), msg.getSeqNum() + 1, msg.getVehicle(), pack(command),
-        Via::Https);
+    send(PTP_Sync, msg.getVehicle(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m));
 }
 
 // ECDH_Request, Auth_Request, Active_01: into the enclave; its reply goes where its type says
@@ -258,21 +218,16 @@ void PacketManager::enclaveStep(const char* step, const BootstrapMsg& received)
 
     if (reply.type == Active_02) {
         // the same M to the ESA, over the HTTPS session; the protocol ends here for the RSU
-        send(Active_02, "esa", received.getAckNum(), received.getSeqNum() + 1, received.getVehicle(), reply.payload,
-            Via::Https);
+        send(Active_02, "esa", received.getAckNum(), received.getSeqNum() + 1, received.getVehicle(), reply.payload);
         trace::end(mName, "RSU ready (" + received.getVehicle() + ")");
-        return;
-    }
-    send(reply.type, received.getSender(), received.getAckNum(), received.getSeqNum() + 1, "", reply.payload,
-        Via::Radio);
-    if (reply.type == Forwarding_Granted) {
-        trace::end(mName, "handover done (" + received.getVehicle() + " now with " + mName + ")");
+    } else {
+        send(reply.type, received.getSender(), received.getAckNum(), received.getSeqNum() + 1, "", reply.payload);
     }
 }
 
-// BootstrapService::sendBootstrap (RSU): the ESA and the other RSUs over HTTPS, the vehicles over the radio
+// BootstrapService::sendBootstrap (RSU): "esa" over HTTPS, anything else over the radio
 void PacketManager::send(int type, const std::string& destination, int seqNum, int ackNum, const std::string& vehicle,
-    const Bytes& payload, Via via)
+    const Bytes& payload)
 {
     BootstrapMsg msg;
     msg.setType(type);
@@ -283,37 +238,29 @@ void PacketManager::send(int type, const std::string& destination, int seqNum, i
     msg.setAckNum(ackNum);
     setPayload(msg, payload);
 
-    const bool https = via == Via::Https;
+    const bool https = destination == "esa";
     const auto& transport = https ? mTransport.https : mTransport.radio;
     if (!transport) {
         throw std::runtime_error(mName + ": no " + (https ? "HTTPS" : "radio") + " transport");
     }
+    trace::send(mName, stageName(type), destination, msg.getVehicle(), https ? "HTTPS" : "radio", payload.size());
     transport(msg);
 }
 
+// ---------------------------------------------------------------------------------------------
+// ECALLs
 
 int PacketManager::initGateway(const Bytes& gatewayCert, const Bytes& esaPublicKey, const Bytes& groupKey)
 {
-    EnclaveScope scope(mEid); // its OCALLs: this enclave's sealed state
     int ret = GW_ERR_STATE;
     check(ecall_init_gateway(mEid, &ret, gatewayCert.data(), gatewayCert.size(), esaPublicKey.data(),
         esaPublicKey.size(), groupKey.data(), groupKey.size()), "ecall_init_gateway");
     return ret;
 }
 
-int PacketManager::initCloudSession(const std::string& certificatePem, const std::string& host)
-{
-    EnclaveScope scope(mEid); // its OCALLs: this enclave's sealed state
-    int ret = GW_ERR_STATE;
-    check(ecall_init_cloud_session(mEid, &ret, reinterpret_cast<const uint8_t*>(certificatePem.data()),
-        certificatePem.size(), host.c_str(), mName.c_str()), "ecall_init_cloud_session");
-    return ret;
-}
-
 int PacketManager::addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
     const Bytes& authEg)
 {
-    EnclaveScope scope(mEid); // its OCALLs: this enclave's sealed state
     int ret = GW_ERR_STATE;
     check(ecall_control_add_activation_token(mEid, &ret, session.c_str(), t0, tf, authD.data(), authD.size(),
         authEg.data(), authEg.size()), "ecall_control_add_activation_token");
@@ -322,7 +269,6 @@ int PacketManager::addActivationToken(const std::string& session, uint64_t t0, u
 
 Reply PacketManager::handleBootstrap(int type, const std::string& session, const Bytes& payload, uint64_t ptpTimeNs)
 {
-    EnclaveScope scope(mEid); // its OCALLs: this enclave's sealed state
     Reply reply;
     Bytes out(kMaxBootstrapReply);
     size_t outLen = 0;
@@ -337,9 +283,8 @@ Reply PacketManager::handleBootstrap(int type, const std::string& session, const
 
 Reply PacketManager::marshal(const Bytes& otPacket, uint64_t ptpTimeNs)
 {
-    EnclaveScope scope(mEid); // its OCALLs: this enclave's sealed state
     Reply reply;
-    Bytes out(itBufferFor(otPacket.size()));
+    Bytes out(kMaxItPacket);
     size_t outLen = 0;
     check(ecall_secure_marshal_ot_to_it(mEid, &reply.status, otPacket.data(), otPacket.size(), ptpTimeNs,
         out.data(), out.size(), &outLen), "ecall_secure_marshal_ot_to_it");
@@ -350,40 +295,30 @@ Reply PacketManager::marshal(const Bytes& otPacket, uint64_t ptpTimeNs)
     return reply;
 }
 
-int PacketManager::triggerHandover(const std::string& session, uint64_t authSlot, ForwardingNoticePayload& notice)
+int PacketManager::triggerHandover(const std::string& session, uint64_t ti, Block& outTau, Bytes& outYv)
 {
-    EnclaveScope scope(mEid); // its OCALLs: this enclave's sealed state
-    int ret = GW_ERR_STATE;
-    Block tau{};
-    Bytes yv(kMaxField);
-    Bytes authD(kMaxField);
+    outYv.resize(128);
     size_t yvLen = 0;
-    size_t authDLen = 0;
-    check(ecall_trigger_handover(mEid, &ret, session.c_str(), authSlot, tau.data(), yv.data(), yv.size(), &yvLen,
-        authD.data(), authD.size(), &authDLen), "ecall_trigger_handover");
-    if (ret == GW_OK) {
-        yv.resize(yvLen);
-        authD.resize(authDLen);
-        notice = ForwardingNoticePayload{ Forwarding_Notice, yv, tau, authD };
+    int status = GW_ERR_STATE;
+    check(ecall_trigger_handover(mEid, &status, session.c_str(), ti, outTau.data(), outYv.data(), &yvLen),
+        "ecall_trigger_handover");
+    if (status == GW_OK) {
+        outYv.resize(yvLen);
     }
-    return ret;
+    return status;
 }
 
-Reply PacketManager::receiveForwardingNotice(const std::string& session, const ForwardingNoticePayload& notice)
+int PacketManager::receiveForwardingNotice(const Bytes& yv, const Block& tau, Bytes& outYg)
 {
-    EnclaveScope scope(mEid); // its OCALLs: this enclave's sealed state
-    Reply reply;
-    Bytes yg(kMaxField);
+    outYg.resize(128);
     size_t ygLen = 0;
-    check(ecall_receive_forwarding_notice(mEid, &reply.status, session.c_str(), notice.vehiclePublicKey.data(),
-        notice.vehiclePublicKey.size(), notice.tau.data(), notice.authD.data(), notice.authD.size(), yg.data(),
-        yg.size(), &ygLen), "ecall_receive_forwarding_notice");
-    if (reply.status == GW_OK) {
-        yg.resize(ygLen);
-        reply.type = Handover_Command;
-        reply.payload = std::move(yg);
+    int status = GW_ERR_STATE;
+    check(ecall_receive_forwarding_notice(mEid, &status, yv.data(), yv.size(), tau.data(), outYg.data(), &ygLen),
+        "ecall_receive_forwarding_notice");
+    if (status == GW_OK) {
+        outYg.resize(ygLen);
     }
-    return reply;
+    return status;
 }
 
 const char* statusName(int status)
@@ -395,6 +330,7 @@ const char* statusName(int status)
         case GW_ERR_BUFFER: return "GW_ERR_BUFFER";
         case GW_ERR_CRYPTO: return "GW_ERR_CRYPTO";
         case GW_ERR_STATE: return "GW_ERR_STATE";
+        case GW_ERR_NOT_IMPLEMENTED: return "GW_ERR_NOT_IMPLEMENTED";
         default: return "?";
     }
 }

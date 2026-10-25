@@ -8,7 +8,10 @@
 #include <string>
 #include <vector>
 
+#include <memory>
+
 class BootstrapService;
+struct evp_pkey_st;
 
 struct BootstrapResult
 {
@@ -18,7 +21,8 @@ struct BootstrapResult
     std::vector<uint8_t> kG;    // K_g: group key (AES-128-GCM) for vehicle <-> vehicle messages
     std::vector<uint8_t> kDe;   // K_de: vehicle <-> ESA key (vehicle only)
     std::vector<uint8_t> authD; // Auth_d: the vehicle's token, carried by its data messages (vehicle only)
-    // add protocol outputs here (token, keys, certificates...)
+    std::shared_ptr<struct evp_pkey_st> ecdhKey; // vehicle EC keypair X_V / Y_V (vehicle only)
+    std::vector<uint8_t> vehiclePublicKey;       // Y_V DER bytes (RSU only)
 };
 
 using BootstrapCallback = std::function<void(const BootstrapResult&)>;

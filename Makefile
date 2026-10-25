@@ -1,6 +1,8 @@
 # Secure bootstrap (vehicle, RSU, ESA) without Artery/OMNeT++: C++17 + OpenSSL 3
 #   make          builds and runs the 3 processes (ESA, RSU, vehicle) over raw sockets
 #   make pretty   the same, with the output of each component separated by a bar
+#   make view     the same, drawn at the end as a sequence diagram: each message, the values it carried,
+#                 the validations (ok / failed) and the keys each node kept, compared in a summary
 #   make build    only builds ./bootstrap
 #   make clean
 #
@@ -11,12 +13,15 @@
 #   common/    message, payloads, crypto, vehicle traits, time
 #   protocol/  bootstrap protocol (BootstrapService, ExternalSecurityAgent) and its API (Bootstrap.h)
 #   net/       raw Ethernet sockets (AF_PACKET)
-#   main.cpp   one process per node
+#   main.cpp   one process per node; TraceView: the drawing of "make view"
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -g
 CPPFLAGS += -Icommon -Iprotocol -Inet -MMD -MP
+STATIC   ?= 0
+ifeq ($(STATIC),1)
 LDFLAGS  += -static -Wl,--no-warnings   # static: runs in an empty image (no-warnings: libcrypto's dlopen notes)
+endif
 LDLIBS   += -lssl -lcrypto   # libssl: the HTTPS of the cloud (net/Https.h)
 
 BUILD := build
@@ -26,16 +31,29 @@ IMAGE := secure-bootstrap
 
 LIB_SRCS := $(wildcard common/*.cpp protocol/*.cpp net/*.cpp)
 LIB_OBJS := $(LIB_SRCS:%.cpp=$(BUILD)/%.o)
-MAIN_OBJ := $(BUILD)/main.o
+MAIN_OBJ := $(BUILD)/main.o $(BUILD)/TraceView.o
 
-.PHONY: run pretty build clean
+.PHONY: run pretty view build clean network-handover test-network-handover test-handover
 run: $(BUILD)/image
 	docker run --rm --network none $(IMAGE)
 
 pretty: $(BUILD)/image
 	docker run --rm --network none $(IMAGE) --pretty
 
+# colors only on a terminal (tested on make's own output: inside $$(...) it would be a pipe)
+view: $(BUILD)/image
+	color=; [ -t 1 ] && color=--color; docker run --rm --network none $(IMAGE) --view $$color
+
 build: $(BIN)
+
+test-handover: $(BIN)
+	./$(BIN) --test-handover
+
+network-handover: $(BIN)
+	./$(BIN) --test-network-handover
+
+test-network-handover: $(BIN)
+	./$(BIN) --test-network-handover
 
 $(LIB): $(LIB_OBJS)
 	$(AR) rcs $@ $^

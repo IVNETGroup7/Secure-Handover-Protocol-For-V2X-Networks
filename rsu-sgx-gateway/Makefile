@@ -1,3 +1,25 @@
+# RSU gateway on Intel SGX (tee.pdf): two binaries bound by Enclave/Enclave.edl
+#   App/      Non-Secure World -> ./app               (normal Linux process: queues, packet manager, OCALLs)
+#   Enclave/  Secure World     -> enclave.signed.so   (control: bootstrap; marshaling: data path)
+#
+#   make            builds in simulation mode (SGX_MODE=SIM: no SGX hardware needed)
+#   make run        builds and runs ./app: the self-test (the repository's vehicle and ESA against the enclave)
+#   make network    ESA, RSU, vehicle and cloud (tee.pdf step 6): the bootstrap on the raw sockets with this gateway
+#                   as the RSU, then the vehicle sends SmartData (32 B, 1 KB, 64 KB - 1) over the radio, which the
+#                   gateway marshals in the enclave and POSTs to the cloud over HTTPS (../bootstrap --pretty)
+#   make view       the same, drawn at the end as a sequence diagram (../bootstrap --view)
+#   make bench      the same with 100 packets of each size from 32 B to 64 KB - 1: the turn-around table
+#                   (Fig. 6 of the paper)
+#   make clean
+#
+# Raw sockets need CAP_NET_RAW: "network" and "view" give it to ./app and ../bootstrap with sudo setcap,
+# again only when a binary changes (setcap needs sudo once per build)
+#   make SGX_MODE=HW    on a CPU with SGX (driver + PSW installed)
+#
+# Needs the Intel SGX SDK (/opt/intel/sgxsdk) and Intel SGX-SSL (/opt/intel/sgxssl); setup-vm.sh installs both
+# in the VM. Without the SDK on this machine, make runs in that VM (vm-make.sh): same targets, same output.
+# Based on the SDK's SampleCode/SampleEnclave/Makefile and SGX-SSL's Linux/sgx/test_app/sgx_{t,u}.mk.
+
 SGX_SDK ?= /opt/intel/sgxsdk
 SGXSSL ?= /opt/intel/sgxssl
 SGX_MODE ?= SIM
@@ -72,11 +94,9 @@ App_Link_Flags := -L$(SGX_LIBRARY_PATH) -l$(Urts_Library) -l$(Uae_Library) \
 ######## Enclave (Secure World) ########
 
 # crypto: common/Crypto.cpp, the same code as the vehicle and the ESA (OpenSSL from SGX-SSL here);
-# common/SmartData.cpp: the format of the vehicles' data packets, for the Secure Marshaling;
-# common/Handover.cpp: the Secrecy Forwarding equations, the same as the vehicle's
+# common/SmartData.cpp: the format of the vehicles' data packets, for the Secure Marshaling
 Enclave_Cpp_Files := $(wildcard Enclave/*.cpp)
-Enclave_Bootstrap_Files := $(BOOTSTRAP_COMMON)/Crypto.cpp $(BOOTSTRAP_COMMON)/SmartData.cpp \
-                           $(BOOTSTRAP_COMMON)/Handover.cpp
+Enclave_Bootstrap_Files := $(BOOTSTRAP_COMMON)/Crypto.cpp $(BOOTSTRAP_COMMON)/SmartData.cpp
 Enclave_Objects := Enclave/Enclave_t.o $(Enclave_Cpp_Files:.cpp=.o) \
                    $(patsubst ../%.cpp,$(BUILD)/enclave/%.o,$(Enclave_Bootstrap_Files))
 Enclave_Include := -IEnclave -I$(BOOTSTRAP_COMMON) -I$(SGX_SDK)/include -I$(SGX_SDK)/include/tlibc \
@@ -104,7 +124,7 @@ Enclave_Key := Enclave/Enclave_private.pem
 
 Build_Stamp := .config_$(SGX_MODE)_$(SGX_DEBUG)
 
-.PHONY: all run network bench clean
+.PHONY: all run network view bench clean
 all: $(Build_Stamp) app $(Signed_Enclave_Name)
 	@echo "built: ./app + $(Signed_Enclave_Name) (SGX_MODE=$(SGX_MODE), SGX_DEBUG=$(SGX_DEBUG))"
 
@@ -117,6 +137,13 @@ SMARTDATA := --smartdata 32,1024,65535
 
 network: all .caps_app .caps_bootstrap
 	$(ROOT)/bootstrap --pretty --rsu-exec $(CURDIR)/app $(CLOUD) $(SMARTDATA)
+
+network-handover: all .caps_app .caps_bootstrap
+	$(ROOT)/bootstrap --test-network-handover
+
+# colors only on a terminal (tested on make's own output)
+view: all .caps_app .caps_bootstrap
+	color=; [ -t 1 ] && color=--color; $(ROOT)/bootstrap --view $$color --rsu-exec $(CURDIR)/app $(CLOUD) $(SMARTDATA)
 
 bench: all .caps_app .caps_bootstrap
 	$(ROOT)/bootstrap --pretty --rsu-exec $(CURDIR)/app $(CLOUD) \
@@ -192,7 +219,7 @@ $(Signed_Enclave_Name): $(Enclave_Name) $(Enclave_Key) $(Enclave_Config)
 
 clean:
 	rm -rf .config_* app $(Enclave_Name) $(Signed_Enclave_Name) $(App_Objects) $(Enclave_Objects) \
-		App/Enclave_u.* Enclave/Enclave_t.* App/*.d Enclave/*.d $(BUILD) gateway.sealed* .caps_* cloud.crt
+		App/Enclave_u.* Enclave/Enclave_t.* App/*.d Enclave/*.d $(BUILD) gateway.sealed .caps_* cloud.crt
 
 # header dependencies (-MMD)
 -include $(App_Objects:.o=.d) $(Enclave_Objects:.o=.d)

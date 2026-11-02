@@ -179,6 +179,7 @@ make -C "$OPTEE_DIR/optee_os" -j"$(nproc)" \
     CROSS_COMPILE_core=aarch64-linux-gnu- \
     CROSS_COMPILE_ta_arm64=aarch64-linux-gnu- \
     CFG_ARM64_core=y \
+    CFG_USER_TA_TARGETS=ta_arm64 \
     CFG_TEE_CORE_LOG_LEVEL=2 \
     ta_dev_kit
 
@@ -262,33 +263,63 @@ virt-install \
     --disk path="$CLOUD_ISO",device=cdrom \
     --os-variant ubuntu24.04 \
     --network network=default,model=virtio \
+    --channel type=unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
     --memorybacking source.type=memfd,access.mode=shared \
     --filesystem source="$SHARE_DIR",target="$SHARE_TAG",driver.type=virtiofs \
     --graphics none \
     --noautoconsole \
     --import
 
-echo "=== Step 7: Waiting for cloud-init + OP-TEE OS & TA DevKit build to finish ==="
+echo "=== Step 7: Waiting for VM IP and OP-TEE OS & TA DevKit build to finish ==="
+printf 'Waiting for VM IP address'
+for _ in $(seq 1 45); do
+    VM_IP=$(virsh domifaddr "$VM_NAME" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}')
+    [ -n "$VM_IP" ] && break
+    printf '.'; sleep 2
+done
+echo
+echo "VM IP: ${VM_IP:-unknown}"
+
+SSH_CMD=(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
+for k in "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_ed25519"; do
+    [ -f "$k" ] && SSH_CMD+=(-i "$k")
+done
+
+printf 'Waiting for SSH'
+for _ in $(seq 1 60); do
+    if [ -n "$VM_IP" ] && "${SSH_CMD[@]}" "$VM_USER@$VM_IP" true 2>/dev/null; then
+        break
+    fi
+    printf '.'; sleep 2
+done
+echo
+
+echo "Building OP-TEE SDK inside the VM (this takes ~3-5 minutes on first boot)..."
 TIMEOUT=1800; ELAPSED=0
-until virsh qemu-agent-command "$VM_NAME" \
-        '{"execute":"guest-file-open","arguments":{"path":"/var/lib/cloud/instance/boot-finished"}}' \
-        >/dev/null 2>&1; do
-    if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-        echo; echo "Timed out waiting for cloud-init. Check /var/log/cloud-init-output.log in the VM."
+SDK_DONE=false
+while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+    if [ -n "$VM_IP" ] && "${SSH_CMD[@]}" "$VM_USER@$VM_IP" "[ -f /var/log/optee-sdk-installed ]" 2>/dev/null; then
+        SDK_DONE=true
+        break
+    fi
+    if virsh qemu-agent-command "$VM_NAME" '{"execute":"guest-file-open","arguments":{"path":"/var/log/optee-sdk-installed"}}' >/dev/null 2>&1; then
+        SDK_DONE=true
         break
     fi
     printf '.'; sleep 10; ELAPSED=$((ELAPSED + 10))
 done
 echo
 
-if virsh qemu-agent-command "$VM_NAME" \
-        '{"execute":"guest-file-open","arguments":{"path":"/var/log/optee-sdk-installed"}}' >/dev/null 2>&1; then
-    echo "OP-TEE OS (ARMv8-A TA DevKit) and optee_client (libteec) installed."
+if [ "$SDK_DONE" = true ]; then
+    echo "OP-TEE OS (ARMv8-A TA DevKit) and optee_client (libteec) installed successfully."
 else
-    echo "WARNING: OP-TEE SDK install did not complete. See /var/log/optee-sdk-install.log in the VM."
+    echo "WARNING: OP-TEE SDK install did not complete within timeout."
+    if [ -n "$VM_IP" ]; then
+        echo "Last lines of /var/log/optee-sdk-install.log in the VM:"
+        "${SSH_CMD[@]}" "$VM_USER@$VM_IP" "sudo tail -n 30 /var/log/optee-sdk-install.log 2>/dev/null" || true
+    fi
 fi
 
-VM_IP=$(virsh domifaddr "$VM_NAME" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}')
 echo "=== Success! Environment configured and VM '$VM_NAME' is running ==="
 echo "IP address: ${VM_IP:-unknown}  (virsh domifaddr $VM_NAME)"
 echo "SSH (login: $VM_USER / $VM_USER): ssh $VM_USER@${VM_IP:-<VM-IP>}"

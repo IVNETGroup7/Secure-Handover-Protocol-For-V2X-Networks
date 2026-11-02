@@ -73,7 +73,7 @@ Host_Objects := $(patsubst host/%.cpp,$(BUILD)/host/%.o,$(Host_Cpp_Files)) \
 CLOUD := --cloud $(CURDIR)/cloud.crt
 SMARTDATA := --smartdata 32,1024,65535
 
-.PHONY: all ta run network bench rpi5 vm clean FORCE
+.PHONY: all ta run network bench rpi5 vm clean FORCE ensure_caps
 
 all: app
 	@echo "built: ./app (TEE_MODE=$(TEE_MODE), PLATFORM=$(PLATFORM))$(if $(wildcard $(TA_BINARY)), + $(TA_BINARY),)"
@@ -103,10 +103,14 @@ $(BUILD)/common/%.o: ../%.cpp
 run: all
 	./app
 
-network: all .caps_app .caps_bootstrap
+ensure_caps: app $(ROOT)/bootstrap
+	@sudo setcap cap_net_raw=ep app 2>/dev/null || true
+	@sudo setcap cap_net_raw=ep $(ROOT)/bootstrap 2>/dev/null || true
+
+network: all ensure_caps
 	$(ROOT)/bootstrap --pretty --rsu-exec $(CURDIR)/app $(CLOUD) $(SMARTDATA)
 
-bench: all .caps_app .caps_bootstrap
+bench: all ensure_caps
 	$(ROOT)/bootstrap --pretty --rsu-exec $(CURDIR)/app $(CLOUD) \
 		--smartdata 32,256,1024,4096,16384,65535 --smartdata-count 100
 
@@ -120,14 +124,6 @@ vm:
 
 $(ROOT)/bootstrap: FORCE
 	$(MAKE) -C $(ROOT) CXX=$(CXX) build
-
-.caps_app: app
-	sudo setcap cap_net_raw=ep app
-	@touch $@
-
-.caps_bootstrap: $(ROOT)/bootstrap
-	sudo setcap cap_net_raw=ep $(ROOT)/bootstrap
-	@touch $@
 
 FORCE:
 

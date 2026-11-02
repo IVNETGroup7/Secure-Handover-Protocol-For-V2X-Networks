@@ -3,7 +3,7 @@
 
 // The wired side of the scenario, one module: the pre-established HTTPS sessions of the RSUs with the ESA and with
 // each other (Secrecy Forwarding), each message delivered after "latency". It also plays the ESA (the repository's
-// protocol/ExternalSecurityAgent, as an object) and the cloud the RSUs' enclaves marshal SmartData for (Fig. 5 of
+// protocol/ExternalSecurityAgent, as an object) and the cloud the RSUs' OP-TEE TAs marshal SmartData for (Fig. 5 of
 // the paper: it opens each IT packet with its K_eg, as the cloud of ../main.cpp).
 // Messages go by destination: "esa" to the ESA, an RSU's name (e.g. "rsu[1]") to the callback it registered.
 // The ESA and the cloud are made on first use: the RSUs register in their own initialize(), which may run first.
@@ -35,9 +35,9 @@ class BackhaulBroker : public omnetpp::cSimpleModule
         // over the backhaul, to msg.getDestination(), "latency" later
         void sendBackhaul(const BootstrapMsg& msg);
 
-        // the cloud: its certificate (PEM), pinned by the enclaves (ecall_init_cloud_session)
+        // the cloud: its certificate (PEM), pinned by the OP-TEE TAs (TA_GATEWAY_CMD_INIT_CLOUD_SESSION)
         std::string cloudCertificate();
-        // an IT packet (HTTPS Header | AES(K_eg, JSON)) the enclave of "rsuName" made: opened with the cloud's key
+        // an IT packet (HTTPS Header | AES(K_eg, JSON)) the OP-TEE TA of "rsuName" made: opened with the cloud's key
         void postToCloud(const std::string& rsuName, const Bytes& itPacket);
 
     protected:

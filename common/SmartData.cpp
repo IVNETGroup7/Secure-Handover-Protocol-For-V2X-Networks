@@ -1,52 +1,122 @@
 #include "SmartData.h"
-#include "ByteWire.h"
 #include "Traits.h"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
 
+namespace
+{
+
+void putUint(Bytes& out, uint64_t value, int size)
+{
+    for (int i = size - 1; i >= 0; --i) {
+        out.push_back(static_cast<uint8_t>(value >> (8 * i)));
+    }
+}
+
+void putField(Bytes& out, const Bytes& field)
+{
+    putUint(out, field.size(), 4);
+    out.insert(out.end(), field.begin(), field.end());
+}
+
+class Reader
+{
+    public:
+        Reader(const Bytes& data, const char* what) : mData(data), mWhat(what) {}
+
+        uint64_t uint(int size)
+        {
+            need(size);
+            uint64_t value = 0;
+            for (int i = 0; i < size; ++i) {
+                value = (value << 8) | mData[mPos++];
+            }
+            return value;
+        }
+
+        Bytes field()
+        {
+            const size_t size = uint(4);
+            need(size);
+            Bytes field(mData.begin() + mPos, mData.begin() + mPos + size);
+            mPos += size;
+            return field;
+        }
+
+        Block block()
+        {
+            need(16);
+            Block block;
+            std::copy_n(mData.begin() + mPos, block.size(), block.begin());
+            mPos += block.size();
+            return block;
+        }
+
+        void done() const
+        {
+            if (mPos != mData.size()) {
+                throw std::runtime_error(std::string(mWhat) + ": trailing bytes");
+            }
+        }
+
+    private:
+        void need(size_t size) const
+        {
+            if (mData.size() - mPos < size) {
+                throw std::runtime_error(std::string(mWhat) + ": truncated");
+            }
+        }
+
+        const Bytes& mData;
+        const char* mWhat;
+        size_t mPos = 0;
+};
+
+} // namespace
+
 Bytes packSmartData(const SmartData& data)
 {
     Bytes out;
-    wire::putUint(out, data.location, 4);
-    wire::putUint(out, data.timing, 8);
-    wire::putUint(out, data.metadata, 4);
-    wire::putField32(out, data.value);
-    wire::putField32(out, data.authD);
+    putUint(out, data.location, 4);
+    putUint(out, data.timing, 8);
+    putUint(out, data.metadata, 4);
+    putField(out, data.value);
+    putField(out, data.authD);
     return out;
 }
 
 SmartData unpackSmartData(const Bytes& bytes)
 {
-    wire::Reader reader(bytes, "SmartData");
+    Reader reader(bytes, "SmartData");
     SmartData data;
     data.location = static_cast<uint32_t>(reader.uint(4));
     data.timing = reader.uint(8);
     data.metadata = static_cast<uint32_t>(reader.uint(4));
-    data.value = reader.field32();
-    data.authD = reader.field32();
-    reader.checkDone();
+    data.value = reader.field();
+    data.authD = reader.field();
+    reader.done();
     return data;
 }
 
 Bytes packDataMessage(const DataMessage& message)
 {
     Bytes out;
-    wire::putField32(out, message.sealedData);
-    wire::putField32(out, message.authD);
+    putField(out, message.sealedData);
+    putField(out, message.authD);
     out.insert(out.end(), message.otp.begin(), message.otp.end());
     return out;
 }
 
 DataMessage unpackDataMessage(const Bytes& bytes)
 {
-    wire::Reader reader(bytes, "OT packet");
+    Reader reader(bytes, "OT packet");
     DataMessage message;
-    message.sealedData = reader.field32();
-    message.authD = reader.field32();
+    message.sealedData = reader.field();
+    message.authD = reader.field();
     message.otp = reader.block();
-    reader.checkDone();
+    reader.done();
     return message;
 }
 

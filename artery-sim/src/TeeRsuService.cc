@@ -4,10 +4,8 @@
 #include "Link.h"
 #include "SimTime.h"
 #include "V2xFrame.h"
-#include "gateway.h"
-#include "ocalls.h"
+#include "gateway_ta.h"
 #include <omnetpp.h>
-#include <sgx_urts.h>
 #include <vanetza/btp/data_request.hpp>
 #include <vanetza/common/byte_order.hpp>
 #include <vanetza/dcc/profile.hpp>
@@ -23,7 +21,7 @@ namespace
 
 constexpr short kHandoverTimer = 1;     // self-message: announce a vehicle to the next RSU (its name is the vehicle)
 
-// "rsu[0]" -> "rsu0": a file name
+// "rsu[0]" -> "rsu0": a storage object / file name
 std::string fileName(const std::string& name)
 {
     std::string out;
@@ -35,7 +33,7 @@ std::string fileName(const std::string& name)
     return out;
 }
 
-// K_g given as hex ("" -> empty: generated in the enclave)
+// K_g given as hex ("" -> empty: generated in the TA)
 Bytes hexKey(const std::string& hex)
 {
     Bytes key;
@@ -50,9 +48,7 @@ Bytes hexKey(const std::string& hex)
 TeeRsuService::~TeeRsuService()
 {
     mGateway.reset();
-    if (mEid != 0) {
-        sgx_destroy_enclave(mEid);
-    }
+    mTee.reset();
 }
 
 void TeeRsuService::initialize()
@@ -64,23 +60,13 @@ void TeeRsuService::initialize()
     mMarshalLatencySignal = registerSignal("marshalLatencyUs");
     mHandoverGrantedSignal = registerSignal("handoverGranted");
 
-    // Option A: this RSU's own enclave, with its own sealed state (fresh unless freshState = false)
-    const std::string enclavePath = par("enclavePath").stdstringValue();
-    const sgx_status_t created = sgx_create_enclave(enclavePath.c_str(), SGX_DEBUG_FLAG, nullptr, nullptr, &mEid,
-        nullptr);
-    if (created != SGX_SUCCESS) {
-        throw omnetpp::cRuntimeError("%s: sgx_create_enclave(%s) failed: sgx_status_t 0x%04x", mName.c_str(),
-            enclavePath.c_str(), static_cast<unsigned>(created));
-    }
+    // Option A: this RSU's own OP-TEE TA session, with its own Secure Storage object (fresh unless freshState = false)
     std::string sealed = par("sealedStatePath").stdstringValue();
     if (sealed.empty()) {
         sealed = fileName(mName) + ".sealed";
     }
-    if (par("freshState").boolValue()) {
-        std::remove(sealed.c_str());
-    }
-    setSealedStatePath(mEid, sealed);
-    mGateway = std::make_unique<PacketManager>(mEid, mName);
+    mTee = std::make_unique<TeeSession>(sealed, par("freshState").boolValue());
+    mGateway = std::make_unique<PacketManager>(*mTee, mName);
 
     // HTTPS session with the ESA over the backhaul: my certificate's key (CY_g) for CY_e
     mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
@@ -100,11 +86,11 @@ void TeeRsuService::initialize()
 
     const int init = mGateway->initGateway(certificate.certificate, esaPublicKey, hexKey(par("groupKey").stdstringValue()));
     if (init != GW_OK) {
-        throw omnetpp::cRuntimeError("%s: ecall_init_gateway: %s", mName.c_str(), statusName(init));
+        throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_INIT_GATEWAY: %s", mName.c_str(), statusName(init));
     }
     const int cloud = mGateway->initCloudSession(mBroker->cloudCertificate(), kCloudAddress);
     if (cloud != GW_OK) {
-        throw omnetpp::cRuntimeError("%s: ecall_init_cloud_session: %s", mName.c_str(), statusName(cloud));
+        throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_INIT_CLOUD_SESSION: %s", mName.c_str(), statusName(cloud));
     }
 
     PacketManager::Transport transport;
@@ -142,17 +128,17 @@ void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPack
     }
 }
 
-// Secure_Data: OT packet -> ecall_secure_marshal_ot_to_it -> IT packet for the cloud
+// Secure_Data: OT packet -> TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT -> IT packet for the cloud
 void TeeRsuService::secureData(const BootstrapMsg& msg)
 {
-    // the ECALL's own (wall clock) time: simulation time does not move inside an event
+    // the TA invocation's own (wall clock) time: simulation time does not move inside an event
     const auto start = std::chrono::steady_clock::now();
     const Reply reply = mGateway->marshal(getPayload(msg), static_cast<uint64_t>(SimTime::now().ns()));
     const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
     emit(mMarshalLatencySignal, us);
     if (reply.status != GW_OK) {
         ++mMarshalRefused;
-        EV_WARN << mName << ": SmartData of " << msg.getSender() << " refused by the enclave (" << statusName(reply.status)
+        EV_WARN << mName << ": SmartData of " << msg.getSender() << " refused by the TA (" << statusName(reply.status)
             << ")\n";
         return;
     }
@@ -209,14 +195,11 @@ void TeeRsuService::finish()
 {
     recordScalar("marshaledPackets", mMarshaled);
     recordScalar("marshalRefused", mMarshalRefused);
-    recordScalar("enclaveIgnored", mGateway ? mGateway->ignored() : 0);
+    recordScalar("teeIgnored", mGateway ? mGateway->ignored() : 0);
     recordScalar("handoversTriggered", mHandoversTriggered);
     recordScalar("handoversGranted", mHandoversGranted);
     ItsG5Service::finish();
-    // the enclave goes with this RSU (finish: OMNeT++ is done with it; also at deletion, whichever first)
+    // the TA session goes with this RSU
     mGateway.reset();
-    if (mEid != 0) {
-        sgx_destroy_enclave(mEid);
-        mEid = 0;
-    }
+    mTee.reset();
 }

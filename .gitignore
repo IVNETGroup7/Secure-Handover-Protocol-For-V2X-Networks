@@ -42,6 +42,7 @@
 build/
 Build/
 build-*/
+build_*/
 
 # CMake generated files
 CMakeFiles/
@@ -68,8 +69,16 @@ Testing/
 
 # build output
 bootstrap
+rsu-optee-gateway/app
+*.ta
+*.elf
+*.dmp
+*.map
+*.sealed
+*.sealed.*
+.caps_*
+cloud.crt
 
 # ignoring TEE pdfs
 s10922-023-09723-6.pdf 
-SGX.pdf 
 tee.pdf

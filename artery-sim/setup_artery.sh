@@ -1,3 +1,9 @@
+#!/bin/bash
+# Sets up OMNeT++ 5.7.1, Artery (INET, Veins, Vanetza), SUMO, and the tee_v2x_handover scenario
+# on the host PC (RSUs run via rsu-optee-gateway).
+#
+# Usage:
+#   ./setup_artery.sh [--with-qtenv] [--skip-packages] [--artery-dir <dir>] [--jobs <n>]
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -6,14 +12,12 @@ OMNETPP_VERSION=${OMNETPP_VERSION:-5.7.1}
 ARTERY_REF=${ARTERY_REF:-master}
 ARTERY_BUILD_TYPE=${ARTERY_BUILD_TYPE:-Release}
 JOBS=$(nproc)
-INSTALL_SGX=no
 WITH_QTENV=no
 SKIP_PACKAGES=no
 ARTERY_DIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --install-sgx) INSTALL_SGX=yes ;;
         --with-qtenv) WITH_QTENV=yes ;;
         --skip-packages) SKIP_PACKAGES=yes ;;
         --artery-dir) ARTERY_DIR=$(cd "$2" && pwd); shift ;;
@@ -26,8 +30,6 @@ done
 
 step() { echo; echo "=== $* ==="; }
 have() { command -v "$1" >/dev/null 2>&1; }
-# the SDK's and OMNeT++'s environment scripts read variables that may be unset
-sgx_environment() { set +u; source "$SGX_SDK/environment"; set -u; }
 # OMNeT++'s configure and its tools want this, not only bin/ in PATH (configure checks __omnetpp_root_dir)
 omnetpp_environment() { set +u; source "$OMNETPP_ROOT/setenv" -q; set -u; }
 
@@ -147,66 +149,10 @@ install_artery() {
     git -C "$ARTERY_DIR" submodule update --init --recursive
 }
 
-# Intel SGX SDK + SGX-SSL (simulation mode)
-
-SGX_SDK=${SGX_SDK:-/opt/intel/sgxsdk}
-SGXSSL=${SGXSSL:-/opt/intel/sgxssl}
-
-install_sgx() {
-    step "4. Intel SGX SDK and SGX-SSL (simulation mode)"
-    if [ -f "$SGX_SDK/environment" ] && [ -f "$SGXSSL/lib64/libsgx_usgxssl.a" ]; then
-        echo "already installed: $SGX_SDK, $SGXSSL"
-        return
-    fi
-    if [ "$INSTALL_SGX" != yes ]; then
-        echo "WARNING: no Intel SGX SDK ($SGX_SDK) or SGX-SSL ($SGXSSL): Artery builds, but without the" \
-            "tee_v2x_handover scenario (rerun with --install-sgx)" >&2
-        return
-    fi
-    case "$DISTRO" in
-        ubuntu) sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential python-is-python3 libssl-dev \
-                    wget curl nasm git perl ;;
-        arch) sudo pacman -S --needed --noconfirm base-devel python openssl wget curl nasm git perl ;;
-    esac
-    local work
-    work=$(mktemp -d)
-
-    # SDK
-    if [ ! -f "$SGX_SDK/environment" ]; then
-        local distro=ubuntu24.04-server
-        if [ "$DISTRO" = ubuntu ] && [ "${VERSION_ID:-}" = 22.04 ]; then
-            distro=ubuntu22.04-server
-        fi
-        local repo="https://download.01.org/intel-sgx/latest/linux-latest/distro/$distro"
-        local installer
-        installer=$(curl -fsSL "$repo/" | grep -oE 'sgx_linux_x64_sdk_[0-9.]+\.bin' | sort -uV | tail -n1)
-        [ -n "$installer" ] || { echo "error: no SGX SDK installer at $repo" >&2; exit 1; }
-        wget -q -O "$work/$installer" "$repo/$installer"
-        chmod +x "$work/$installer"
-        echo yes | sudo "$work/$installer" --prefix="$(dirname "$SGX_SDK")"
-    fi
-
-    # SGX-SSL
-    if [ ! -f "$SGXSSL/lib64/libsgx_usgxssl.a" ]; then
-        local tag=3.0_Rev5.4 openssl=openssl-3.0.21
-        local sha=617e29af8e421f46649484a4937e48c685e47f46488167c982f88bc4ec1d522f
-        git clone --depth 1 --branch "$tag" https://github.com/intel/intel-sgx-ssl.git "$work/intel-sgx-ssl"
-        wget -q -O "$work/intel-sgx-ssl/openssl_source/$openssl.tar.gz" \
-            "https://github.com/openssl/openssl/releases/download/$openssl/$openssl.tar.gz"
-        echo "$sha  $work/intel-sgx-ssl/openssl_source/$openssl.tar.gz" | sha256sum -c -
-        (
-            sgx_environment
-            make -C "$work/intel-sgx-ssl/Linux" all SGX_MODE=SIM SGX_SDK="$SGX_SDK"
-            sudo make -C "$work/intel-sgx-ssl/Linux" install SGX_SDK="$SGX_SDK"
-        )
-    fi
-    rm -rf "$work"
-}
-
 # the scenario
 
 register_scenario() {
-    step "5. tee_v2x_handover in Artery's build"
+    step "4. tee_v2x_handover in Artery's build"
     local list="$ARTERY_DIR/scenarios/CMakeLists.txt"
     if ! grep -q "tee_v2x_handover" "$list"; then
         printf '\n# Secure-Handover-Protocol-For-V2X-Networks (artery-sim/setup_artery.sh)\nadd_subdirectory(%s ${CMAKE_BINARY_DIR}/scenarios/tee_v2x_handover)  # tee_v2x_handover\n' \
@@ -224,20 +170,15 @@ register_scenario() {
 }
 
 build_artery() {
-    step "5. build (Artery, the enclave, the tee_v2x feature)"
+    step "5. build (Artery, the OP-TEE gateway protocol, the tee_v2x feature)"
     if [ -n "$OMNETPP_ROOT" ] && [ -f "$OMNETPP_ROOT/setenv" ]; then
         omnetpp_environment
     fi
-    if [ -f "$SGX_SDK/environment" ]; then
-        sgx_environment
-    fi
-    export SGX_SDK
     local build="$ARTERY_DIR/build"
     if [ -f "$build/CMakeCache.txt" ]; then
-        cmake "$build" -DSGX_SDK="$SGX_SDK" -DSGXSSL="$SGXSSL"     # picks up the new subdirectory
+        cmake "$build"     # picks up the new subdirectory
     else
-        cmake -S "$ARTERY_DIR" -B "$build" -DCMAKE_BUILD_TYPE="$ARTERY_BUILD_TYPE" -DSGX_SDK="$SGX_SDK" \
-            -DSGXSSL="$SGXSSL"
+        cmake -S "$ARTERY_DIR" -B "$build" -DCMAKE_BUILD_TYPE="$ARTERY_BUILD_TYPE"
     fi
     cmake --build "$build" -j "$JOBS"
 }
@@ -245,7 +186,6 @@ build_artery() {
 install_packages
 install_omnetpp
 install_artery
-install_sgx
 register_scenario
 build_artery
 

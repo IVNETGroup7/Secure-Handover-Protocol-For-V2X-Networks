@@ -1,11 +1,12 @@
 #ifndef TEE_V2X_TEERSUSERVICE_H_
 #define TEE_V2X_TEERSUSERVICE_H_
 
-// An RSU whose secrets live in an Intel SGX enclave: the SGX gateway of rsu-sgx-gateway/ (its PacketManager and
-// enclave.signed.so) as an Artery ITS-G5 service. Each RSU creates its own enclave in this process
-// (sgx_create_enclave: its own memory, K_g and sealed state), so RSUs share nothing but the backhaul.
-//   radio (BTP port 2025, SHB, TC0)    bootstrap and Secrecy Forwarding messages -> PacketManager -> enclave;
-//                                      Secure_Data -> Secure Marshaling in the enclave -> the cloud (BackhaulBroker)
+// An RSU whose secrets live in an Arm TrustZone OP-TEE Trusted Application (TA): the OP-TEE gateway of
+// rsu-optee-gateway/ (its PacketManager and TeeSession) as an Artery ITS-G5 service. Each RSU opens its own
+// TA session in this process (TeeSession: its own isolated TA session state, K_g and Secure Storage object),
+// so RSUs share nothing but the backhaul.
+//   radio (BTP port 2025, SHB, TC0)    bootstrap and Secrecy Forwarding messages -> PacketManager -> OP-TEE TA;
+//                                      Secure_Data -> Secure Marshaling in the TA -> the cloud (BackhaulBroker)
 //   backhaul (BackhaulBroker)          the ESA (Activation_Token) and the other RSUs (Forwarding_Notice,
 //                                      Handover_Command)
 // Only the Activation_Requests that name this RSU (their CY_g) are relayed to the ESA: every RSU in range hears
@@ -15,8 +16,8 @@
 
 #include "BootstrapMsg.h"
 #include "packet_manager.h"
+#include "tee_session.h"
 #include "artery/application/ItsG5Service.h"
-#include <sgx_eid.h>
 #include <memory>
 #include <string>
 
@@ -41,7 +42,7 @@ class TeeRsuService : public artery::ItsG5Service
 
         std::string mName;                                  // "rsu[0]"
         Bytes mGatewayPublicKey;                            // CY_g: the key of my certificate
-        sgx_enclave_id_t mEid = 0;
+        std::unique_ptr<TeeSession> mTee;
         std::unique_ptr<PacketManager> mGateway;
         BackhaulBroker* mBroker = nullptr;
         std::string mNextRsu;                               // Secrecy Forwarding target ("": none)

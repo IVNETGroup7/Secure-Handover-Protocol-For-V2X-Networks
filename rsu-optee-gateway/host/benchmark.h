@@ -11,7 +11,7 @@ class Benchmark
     public:
         using Duration = std::chrono::nanoseconds;
 
-        void ecall(size_t size, Duration ecall, int status);
+        void taCall(size_t size, Duration taCall, int status);
         void queued(size_t size, Duration otToIt);          // the IT packet went into the IT queue
         void posted(size_t size, Duration radioToCloud);    // the cloud answered 2xx
         void postFailed(size_t size);
@@ -30,8 +30,8 @@ class Benchmark
         };
         struct Row
         {
-            Stat ecall, otToIt, radioToCloud;
-            std::map<int, size_t> statuses;     // gateway.h status -> packets
+            Stat taCall, otToIt, radioToCloud;
+            std::map<int, size_t> statuses;     // gateway_ta.h status -> packets
             size_t postFailures = 0;
         };
 
@@ -39,3 +39,4 @@ class Benchmark
 };
 
 #endif /* GATEWAY_BENCHMARK_H_ */
+

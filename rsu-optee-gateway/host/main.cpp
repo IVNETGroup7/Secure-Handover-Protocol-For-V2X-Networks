@@ -1,6 +1,4 @@
 #include "modes.h"
-#include "ocalls.h"
-#include <sgx_urts.h>
 #include <unistd.h>
 #include <climits>
 #include <cstdio>
@@ -12,7 +10,7 @@
 namespace
 {
 
-// the folder of this program: the enclave and the sealed state live next to it, wherever it is run from
+// the folder of this program: the sealed state fallback in host-sim mode lives next to it
 std::string programDir()
 {
     char path[PATH_MAX];
@@ -51,23 +49,17 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const std::string dir = programDir();
-    const std::string enclavePath = option("--enclave", dir + "/enclave.signed.so");
-    const std::string sealedPath = option("--sealed", dir + "/gateway.sealed");
-    setSealedStatePath(sealedPath);
+#ifdef USE_OPTEE
+    const std::string defaultStorage = "gateway.sealed";
+#else
+    const std::string defaultStorage = programDir() + "/gateway.sealed";
+#endif
+    const std::string storageId = option("--sealed", defaultStorage);
     const std::string label = mode == "rsu" ? option("--name", "rsu[0]") : "gateway";
-
-    sgx_enclave_id_t eid = 0;
-    const sgx_status_t created = sgx_create_enclave(enclavePath.c_str(), SGX_DEBUG_FLAG, nullptr, nullptr, &eid,
-        nullptr);
-    if (created != SGX_SUCCESS) {
-        std::fprintf(stderr, "[%s] error: sgx_create_enclave(%s) failed: sgx_status_t 0x%04x\n", label.c_str(),
-            enclavePath.c_str(), static_cast<unsigned>(created));
-        return 1;
-    }
 
     int code = 1;
     try {
+        TeeSession tee(storageId, false);
         if (mode == "rsu") {
             RsuOptions rsu;
             rsu.iface = option("--iface", rsu.iface);
@@ -76,16 +68,17 @@ int main(int argc, char** argv)
             rsu.cloudCertificate = option("--cloud-cert", "");
             rsu.cloudAddress = option("--cloud-address", rsu.cloudAddress);
             rsu.cloudPort = static_cast<uint16_t>(std::stoi(option("--cloud-port", std::to_string(rsu.cloudPort))));
-            code = runRsuNode(eid, rsu);
+            code = runRsuNode(tee, rsu);
         } else {
-            std::printf("enclave %s created (eid %llu)\n", enclavePath.c_str(), static_cast<unsigned long long>(eid));
-            code = runSelfTest(eid, enclavePath, sealedPath);
+            std::printf("OP-TEE TA session opened (session %llu, storage %s)\n",
+                static_cast<unsigned long long>(tee.sessionId()), storageId.c_str());
+            code = runSelfTest(tee, storageId);
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[%s] error: %s\n", label.c_str(), e.what());
         code = 1;
     }
     std::fflush(stdout);
-    sgx_destroy_enclave(eid);
     return code;
 }
+

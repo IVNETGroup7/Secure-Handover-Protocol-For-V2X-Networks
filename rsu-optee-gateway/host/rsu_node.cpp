@@ -3,7 +3,7 @@
 #include "Link.h"
 #include "SmartData.h"
 #include "Trace.h"
-#include "gateway.h"
+#include "gateway_ta.h"
 #include "packet_manager.h"
 #include "packet_queue.h"
 #include <csignal>
@@ -41,7 +41,7 @@ void postToCloud(HttpsClient& cloud, const std::string& node, const ItPacket& pa
 {
     try {
         bool newSession = false;
-        const HttpResponse response = cloud.send(packet.bytes, &newSession); // the request as the enclave made it
+        const HttpResponse response = cloud.send(packet.bytes, &newSession); // the request as the TA made it
         if (newSession) {
             trace::detail(node, "TLS transport to the cloud: " + cloud.session() + ", certificate verified");
         }
@@ -63,7 +63,7 @@ void postToCloud(HttpsClient& cloud, const std::string& node, const ItPacket& pa
 
 } // namespace
 
-int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
+int runRsuNode(TeeSession& tee, const RsuOptions& options)
 {
     struct sigaction action{};
     action.sa_handler = onStopSignal; // no SA_RESTART: poll() returns at once
@@ -72,20 +72,20 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
 
     RawSocket radio(options.iface, kRadioEtherType);
     RawSocket backhaul(options.iface, kBackhaulEtherType);
-    PacketManager gateway(eid, options.name);
+    PacketManager gateway(tee, options.name);
 
     // HTTPS session with the ESA first: Session_Hello with my certificate (CY_g); its Session_Ack carries CY_e,
-    // which goes into the enclave with the certificate
+    // which goes into the OP-TEE TA with the certificate
     const GatewayCertificate certificate = newGatewayCertificate(options.name);
     const Bytes esaPublicKey = openHttpsSession(backhaul, options.name, sessionKey(), certificate.certificate,
         options.iface, [] { return gStop != 0; });
     const int init = gateway.initGateway(certificate.certificate, esaPublicKey);
     if (init != GW_OK) {
-        throw std::runtime_error(std::string("ecall_init_gateway: ") + statusName(init));
+        throw std::runtime_error(std::string("TA_GATEWAY_CMD_INIT_GATEWAY: ") + statusName(init));
     }
 
-    // the cloud (when there is one): its certificate goes into the enclave (the HTTPS Session of the Secure
-    // Marshaling, K_eg), and the App's TLS transport verifies the cloud with it too
+    // the cloud (when there is one): its certificate goes into the TA (the HTTPS Session of the Secure
+    // Marshaling, K_eg), and the Client App's TLS transport verifies the cloud with it too
     std::unique_ptr<HttpsClient> cloud;
     std::string cloudSession;
     if (!options.cloudCertificate.empty()) {
@@ -96,7 +96,7 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
         }
         const int session = gateway.initCloudSession(pem, options.cloudAddress);
         if (session != GW_OK) {
-            throw std::runtime_error(std::string("ecall_init_cloud_session: ") + statusName(session));
+            throw std::runtime_error(std::string("TA_GATEWAY_CMD_INIT_CLOUD_SESSION: ") + statusName(session));
         }
         cloud = std::make_unique<HttpsClient>(options.cloudAddress, options.cloudPort, options.cloudCertificate);
         cloudSession = cloud->connect();
@@ -113,7 +113,7 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
     }
     gateway.setTransport(transport);
 
-    std::printf("[%s] SGX gateway: HTTPS session with the ESA, radio on %s (EtherType 0x88b5)\n",
+    std::printf("[%s] OP-TEE gateway: HTTPS session with the ESA, radio on %s (EtherType 0x88b5)\n",
         options.name.c_str(), options.iface.c_str());
     if (cloud) {
         std::printf("[%s] TLS transport to the cloud %s:%u: %s, certificate verified (%s)\n", options.name.c_str(),
@@ -172,3 +172,4 @@ int runRsuNode(sgx_enclave_id_t eid, const RsuOptions& options)
     }
     return 0;
 }
+

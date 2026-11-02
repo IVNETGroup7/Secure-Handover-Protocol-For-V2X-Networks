@@ -10,10 +10,10 @@ void Benchmark::Stat::add(Duration d)
     ++n;
 }
 
-void Benchmark::ecall(size_t size, Duration ecall, int status)
+void Benchmark::taCall(size_t size, Duration taCall, int status)
 {
     Row& row = mRows[size];
-    row.ecall.add(ecall);
+    row.taCall.add(taCall);
     ++row.statuses[status];
 }
 
@@ -44,8 +44,8 @@ void Benchmark::print(std::FILE* out, const std::string& node) const
     };
 
     std::fprintf(out, "[%s] Secure Marshaling turn-around, us: average (min-max) per OT packet size\n", node.c_str());
-    std::fprintf(out, "  %8s %7s  %-24s %-24s %-24s %s\n", "OT B", "packets", "ECALL", "OT -> IT queue",
-        "radio -> cloud", "enclave status");
+    std::fprintf(out, "  %8s %7s  %-24s %-24s %-24s %s\n", "OT B", "packets", "TA Invoke", "OT -> IT queue",
+        "radio -> cloud", "TA status");
     for (const auto& [size, row] : mRows) {
         std::string statuses;
         for (const auto& [status, n] : row.statuses) {
@@ -54,8 +54,9 @@ void Benchmark::print(std::FILE* out, const std::string& node) const
         if (row.postFailures > 0) {
             statuses += ", POST failed x" + std::to_string(row.postFailures);
         }
-        std::fprintf(out, "  %8zu %7zu  %-24s %-24s %-24s %s\n", size, row.ecall.n, cell(row.ecall).c_str(),
+        std::fprintf(out, "  %8zu %7zu  %-24s %-24s %-24s %s\n", size, row.taCall.n, cell(row.taCall).c_str(),
             cell(row.otToIt).c_str(), cell(row.radioToCloud).c_str(), statuses.c_str());
     }
     std::fflush(out);
 }
+

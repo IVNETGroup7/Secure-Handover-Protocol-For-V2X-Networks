@@ -6,5 +6,5 @@ set_target_properties(tee_v2x PROPERTIES
     NED_FOLDERS ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(tee_v2x PRIVATE tee_v2x_protocol)
 # the repository's symbols (BootstrapService, ExternalSecurityAgent, sha256...) stay inside this library: another
-# Artery feature may define the same names (e.g. a port of the bootstrap); the SGX runtime is found by path
-target_link_options(tee_v2x PRIVATE -Wl,--exclude-libs,ALL -Wl,-rpath,${SGX_SDK}/sdk_libs)
+# Artery feature may define the same names (e.g. a port of the bootstrap)
+target_link_options(tee_v2x PRIVATE -Wl,--exclude-libs,ALL)

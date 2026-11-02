@@ -4,11 +4,11 @@
 // HTTPS between the RSU and the cloud (Fig. 5 of the paper, tee.pdf step 6): real TLS over TCP (OpenSSL),
 // unlike the radio and the backhaul, which are raw Ethernet links (RawSocket.h)
 //   cloud  CloudIdentity: a fresh P-256 key and self-signed certificate per run (address in its subjectAltName),
-//          published as PEM: what the RSU's enclave pins (K_eg, SmartData.h) and what the RSU's TLS trusts, as if
+//          published as PEM: what the RSU's OP-TEE TA pins (K_eg, SmartData.h) and what the RSU's TLS trusts, as if
 //          provisioned before deployment. HttpsServer: TLS with that identity
 //   RSU    HttpsClient: verifies the cloud's certificate against that PEM and its address; one session for
 //          kPostsPerSession requests (keep-alive), then a new one (the paper's evaluation, Section 6.1).
-//          Only the transport: the SmartData inside is already AES(K_eg, JSON), made in the enclave
+//          Only the transport: the SmartData inside is already AES(K_eg, JSON), made in the OP-TEE TA
 
 #include "Crypto.h"
 #include <openssl/ssl.h>

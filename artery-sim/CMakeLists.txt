@@ -35,6 +35,16 @@ target_link_libraries(tee_v2x_protocol PUBLIC
 
 add_subdirectory(src)
 
+set(SIMU5G_NED_DIR "" CACHE PATH "Path to Simu5G src/ directory")
+if (NOT SIMU5G_NED_DIR AND EXISTS "${TEE_V2X_DIR}/deps/simu5g/src")
+    set(SIMU5G_NED_DIR "${TEE_V2X_DIR}/deps/simu5g/src")
+endif()
+
+set(_tee_v2x_ned_folders ${TEE_V2X_DIR}/scenario)
+if (SIMU5G_NED_DIR)
+    list(APPEND _tee_v2x_ned_folders ${SIMU5G_NED_DIR})
+endif()
+
 add_opp_run(tee_v2x_handover
     WORKING_DIRECTORY ${TEE_V2X_DIR}/scenario
-    NED_FOLDERS ${TEE_V2X_DIR}/scenario)
+    NED_FOLDERS ${_tee_v2x_ned_folders})

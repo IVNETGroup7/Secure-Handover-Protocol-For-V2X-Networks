@@ -23,16 +23,10 @@ TA_DEV_KIT_DIR ?= $(wildcard $(OPTEE_DIR)/optee_os/out/arm-plat-*/export-ta_arm6
 TEEC_EXPORT ?= $(wildcard $(OPTEE_DIR)/optee_client/out/export/usr)
 
 # Modes:
-#   OPTEE    - links host/app against libteec (-DUSE_OPTEE) and compiles ta/$(TA_UUID).ta with TA_DEV_KIT_DIR
-#   HOST_SIM - links host/app with the in-process TA session backend for local testing / Artery simulation
-ifneq ($(wildcard $(TEEC_EXPORT)/include/tee_client_api.h),)
-    TEE_MODE ?= OPTEE
-else ifneq ($(wildcard /usr/include/tee_client_api.h),)
-    TEE_MODE ?= OPTEE
-    TEEC_EXPORT ?= /usr
-else
-    TEE_MODE ?= HOST_SIM
-endif
+#   HOST_SIM (default) - compiles natively with g++ using the in-process TA session backend;
+#                        runs full TrustZone security logic on VM/host without cross-compilation.
+#   OPTEE              - compiles against libteec (-DUSE_OPTEE) and builds ta/$(TA_UUID).ta via TA_DEV_KIT_DIR.
+TEE_MODE ?= HOST_SIM
 
 PLATFORM ?= native
 ifeq ($(PLATFORM),rpi5)
@@ -81,7 +75,7 @@ SMARTDATA := --smartdata 32,1024,65535
 
 .PHONY: all ta run network bench rpi5 vm clean FORCE
 
-all: app ta
+all: app
 	@echo "built: ./app (TEE_MODE=$(TEE_MODE), PLATFORM=$(PLATFORM))$(if $(wildcard $(TA_BINARY)), + $(TA_BINARY),)"
 
 ta:

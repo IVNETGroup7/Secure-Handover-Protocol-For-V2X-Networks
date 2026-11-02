@@ -1,9 +1,9 @@
 #ifndef BOOTSTRAP_CRYPTO_H_
 #define BOOTSTRAP_CRYPTO_H_
 
-// OpenSSL primitives used by the bootstrap protocols
-
+#ifndef __OPTEE_TA__
 #include <openssl/evp.h>
+#endif
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -26,7 +26,7 @@ Bytes aes256Encrypt(const Sha256& key, const Bytes& data);
 Bytes aesGcmEncrypt(const Bytes& key, const Bytes& plaintext);
 std::optional<Bytes> aesGcmDecrypt(const Bytes& key, const Bytes& sealed);
 
-// random bytes from OpenSSL's CSPRNG
+// random bytes from CSPRNG
 Bytes randomBytes(size_t size);
 
 // base64 (RFC 4648, with padding, no line breaks)
@@ -36,6 +36,7 @@ std::optional<Bytes> base64Decode(const std::string& text);
 // Poly1305-AES (Bernstein): key = k (AES-128 key) || r, 16 bytes each; nonce n; message m
 Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& m);
 
+#ifndef __OPTEE_TA__
 // EC key pair on P-256 (prime256v1)
 std::shared_ptr<EVP_PKEY> newP256Key();
 // EC key pair on any named curve ("P-256", ...)
@@ -50,6 +51,7 @@ Bytes ecdh(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey);
 
 // self-signed X.509 certificate of "key" (CN = commonName, valid for one year), DER
 Bytes selfSignedCertificate(EVP_PKEY* key, const std::string& commonName);
+#endif
 // a self-signed certificate (DER) whose signature verifies with its own key: that key, DER SubjectPublicKeyInfo;
 // nullopt when it does not parse or does not verify
 std::optional<Bytes> verifiedCertificateKey(const Bytes& certificateDer);

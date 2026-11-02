@@ -3,6 +3,7 @@ set -e
 
 VM_NAME=${VM_NAME:-optee-arm64-vm}
 VM_DIR=${VM_DIR:-v2x}
+VM_USER=${VM_USER:-optee}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export LIBVIRT_DEFAULT_URI=qemu:///system
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new)
@@ -23,12 +24,19 @@ fi
 for _ in $(seq 60); do
     if [ -z "$VM_HOST" ]; then
         address=$(virsh domifaddr "$VM_NAME" 2>/dev/null | awk '$3 == "ipv4" { split($4, a, "/"); print a[1]; exit }')
-        host=${address:+ubuntu@$address}
+        if [ -n "$address" ]; then
+            for u in "$VM_USER" ubuntu; do
+                if "${SSH[@]}" "$u@$address" true 2>/dev/null; then
+                    host="$u@$address"
+                    break 2
+                fi
+            done
+        fi
     else
         host=$VM_HOST
-    fi
-    if [ -n "$host" ] && "${SSH[@]}" "$host" true 2>/dev/null; then
-        break
+        if "${SSH[@]}" "$host" true 2>/dev/null; then
+            break
+        fi
     fi
     host=
     sleep 2
@@ -37,6 +45,9 @@ if [ -z "$host" ]; then
     echo "error: no ssh to $VM_NAME (VM_HOST=user@address if its address is not libvirt's)" >&2
     exit 1
 fi
+
+# Ensure target directory exists and user owns their home
+"${SSH[@]}" "$host" "sudo chown -R \$(id -un):\$(id -gn) \$HOME && mkdir -p \$HOME/$VM_DIR" 2>/dev/null || true
 
 rsync -rlp --checksum --delete -e "${SSH[*]}" \
     --exclude=.git --exclude=.vscode --exclude='*.pdf' --exclude=/bootstrap --exclude='build*/' \

@@ -57,6 +57,8 @@ void TeeRsuService::initialize()
     mName = getParentModule()->getParentModule()->getFullName(); // <rsu>.middleware.TeeRsuService
     mNextRsu = par("nextRsu").stdstringValue();
     mHandoverDelay = par("handoverDelay");
+    mUseSimu5g = par("useSimu5g").boolValue();
+    mPositionX = (mName.find("1") != std::string::npos) ? 750.0 : 250.0;
     mMarshalLatencySignal = registerSignal("marshalLatencyUs");
     mHandoverGrantedSignal = registerSignal("handoverGranted");
 
@@ -98,6 +100,10 @@ void TeeRsuService::initialize()
     transport.https = [this](const BootstrapMsg& msg) { sendHttps(msg); };
     transport.cloud = [this](ItPacket packet) { mBroker->postToCloud(mName, packet.bytes); };
     mGateway->setTransport(transport);
+
+    if (mUseSimu5g) {
+        mBroker->register5gNode(mName, [this](const BootstrapMsg& msg) { on5gRadio(msg); });
+    }
 }
 
 void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket* packet,
@@ -173,6 +179,12 @@ void TeeRsuService::sendRadio(const BootstrapMsg& msg)
         emit(mHandoverGrantedSignal, mHandoversGranted);
     }
 
+    if (mUseSimu5g) {
+        // Simu5G: 5G NR radio transport
+        mBroker->send5gRadio(mName, msg, mPositionX);
+        return;
+    }
+
     // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
     vanetza::btp::DataRequestB req;
     req.destination_port = vanetza::host_cast(getPortNumber());
@@ -182,11 +194,36 @@ void TeeRsuService::sendRadio(const BootstrapMsg& msg)
     request(req, new V2xFrame(msg));
 }
 
+void TeeRsuService::on5gRadio(const BootstrapMsg& msg)
+{
+    Enter_Method("on5gRadio");
+    try {
+        if (msg.getType() == Secure_Data) {
+            if (msg.getDestination() == mName) {
+                secureData(msg);
+            }
+            return;
+        }
+        if (msg.getType() == Activation_Request
+            && unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
+            return;
+        }
+        mGateway->onRadio(msg); // filters by destination (logical unicast)
+    } catch (const std::runtime_error& e) {
+        EV_ERROR << mName << ": 5G frame dropped: " << e.what() << "\n";
+    }
+}
+
 void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
 {
     if (msg->isSelfMessage() && msg->getKind() == kHandoverTimer) {
         ++mHandoversTriggered;
         mGateway->startHandover(msg->getName(), mNextRsu); // Forwarding_Notice to mNextRsu
+    } else {
+        auto frame = dynamic_cast<V2xFrame*>(msg);
+        if (frame) {
+            on5gRadio(frame->msg());
+        }
     }
     delete msg;
 }

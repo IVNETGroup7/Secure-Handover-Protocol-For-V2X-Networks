@@ -21,6 +21,11 @@ class BackhaulBroker : public omnetpp::cSimpleModule
 {
     public:
         using RsuCallback = std::function<void(const BootstrapMsg&)>;
+        using RadioCallback = std::function<void(const BootstrapMsg&)>;
+        using PositionGetter = std::function<double()>;
+
+        static constexpr short kBackhaulMsgKind = 1;
+        static constexpr short k5gRadioMsgKind = 2;
 
         BackhaulBroker();
         ~BackhaulBroker() override;
@@ -40,25 +45,38 @@ class BackhaulBroker : public omnetpp::cSimpleModule
         // an IT packet (HTTPS Header | AES(K_eg, JSON)) the OP-TEE TA of "rsuName" made: opened with the cloud's key
         void postToCloud(const std::string& rsuName, const Bytes& itPacket);
 
+        // Simu5G: 5G New Radio registration and transmission for the scenario
+        void register5gNode(const std::string& name, RadioCallback onMessage, PositionGetter getX = nullptr);
+        void send5gRadio(const std::string& sender, const BootstrapMsg& msg, double posX);
+
     protected:
         void handleMessage(omnetpp::cMessage*) override;
         void finish() override;
 
     private:
+        struct Node5G {
+            RadioCallback callback;
+            PositionGetter getX;
+        };
+
         ExternalSecurityAgent& esa();
         CloudIdentity& cloud();
         void deliver(const BootstrapMsg& msg);
+        void deliver5gRadio(const BootstrapMsg& msg);
 
         std::unique_ptr<ExternalSecurityAgent> mEsa;
         std::unique_ptr<CloudIdentity> mCloud;
         std::map<std::string, RsuCallback> mRsus;           // RSU -> what reaches it
         std::map<std::string, Bytes> mGatewayKeys;          // RSU -> CY_g
+        std::map<std::string, Node5G> m5gNodes;             // Node name -> 5G callback & position
 
         // statistics (results/*.sca)
         long mDelivered = 0;
         long mUndeliverable = 0;    // no such destination (e.g. Active_03: to the vehicle's user, not modeled)
         long mCloudStored = 0;      // IT packets the cloud opened with its K_eg
         long mCloudRefused = 0;     // IT packets it could not open
+        long mNr5gTransmitted = 0;  // 5G NR packets transmitted over the air
+        long mNr5gDropped = 0;      // 5G NR packets dropped (out of cell coverage or unreachable)
         omnetpp::simsignal_t mCloudJsonSignal;
 };
 

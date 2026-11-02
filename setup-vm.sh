@@ -13,6 +13,7 @@ fi
 export LIBVIRT_DEFAULT_URI="qemu:///system"
 
 VM_NAME="optee-arm64-vm"
+VM_USER="${VM_USER:-optee}"
 VM_RAM="4096"        # 4GB RAM
 VM_CPUS="2"          # 2 vCPUs
 DISK_SIZE="20G"      # 20 GB Disk
@@ -20,10 +21,10 @@ IMG_DIR="$HOME/libvirt/images"
 DISK_PATH="$IMG_DIR/$VM_NAME.qcow2"
 CLOUD_ISO="$IMG_DIR/seed-optee.iso"
 
-# Host directory shared into the VM (via virtiofs) at /home/ubuntu/project
+# Host directory shared into the VM (via virtiofs) at /home/optee/project
 SHARE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARE_TAG="project"
-GUEST_MOUNT="/home/ubuntu/project"
+GUEST_MOUNT="/home/$VM_USER/project"
 
 RECREATE=false
 for arg in "$@"; do
@@ -195,17 +196,19 @@ export OPTEE_DIR=/opt/optee
 export TA_DEV_KIT_DIR=/opt/optee/optee_os/out/arm-plat-vexpress/export-ta_arm64
 export TEEC_EXPORT=/opt/optee/optee_client/out/export/usr
 EOF
-grep -q /etc/profile.d/optee.sh /home/ubuntu/.bashrc || \
-    echo 'source /etc/profile.d/optee.sh' >> /home/ubuntu/.bashrc
+grep -q /etc/profile.d/optee.sh /home/\$VM_USER/.bashrc || \
+    echo 'source /etc/profile.d/optee.sh' >> /home/\$VM_USER/.bashrc
 
-chown -R ubuntu:ubuntu "$OPTEE_DIR" /home/ubuntu || true
+chown -R \$VM_USER:\$VM_USER "$OPTEE_DIR" /home/\$VM_USER || true
 touch /var/log/optee-sdk-installed
 GUEST
+
+sed -i "s/\\\$VM_USER/$VM_USER/g" "$IMG_DIR/install-optee-sdk.sh"
 
 cat <<EOF > "$IMG_DIR/user-data"
 #cloud-config
 users:
-  - name: ubuntu
+  - name: $VM_USER
     ssh_authorized_keys:
 $(for k in ~/.ssh/id_rsa.pub ~/.ssh/id_ed25519.pub; do [ -f "$k" ] && echo "      - $(cat "$k")"; done)
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
@@ -213,7 +216,7 @@ $(for k in ~/.ssh/id_rsa.pub ~/.ssh/id_ed25519.pub; do [ -f "$k" ] && echo "    
     lock_passwd: false
 chpasswd:
   list: |
-    ubuntu:ubuntu
+    $VM_USER:$VM_USER
   expire: False
 ssh_pwauth: true
 package_update: true
@@ -226,7 +229,11 @@ write_files:
 $(sed 's/^/      /' "$IMG_DIR/install-optee-sdk.sh")
 runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
+  - [ mkdir, -p, /home/$VM_USER/v2x ]
+  - [ chown, -R, "$VM_USER:$VM_USER", /home/$VM_USER ]
+  - [ chmod, "0755", /home/$VM_USER ]
   - [ bash, -c, "/usr/local/bin/install-optee-sdk.sh > /var/log/optee-sdk-install.log 2>&1" ]
+  - [ chown, -R, "$VM_USER:$VM_USER", /home/$VM_USER ]
 output:
   all: ">> /var/log/cloud-init-output.log"
 bootcmd:
@@ -284,6 +291,6 @@ fi
 VM_IP=$(virsh domifaddr "$VM_NAME" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}')
 echo "=== Success! Environment configured and VM '$VM_NAME' is running ==="
 echo "IP address: ${VM_IP:-unknown}  (virsh domifaddr $VM_NAME)"
-echo "SSH (login: ubuntu / ubuntu): ssh ubuntu@${VM_IP:-<VM-IP>}"
+echo "SSH (login: $VM_USER / $VM_USER): ssh $VM_USER@${VM_IP:-<VM-IP>}"
 echo "Host repo $SHARE_DIR is mounted in the VM at $GUEST_MOUNT"
 echo "Console: virsh console $VM_NAME  (exit with Ctrl + ])"

@@ -38,6 +38,7 @@ class TeeRsuService : public artery::ItsG5Service
         void sendRadio(const BootstrapMsg&);
         void sendHttps(const BootstrapMsg&);
         void onBackhaul(const BootstrapMsg&);
+        void on5gRadio(const BootstrapMsg&);
         void secureData(const BootstrapMsg&);
 
         std::string mName;                                  // "rsu[0]"
@@ -47,6 +48,8 @@ class TeeRsuService : public artery::ItsG5Service
         BackhaulBroker* mBroker = nullptr;
         std::string mNextRsu;                               // Secrecy Forwarding target ("": none)
         omnetpp::simtime_t mHandoverDelay;
+        bool mUseSimu5g = false;
+        double mPositionX = 250.0;
 
         // statistics (results/*.sca, *.vec)
         long mMarshaled = 0;

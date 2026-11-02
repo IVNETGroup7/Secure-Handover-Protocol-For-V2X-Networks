@@ -37,6 +37,7 @@ class VehicleTeeService : public artery::ItsG5Service
         void sendSecureData();
         void checkHandover();       // the held Forwarding_Request, once at handoverX
         void sendRadio(const BootstrapMsg&);
+        void on5gRadio(const BootstrapMsg&);
         double positionX() const;   // m, the scenario's x axis (the highway)
 
         std::string mName;                                  // "node[0]"
@@ -46,6 +47,7 @@ class VehicleTeeService : public artery::ItsG5Service
         omnetpp::cMessage* mDataTimer = nullptr;
         double mHandoverX = 0;
         bool mReady = false;
+        bool mUseSimu5g = false;
         omnetpp::simtime_t mStartedAt;
         omnetpp::simtime_t mRequestSentAt;
 

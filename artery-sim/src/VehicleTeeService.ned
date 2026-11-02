@@ -10,6 +10,7 @@ simple VehicleTeeService like ItsG5Service
         @statistic[handoverE2EDelayMs](title="Forwarding_Request -> Forwarding_Granted accepted"; unit=ms; record=last,vector,stats);
         @signal[secureDataSent](type=long);
         @statistic[secureDataSent](title="Secure_Data sent"; record=last,vector);
+        bool useSimu5g = default(false);            // true: 5G NR via Simu5G; false: IEEE 802.11p (ITS-G5)
         string firstRsu = default("rsu[0]");        // the RSU of the bootstrap (its CY_g in the Activation_Request)
         double startDelay @unit(s) = default(0.5s); // entering the road -> Activation_Request
         double dataInterval @unit(s) = default(100ms);  // Secure_Data period (10 Hz, as CAMs)

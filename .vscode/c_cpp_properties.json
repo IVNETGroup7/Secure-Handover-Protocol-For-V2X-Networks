@@ -7,9 +7,9 @@
                 "${workspaceFolder}/common",
                 "${workspaceFolder}/protocol",
                 "${workspaceFolder}/net",
-                "${workspaceFolder}/rsu-sgx-gateway/App",
-                "${workspaceFolder}/rsu-sgx-gateway/Enclave",
-                "${env:HOME}/.local/share/sgxsdk/include"
+                "${workspaceFolder}/rsu-optee-gateway/include",
+                "${workspaceFolder}/rsu-optee-gateway/host",
+                "${workspaceFolder}/rsu-optee-gateway/ta"
             ],
             "compilerPath": "/usr/bin/g++",
             "cStandard": "c11",

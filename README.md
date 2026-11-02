@@ -36,7 +36,7 @@ make -C rsu-optee-gateway network
 # 4. Cross-compile OP-TEE RSU gateway & TA for Raspberry Pi 5 (Arm Cortex-A76)
 make -C rsu-optee-gateway rpi5
 
-# 5. The Artery simulation on the host PC (installs OMNeT++, Artery, SUMO; no SGX needed)
+# 5. The Artery simulation on the host PC (installs OMNeT++, Artery, Simu5G, SUMO)
 artery-sim/setup_artery.sh
 ```
 
@@ -122,17 +122,28 @@ A vehicle activated with source RSU G<sub>i+1</sub> is handed over to target RSU
 
 ## 4. Artery simulation on Host PC (`artery-sim/`)
 
-[`artery-sim/`](artery-sim) runs on your normal x86_64 host PC and is completely decoupled from Intel SGX and Raspberry Pi cross-compilation. [`artery-sim/setup_artery.sh`](artery-sim/setup_artery.sh) installs dependencies (Ubuntu 22.04/24.04 or Arch), builds OMNeT++ 5.7.1 and Artery under `artery-sim/deps/`, registers the `tee_v2x_handover` scenario in Artery's CMake build, and compiles it against `rsu-optee-gateway/`.
+[`artery-sim/`](artery-sim) runs on the host PC. [`artery-sim/setup_artery.sh`](artery-sim/setup_artery.sh) installs dependencies (Ubuntu 22.04/24.04 or Arch), builds OMNeT++, Artery, and Simu5G under `artery-sim/deps/`, registers the `tee_v2x_handover` scenario in Artery's CMake build, and compiles it against `rsu-optee-gateway/`.
 
 | Path | Contents |
 |---|---|
-| `src/TeeRsuService` | RSU: one isolated `TeeSession` each, `PacketManager` over Vanetza BTP port 2025 |
+| `src/TeeRsuService` | RSU: one isolated `TeeSession` each, `PacketManager` over ITS-G5 (802.11p) or Simu5G (5G NR) |
 | `src/VehicleTeeService` | Vehicle: bootstrap, `Secure_Data` at 10 Hz, `Forwarding_Request` at x = 500 m |
-| `src/BackhaulBroker` | HTTPS backhaul (RSU ↔ ESA, RSU ↔ RSU), the ESA and the cloud |
-| `scenario/` | `HighwayHandover.ned`, `omnetpp.ini` (`D250m_80211p`, `D500m_5G`), SUMO highway, `services*.xml` |
+| `src/BackhaulBroker` | HTTPS backhaul (RSU ↔ ESA, RSU ↔ RSU), ESA, cloud, and 5G NR radio broker |
+| `scenario/` | `HighwayHandover.ned`, `HighwayHandover5G.ned`, `omnetpp.ini` (`D250m_80211p`, `D500m_5G`), SUMO highway, `services*.xml` |
+
+Configurations in `scenario/omnetpp.ini`:
+- `D250m_80211p`: IEEE 802.11p / ITS-G5 at 5.9 GHz, 6 Mbps, 200 mW (~250 m coverage per RSU).
+- `D500m_5G`: Real 5G New Radio (NR) via **Simu5G**: 3.5 GHz (FR1 n78), 20 MHz (50 Resource Blocks), numerology 1 (30 kHz subcarrier spacing), 3GPP TR 38.901 Urban Microcell pathloss, gNodeB X2 handover between gNodeB[0] (x=250m) and gNodeB[1] (x=750m), 500 m cell radius per RSU.
 
 ```bash
+# Setup OMNeT++, Artery, Simu5G, and SUMO
 artery-sim/setup_artery.sh
+
+# Run IEEE 802.11p configuration (250 m per RSU)
 cmake -DRUN_FLAGS="-u Cmdenv -c D250m_80211p" artery-sim/deps/artery/build
+cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
+
+# Run Simu5G 5G New Radio configuration (500 m per RSU)
+cmake -DRUN_FLAGS="-u Cmdenv -c D500m_5G" artery-sim/deps/artery/build
 cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
 ```

@@ -175,8 +175,8 @@ Block aes128EcbBlock(const uint8_t key16[16], const Block& inBlock)
     }
     TEE_CipherInit(op, nullptr, 0);
     Block out{};
-    uint32_t outLen = static_cast<uint32_t>(out.size());
-    const TEE_Result res = TEE_CipherDoFinal(op, inBlock.data(), static_cast<uint32_t>(inBlock.size()),
+    size_t outLen = out.size();
+    const TEE_Result res = TEE_CipherDoFinal(op, inBlock.data(), inBlock.size(),
         out.data(), &outLen);
     TEE_FreeTransientObject(keyObj);
     TEE_FreeOperation(op);
@@ -317,8 +317,8 @@ Sha256 sha256(const Bytes& data)
         throw std::runtime_error("TEE_AllocateOperation(SHA256) failed");
     }
     Sha256 digest{};
-    uint32_t hashLen = static_cast<uint32_t>(digest.size());
-    const TEE_Result res = TEE_DigestDoFinal(op, data.data(), static_cast<uint32_t>(data.size()),
+    size_t hashLen = digest.size();
+    const TEE_Result res = TEE_DigestDoFinal(op, data.data(), data.size(),
         digest.data(), &hashLen);
     TEE_FreeOperation(op);
     if (res != TEE_SUCCESS || hashLen != 32) {
@@ -366,9 +366,9 @@ Bytes aesGcmEncrypt(const Bytes& key, const Bytes& plaintext)
 
     Bytes out(kGcmNonceSize + plaintext.size() + kGcmTagSize);
     std::memcpy(out.data(), nonce.data(), kGcmNonceSize);
-    uint32_t cipherLen = static_cast<uint32_t>(plaintext.size());
-    uint32_t tagLen = kGcmTagSize;
-    const TEE_Result res = TEE_AEEncryptFinal(op, plaintext.data(), static_cast<uint32_t>(plaintext.size()),
+    size_t cipherLen = plaintext.size();
+    size_t tagLen = kGcmTagSize;
+    const TEE_Result res = TEE_AEEncryptFinal(op, plaintext.data(), plaintext.size(),
         out.data() + kGcmNonceSize, &cipherLen, out.data() + kGcmNonceSize + plaintext.size(), &tagLen);
     TEE_FreeTransientObject(keyObj);
     TEE_FreeOperation(op);
@@ -413,8 +413,8 @@ std::optional<Bytes> aesGcmDecrypt(const Bytes& key, const Bytes& sealed)
     }
 
     Bytes plain(cipherSize);
-    uint32_t plainLen = static_cast<uint32_t>(cipherSize);
-    const TEE_Result res = TEE_AEDecryptFinal(op, cipher, static_cast<uint32_t>(cipherSize),
+    size_t plainLen = cipherSize;
+    const TEE_Result res = TEE_AEDecryptFinal(op, cipher, cipherSize,
         plain.data(), &plainLen, const_cast<uint8_t*>(tag), kGcmTagSize);
     TEE_FreeTransientObject(keyObj);
     TEE_FreeOperation(op);
@@ -487,7 +487,7 @@ EcdhDerived generateAndDeriveEcdh(const Bytes& peerPublicKeyDer)
 
     // 2. Extract our uncompressed public point (X, Y) and wrap into 91-byte SPKI DER
     uint8_t myX[32]{}, myY[32]{};
-    uint32_t xLen = 32, yLen = 32;
+    size_t xLen = 32, yLen = 32;
     if (TEE_GetObjectBufferAttribute(keyPair, TEE_ATTR_ECC_PUBLIC_VALUE_X, myX, &xLen) != TEE_SUCCESS
         || TEE_GetObjectBufferAttribute(keyPair, TEE_ATTR_ECC_PUBLIC_VALUE_Y, myY, &yLen) != TEE_SUCCESS) {
         TEE_FreeTransientObject(keyPair);
@@ -513,10 +513,10 @@ EcdhDerived generateAndDeriveEcdh(const Bytes& peerPublicKeyDer)
     TEE_Attribute peerAttrs[2]{};
     TEE_InitRefAttribute(&peerAttrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, peerX, 32);
     TEE_InitRefAttribute(&peerAttrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y, peerY, 32);
-    TEE_AsymmetricDeriveKey(op, peerAttrs, 2, secretObj);
+    TEE_DeriveKey(op, peerAttrs, 2, secretObj);
 
     Bytes shared(32, 0);
-    uint32_t sharedLen = 32;
+    size_t sharedLen = 32;
     uint8_t rawSecret[32]{};
     const TEE_Result res = TEE_GetObjectBufferAttribute(secretObj, TEE_ATTR_SECRET_VALUE, rawSecret, &sharedLen);
     TEE_FreeTransientObject(secretObj);
@@ -635,8 +635,8 @@ std::optional<PinnedCertificate> verifySelfSignedP256CertPem(const std::string& 
         errorReason = "TEE_SetOperationKey(ECDSA_P256) failed";
         return std::nullopt;
     }
-    const TEE_Result vRes = TEE_AsymmetricVerify(verifyOp, nullptr, 0,
-        tbsHash.data(), static_cast<uint32_t>(tbsHash.size()), rawSig, sizeof(rawSig));
+    const TEE_Result vRes = TEE_AsymmetricVerifyDigest(verifyOp, nullptr, 0,
+        tbsHash.data(), tbsHash.size(), rawSig, sizeof(rawSig));
     TEE_FreeOperation(verifyOp);
     TEE_FreeTransientObject(pubKeyObj);
     if (vRes != TEE_SUCCESS) {
@@ -748,7 +748,7 @@ std::optional<Bytes> loadPersistentState(const std::string& storageId)
         return std::nullopt;
     }
     Bytes out(info.dataSize);
-    uint32_t readBytes = 0;
+    size_t readBytes = 0;
     const TEE_Result res = TEE_ReadObjectData(obj, out.data(), info.dataSize, &readBytes);
     TEE_CloseObject(obj);
     if (res != TEE_SUCCESS || readBytes != info.dataSize) {

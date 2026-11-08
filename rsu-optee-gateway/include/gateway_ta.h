@@ -67,6 +67,7 @@ enum TaGatewayCommand
 };
 
 // Gateway status codes returned in VALUE_OUTPUT.a
+#ifdef __cplusplus
 constexpr int GW_OK         = 0;    // Success (output buffers populated)
 constexpr int GW_IGNORED    = 1;    // Cryptographic or window validation failed: packet ignored
 constexpr int GW_ERR_ARGS   = -1;   // Bad arguments (null pointer, empty field, unknown message type)
@@ -78,6 +79,17 @@ constexpr int GW_ERR_STATE  = -4;   // Gateway or Cloud session not initialized
 // Lines starting with these prefixes are rendered as trace::check(ok/failed); others as trace::detail
 constexpr const char* kCheckOk     = "check:ok:";
 constexpr const char* kCheckFailed = "check:failed:";
+#else
+#define GW_OK          0
+#define GW_IGNORED     1
+#define GW_ERR_ARGS   -1
+#define GW_ERR_BUFFER -2
+#define GW_ERR_CRYPTO -3
+#define GW_ERR_STATE  -4
+
+#define kCheckOk      "check:ok:"
+#define kCheckFailed  "check:failed:"
+#endif
 
 #endif /* GATEWAY_TA_H_ */
 

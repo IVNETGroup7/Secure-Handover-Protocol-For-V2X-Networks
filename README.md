@@ -87,9 +87,29 @@ The OP-TEE RSU gateway separates the RSU into:
 | `make run` | Builds and runs `./app` (self-test: scenarios 1–6 including Secure Marshaling 4a–4g and Secrecy Forwarding 4h–4m between two RSU TA sessions) |
 | `make network` | Runs `../bootstrap --pretty --rsu-exec ./app`: real ESA + vehicle + Cloud, with RSU = the OP-TEE gateway |
 | `make bench` | Runs the Secure Marshaling benchmark (32 B to 64 KB SmartData payloads, 100 packets each) |
+| `make rpi3` | Cross-compiles `./app`, `.ta`, and `./bootstrap` for **Raspberry Pi 3** (`-mcpu=cortex-a53`) |
 | `make rpi5` | Cross-compiles `./app` (and `.ta`) for **Raspberry Pi 5** (`CROSS_COMPILE=aarch64-linux-gnu-`, `-mcpu=cortex-a76`) |
 | `make vm` | Runs `make` inside the QEMU OP-TEE VM via `./vm-make.sh` |
 | `make clean` | Removes build outputs, sealed state files (`gateway.sealed*`), and capability stamps |
+
+### Cross-compiling and deploying to Raspberry Pi 3 (Arm Cortex-A53)
+
+To cross-compile using the `optee-rpi3` Buildroot environment and deploy directly to the board:
+
+```bash
+# Build TA, host app, and bootstrap (auto-patches ELF OS/ABI and signs TA):
+make -C rsu-optee-gateway rpi3
+
+# Or build and automatically deploy over SSH in one command:
+make -C rsu-optee-gateway rpi3 PI_IP=xxx.xxx.xxx.xxx
+```
+
+On the Raspberry Pi 3:
+1. Ensure `tee-supplicant` is running (`pgrep tee-supplicant || tee-supplicant &`).
+2. Run the self-tests or network node:
+   ```bash
+   ./app
+   ```
 
 ### Cross-compiling and deploying to Raspberry Pi 5 (Arm Cortex-A76)
 

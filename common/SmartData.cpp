@@ -125,6 +125,7 @@ uint64_t dataOtpSlot(int64_t ns)
     return static_cast<uint64_t>(std::floor((ns / 1e9) / kOtpTimeStep));
 }
 
+#ifndef __OPTEE_TA__
 Block dataOtp(const Bytes& kDg, const Bytes& authD, uint64_t slot, const Bytes& m)
 {
     // Auth_d xor t: t, big endian, into the last 8 bytes of the first AES block of Auth_d (as the bootstrap)
@@ -150,9 +151,12 @@ DataMessage sealSmartData(const SmartData& data, const Bytes& kG, const Bytes& k
     message.otp = dataOtp(kDg, data.authD, dataOtpSlot(nowNs), message.sealedData);
     return message;
 }
+#endif
 
+#ifndef __OPTEE_TA__
 Bytes computeKEg(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey)
 {
     const Sha256 key = sha256(ecdh(privateKey, peerPublicKey));
     return Bytes(key.begin(), key.end());
 }
+#endif

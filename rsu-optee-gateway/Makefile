@@ -10,6 +10,7 @@
 #   make run          build and run the self-test (bootstrap, tamper checks, Secure Marshaling, Secrecy Forwarding)
 #   make network      run ../bootstrap --pretty --rsu-exec ./app (real ESA + vehicle + Cloud + OP-TEE RSU)
 #   make bench        run the Secure Marshaling throughput/latency benchmark across payload sizes
+#   make rpi3         cross-compile ./app and .ta for Raspberry Pi 3 (-mcpu=cortex-a53) via build-rpi3.sh
 #   make rpi5         cross-compile ./app (and .ta if TA_DEV_KIT_DIR is set) for Raspberry Pi 5 (-mcpu=cortex-a76)
 #   make vm           delegate the build/run to the ARM64 OP-TEE QEMU VM via ./vm-make.sh
 #   make clean        remove build artifacts, sealed state files, and capability stamps
@@ -73,7 +74,10 @@ Host_Objects := $(patsubst host/%.cpp,$(BUILD)/host/%.o,$(Host_Cpp_Files)) \
 CLOUD := --cloud $(CURDIR)/cloud.crt
 SMARTDATA := --smartdata 32,1024,65535
 
-.PHONY: all ta run network bench rpi5 vm clean FORCE ensure_caps
+.PHONY: all ta run network bench rpi3 rpi5 vm clean FORCE ensure_caps
+
+rpi3:
+	@./build-rpi3.sh $(PI_IP)
 
 all: app
 	@echo "built: ./app (TEE_MODE=$(TEE_MODE), PLATFORM=$(PLATFORM))$(if $(wildcard $(TA_BINARY)), + $(TA_BINARY),)"

@@ -39,7 +39,9 @@ Block dataOtp(const Bytes& kDg, const Bytes& authD, uint64_t slot, const Bytes& 
 // vehicle: the OT packet of "data", at time "nowNs" (its PTP-synchronized clock)
 DataMessage sealSmartData(const SmartData& data, const Bytes& kG, const Bytes& kDg, int64_t nowNs);
 
+#ifndef __OPTEE_TA__
 // K_eg = SHA256(ECDH(own private key, peer public key)): the OP-TEE TA with (X_s, Y_e), the cloud with (X_e, Y_s)
 Bytes computeKEg(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey);
+#endif
 
 #endif /* BOOTSTRAP_SMARTDATA_H_ */

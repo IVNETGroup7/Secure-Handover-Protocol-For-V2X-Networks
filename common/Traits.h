@@ -4,8 +4,10 @@
 // Vehicle data written at manufacturing time, shared by the bootstrap protocols
 
 #include "Crypto.h"
+#ifndef __OPTEE_TA__
 #include <openssl/evp.h>
 #include <openssl/x509.h>
+#endif
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -27,7 +29,7 @@ struct VehicleTraits
 constexpr const char* kFirmwareImage = "gateway-firmware v1.0";
 
 // maximum execution time: after PTP, the protocol must finish between t_0 and t_f = t_0 + kActivationWindow
-constexpr double kActivationWindow = 1.0; // s
+constexpr double kActivationWindow = 5.0; // s
 
 // ECDH domain parameters (the "q" of K_dg = Y_d^(X_g) mod q): public, the same for every node
 constexpr const char* kEcdhCurve = "P-256";

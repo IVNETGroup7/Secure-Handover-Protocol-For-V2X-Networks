@@ -420,8 +420,8 @@ int runSelfTest(TeeSession& tee, const std::string& storageId)
         title("5. CY_g of no gateway (node[3])");
         stranger = bootstrap("node[3]", 13, gateway, esa, newGatewayCertificate("rogue").publicKey);
 
-        title("6. before t_0: the window opens 2 s later (node[4])");
-        early = bootstrap("node[4]", 17, gateway, esa, cyG, nullptr, 2.0);
+        title("6. before t_0: the window opens 10 s later (node[4])");
+        early = bootstrap("node[4]", 17, gateway, esa, cyG, nullptr, 10.0);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         ok = false;

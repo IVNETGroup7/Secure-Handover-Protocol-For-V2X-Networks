@@ -41,6 +41,29 @@ std::string toStr(const Bytes& b)
 
 extern "C" {
 
+// Freestanding C++ runtime stubs for OP-TEE TA environment
+void* __dso_handle = nullptr;
+
+int __cxa_atexit(void (*)(void*), void*, void*) { return 0; }
+char* secure_getenv(const char*) { return nullptr; }
+char* gettext(const char* msgid) { return const_cast<char*>(msgid); }
+char __libc_single_threaded = 1;
+long syscall(long, ...) noexcept { return -1; }
+int getentropy(void*, size_t) { return -1; }
+uint32_t arc4random(void) { return 0; }
+int open(const char*, int, ...) { return -1; }
+int close(int) { return -1; }
+long read(int, void*, size_t) { return -1; }
+int ioctl(int, unsigned long, ...) { return -1; }
+char* strerror_r(int, char* buf, size_t) { return buf; }
+int pthread_once(pthread_once_t*, void (*)(void)) { return 0; }
+int pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*) { return 0; }
+int pthread_cond_broadcast(pthread_cond_t*) { return 0; }
+int _dl_find_object(void*, void*) { return -1; }
+static int ta_errno = 0;
+int* __errno_location(void) { return &ta_errno; }
+unsigned long __isoc23_strtoul(const char*, char**, int) { return 0; }
+
 TEE_Result TA_CreateEntryPoint(void)
 {
     IMSG("V2X RSU Gateway TA created");

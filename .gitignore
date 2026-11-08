@@ -78,6 +78,9 @@ rsu-optee-gateway/app
 *.sealed.*
 .caps_*
 cloud.crt
+.*.cmd
+ta.lds
+dyn_list
 
 # ignoring TEE pdfs
 s10922-023-09723-6.pdf 

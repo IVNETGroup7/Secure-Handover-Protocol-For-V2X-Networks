@@ -579,6 +579,7 @@ bool relay(Child& child, Printer& printer)
 struct Scenario
 {
     bool pretty = false;
+    std::string iface = "lo";       // --iface: interface to run on (default "lo")
     std::string rsuProgram;         // --rsu-exec: another program as the RSU (e.g. the OP-TEE gateway)
     std::string cloudCertificate;   // --cloud: start the cloud; its certificate goes there (the RSU trusts it)
     std::string smartdata;          // --smartdata: sizes of the SmartData the vehicle sends after the bootstrap
@@ -586,13 +587,17 @@ struct Scenario
     std::string smartdataInterval = "20";
 };
 
-// everything from one command, on the loopback: no frame is sent before its receiver is listening
+// everything from one command: no frame is sent before its receiver is listening
 int runAll(const Scenario& scenario)
 {
-    const std::string iface = "lo";
+    const std::string iface = scenario.iface;
     auto notStarted = [](const std::string& label) { Child child; child.label = label; return child; };
     const bool withCloud = !scenario.cloudCertificate.empty();
-    Child cloud = withCloud ? spawn("cloud", "cloud", iface, true, "", { "--cert-out", scenario.cloudCertificate })
+    std::vector<std::string> cloudExtra{ "--cert-out", scenario.cloudCertificate };
+    if (iface != "lo") {
+        cloudExtra.insert(cloudExtra.end(), { "--address", "0.0.0.0" });
+    }
+    Child cloud = withCloud ? spawn("cloud", "cloud", iface, true, "", cloudExtra)
         : notStarted("cloud");
     Child esa = !withCloud || cloud.pid > 0 ? spawn("esa", "esa", iface, true) : notStarted("esa");
     std::vector<std::string> rsuExtra;
@@ -710,7 +715,9 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
         const bool hasValue = i + 1 < argc;
-        if (option == "--rsu-exec" && hasValue) {
+        if (option == "--iface" && hasValue) {
+            scenario.iface = argv[++i];
+        } else if (option == "--rsu-exec" && hasValue) {
             scenario.rsuProgram = argv[++i];
         } else if (option == "--cloud" && hasValue) {
             scenario.cloudCertificate = argv[++i];

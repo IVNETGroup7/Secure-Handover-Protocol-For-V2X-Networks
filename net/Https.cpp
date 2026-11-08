@@ -1,5 +1,7 @@
 #include "Https.h"
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <openssl/err.h>
@@ -98,7 +100,23 @@ std::shared_ptr<X509> selfSigned(EVP_PKEY* key, const std::string& address)
     X509V3_CTX context;
     X509V3_set_ctx_nodb(&context);
     X509V3_set_ctx(&context, cert.get(), cert.get(), nullptr, nullptr, 0);
-    const std::string altNames = "IP:" + address + ",DNS:localhost";
+    std::string altNames = "IP:" + address + ",IP:127.0.0.1,DNS:localhost";
+
+    // Also include all active IPv4 addresses of this host so remote nodes can connect
+    struct ifaddrs* ifaddr = nullptr;
+    if (getifaddrs(&ifaddr) == 0) {
+        for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) {
+                char host[NI_MAXHOST];
+                if (getnameinfo(ifa->ifa_addr, sizeof(sockaddr_in), host, sizeof(host),
+                        nullptr, 0, NI_NUMERICHOST) == 0) {
+                    altNames += ",IP:" + std::string(host);
+                }
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+
     for (auto [nid, value] : { std::pair<int, std::string>{ NID_subject_alt_name, altNames },
              { NID_basic_constraints, "critical,CA:TRUE" } }) {
         X509_EXTENSION* extension = X509V3_EXT_conf_nid(nullptr, &context, nid, value.c_str());
@@ -331,6 +349,10 @@ HttpsClient::HttpsClient(const std::string& address, uint16_t port, const std::s
         throw error;
     }
     SSL_CTX_set_verify(mContext, SSL_VERIFY_PEER, nullptr);
+    X509_VERIFY_PARAM* param = SSL_CTX_get0_param(mContext);
+    if (param) {
+        X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_PARTIAL_CHAIN);
+    }
 }
 
 HttpsClient::~HttpsClient()

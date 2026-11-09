@@ -15,4 +15,6 @@ simple TeeRsuService like ItsG5Service
         string nextRsu = default("");               // Secrecy Forwarding: where the vehicles activated here go next
         double handoverDelay @unit(s) = default(0s);    // from the vehicle's activation to its Forwarding_Notice
         string backhaulModule = default("backhaulBroker");
+        bool enableHil = default(false);            // Hardware-in-the-Loop: bridge this RSU to physical hardware
+        string hilIface = default("enp3s0");        // network interface connected to the physical RSU (e.g. enp3s0)
 }

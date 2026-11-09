@@ -3,7 +3,7 @@
 
 // Normal World Client Application interface to the Arm TrustZone OP-TEE RSU Gateway TA.
 //
-// In OP-TEE mode (USE_OPTEE=1, ARM64 QEMU or Raspberry Pi 5 Cortex-A76):
+// In OP-TEE mode (USE_OPTEE=1, physical Raspberry Pi 3 Cortex-A53 or QEMU ARMv8-A):
 //   Uses the GlobalPlatform TEE Client API (<tee_client_api.h>, libteec):
 //   TEEC_InitializeContext, TEEC_OpenSession, TEEC_InvokeCommand, TEEC_CloseSession, TEEC_FinalizeContext.
 //

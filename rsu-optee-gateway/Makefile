@@ -1,4 +1,4 @@
-# OP-TEE RSU Gateway (Arm TrustZone on QEMU ARMv8-A and Raspberry Pi 5 Cortex-A76)
+# OP-TEE RSU Gateway (Arm TrustZone on Raspberry Pi 3 Cortex-A53 and QEMU ARMv8-A)
 #
 # Structure:
 #   include/    shared TA UUID, command IDs, and status codes (gateway_ta.h)
@@ -11,8 +11,7 @@
 #   make network      run ../bootstrap --pretty --rsu-exec ./app (real ESA + vehicle + Cloud + OP-TEE RSU)
 #   make bench        run the Secure Marshaling throughput/latency benchmark across payload sizes
 #   make rpi3         cross-compile ./app and .ta for Raspberry Pi 3 (-mcpu=cortex-a53) via build-rpi3.sh
-#   make rpi5         cross-compile ./app (and .ta if TA_DEV_KIT_DIR is set) for Raspberry Pi 5 (-mcpu=cortex-a76)
-#   make vm           delegate the build/run to the ARM64 OP-TEE QEMU VM via ./vm-make.sh
+#   make vm           delegate the build/run to the complementary ARM64 OP-TEE QEMU VM via ./vm-make.sh
 #   make clean        remove build artifacts, sealed state files, and capability stamps
 
 TA_UUID := 9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718
@@ -30,10 +29,6 @@ TEEC_EXPORT ?= $(wildcard $(OPTEE_DIR)/optee_client/out/export/usr)
 TEE_MODE ?= HOST_SIM
 
 PLATFORM ?= native
-ifeq ($(PLATFORM),rpi5)
-    CROSS_COMPILE ?= aarch64-linux-gnu-
-    CPU_FLAGS ?= -mcpu=cortex-a76
-endif
 
 ifneq ($(CROSS_COMPILE),)
     CXX := $(CROSS_COMPILE)g++
@@ -74,7 +69,7 @@ Host_Objects := $(patsubst host/%.cpp,$(BUILD)/host/%.o,$(Host_Cpp_Files)) \
 CLOUD := --cloud $(CURDIR)/cloud.crt
 SMARTDATA := --smartdata 32,1024,65535
 
-.PHONY: all ta run network bench rpi3 rpi5 vm clean FORCE ensure_caps
+.PHONY: all ta run network bench rpi3 vm clean FORCE ensure_caps
 
 rpi3:
 	@./build-rpi3.sh $(PI_IP)
@@ -118,11 +113,7 @@ bench: all ensure_caps
 	$(ROOT)/bootstrap --pretty --rsu-exec $(CURDIR)/app $(CLOUD) \
 		--smartdata 32,256,1024,4096,16384,65535 --smartdata-count 100
 
-# Cross-compile for Raspberry Pi 5 (Arm Cortex-A76, ARMv8.2-A)
-rpi5:
-	$(MAKE) PLATFORM=rpi5 CROSS_COMPILE=aarch64-linux-gnu- all
-
-# Delegate build/run to the ARM64 QEMU OP-TEE VM
+# Delegate build/run to the ARM64 QEMU OP-TEE VM (complementary virtual environment)
 vm:
 	@$(CURDIR)/vm-make.sh $(or $(VM_ARGS),run)
 

@@ -47,6 +47,12 @@ Bytes hexKey(const std::string& hex)
 
 TeeRsuService::~TeeRsuService()
 {
+    if (mHilPollMsg) {
+        cancelAndDelete(mHilPollMsg);
+        mHilPollMsg = nullptr;
+    }
+    mHilRadio.reset();
+    mHilBackhaul.reset();
     mGateway.reset();
     mTee.reset();
 }
@@ -61,6 +67,21 @@ void TeeRsuService::initialize()
     mPositionX = (mName.find("1") != std::string::npos) ? 750.0 : 250.0;
     mMarshalLatencySignal = registerSignal("marshalLatencyUs");
     mHandoverGrantedSignal = registerSignal("handoverGranted");
+
+    mEnableHil = par("enableHil").boolValue();
+    mHilIface = par("hilIface").stdstringValue();
+    if (mEnableHil) {
+        EV_INFO << mName << ": Hardware-in-the-Loop (HIL) enabled on interface " << mHilIface << "\n";
+        try {
+            mHilRadio = std::make_unique<RawSocket>(mHilIface, kRadioEtherType);
+            mHilBackhaul = std::make_unique<RawSocket>(mHilIface, kBackhaulEtherType);
+            mHilPollMsg = new omnetpp::cMessage("hilPoll");
+            scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(1, omnetpp::SIMTIME_MS), mHilPollMsg);
+        } catch (const std::exception& e) {
+            throw omnetpp::cRuntimeError("%s: failed to initialize HIL on %s: %s",
+                mName.c_str(), mHilIface.c_str(), e.what());
+        }
+    }
 
     // Option A: this RSU's own OP-TEE TA session, with its own Secure Storage object (fresh unless freshState = false)
     std::string sealed = par("sealedStatePath").stdstringValue();
@@ -117,6 +138,18 @@ void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPack
     }
     try {
         const BootstrapMsg msg = frame->msg();
+        if (mEnableHil && mHilRadio) {
+            if (msg.getType() == Secure_Data) {
+                if (msg.getDestination() == mName) {
+                    secureData(msg);
+                }
+                return;
+            }
+            sendMsg(*mHilRadio, msg);
+            EV_INFO << mName << " [HIL]: forwarded radio " << stageName(msg.getType())
+                    << " from " << msg.getSender() << " to physical RSU on " << mHilIface << "\n";
+            return;
+        }
         if (msg.getType() == Secure_Data) {
             if (msg.getDestination() == mName) {
                 secureData(msg);
@@ -137,6 +170,17 @@ void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPack
 // Secure_Data: OT packet -> TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT -> IT packet for the cloud
 void TeeRsuService::secureData(const BootstrapMsg& msg)
 {
+    if (mEnableHil && mHilRadio) {
+        try {
+            sendMsg(*mHilRadio, msg);
+            ++mMarshaled;
+            EV_INFO << mName << " [HIL]: forwarded Secure_Data to physical RSU on " << mHilIface << "\n";
+        } catch (const std::exception& e) {
+            ++mMarshalRefused;
+            EV_ERROR << mName << " [HIL]: sendMsg Secure_Data error: " << e.what() << "\n";
+        }
+        return;
+    }
     // the TA invocation's own (wall clock) time: simulation time does not move inside an event
     const auto start = std::chrono::steady_clock::now();
     const Reply reply = mGateway->marshal(getPayload(msg), static_cast<uint64_t>(SimTime::now().ns()));
@@ -155,6 +199,16 @@ void TeeRsuService::secureData(const BootstrapMsg& msg)
 void TeeRsuService::onBackhaul(const BootstrapMsg& msg)
 {
     Enter_Method("onBackhaul");
+    if (mEnableHil && mHilBackhaul) {
+        try {
+            sendMsg(*mHilBackhaul, msg);
+            EV_INFO << mName << " [HIL]: forwarded backhaul " << stageName(msg.getType())
+                    << " to physical RSU on " << mHilIface << "\n";
+        } catch (const std::exception& e) {
+            EV_ERROR << mName << " [HIL]: sendMsg backhaul error: " << e.what() << "\n";
+        }
+        return;
+    }
     try {
         mGateway->onHttps(msg); // Activation_Token, Forwarding_Notice, Handover_Command
     } catch (const std::runtime_error& e) {
@@ -216,6 +270,11 @@ void TeeRsuService::on5gRadio(const BootstrapMsg& msg)
 
 void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
 {
+    if (msg == mHilPollMsg) {
+        pollHil();
+        scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(1, omnetpp::SIMTIME_MS), mHilPollMsg);
+        return;
+    }
     if (msg->isSelfMessage() && msg->getKind() == kHandoverTimer) {
         ++mHandoversTriggered;
         mGateway->startHandover(msg->getName(), mNextRsu); // Forwarding_Notice to mNextRsu
@@ -228,8 +287,51 @@ void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
     delete msg;
 }
 
+void TeeRsuService::pollHil()
+{
+    if (mHilRadio) {
+        drain(*mHilRadio, [this](FrameKind kind, const Bytes& body) {
+            if (kind == FrameKind::Bootstrap) {
+                try {
+                    BootstrapMsg msg = deserialize(body);
+                    if (msg.getType() == Forwarding_Granted) {
+                        ++mHandoversGranted;
+                        emit(mHandoverGrantedSignal, mHandoversGranted);
+                    }
+                    EV_INFO << mName << " [HIL]: received radio frame " << stageName(msg.getType())
+                            << " from physical RSU -> transmitting over simulation radio to "
+                            << msg.getDestination() << "\n";
+                    sendRadio(msg);
+                } catch (const std::exception& e) {
+                    EV_ERROR << mName << " [HIL]: deserialize radio error: " << e.what() << "\n";
+                }
+            }
+        });
+    }
+    if (mHilBackhaul) {
+        drain(*mHilBackhaul, [this](FrameKind kind, const Bytes& body) {
+            if (kind == FrameKind::Bootstrap) {
+                try {
+                    BootstrapMsg msg = deserialize(body);
+                    EV_INFO << mName << " [HIL]: received backhaul frame " << stageName(msg.getType())
+                            << " from physical RSU -> forwarding to simulation backhaul broker\n";
+                    mBroker->sendBackhaul(msg);
+                } catch (const std::exception& e) {
+                    EV_ERROR << mName << " [HIL]: deserialize backhaul error: " << e.what() << "\n";
+                }
+            }
+        });
+    }
+}
+
 void TeeRsuService::finish()
 {
+    if (mHilPollMsg) {
+        cancelAndDelete(mHilPollMsg);
+        mHilPollMsg = nullptr;
+    }
+    mHilRadio.reset();
+    mHilBackhaul.reset();
     recordScalar("marshaledPackets", mMarshaled);
     recordScalar("marshalRefused", mMarshalRefused);
     recordScalar("teeIgnored", mGateway ? mGateway->ignored() : 0);

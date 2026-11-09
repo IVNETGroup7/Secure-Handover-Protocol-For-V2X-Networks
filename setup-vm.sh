@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
 
-# Sets up the Arm TrustZone + OP-TEE development, simulation (QEMU ARMv8-A), and
-# Raspberry Pi 5 (Arm Cortex-A76) cross-compilation environment.
+# Sets up the Arm TrustZone + OP-TEE complementary simulation (QEMU ARMv8-A)
+# development environment. Note: The primary physical testbench runs on the
+# physical Raspberry Pi 3 (Arm Cortex-A53).
 #
 # Run as your normal user: the script calls sudo itself where needed.
 if [ "$EUID" -eq 0 ]; then
@@ -152,7 +153,7 @@ rm -f "$DISK_PATH"
 qemu-img create -f qcow2 -F qcow2 -b "$LOCAL_IMG" "$DISK_PATH" "$DISK_SIZE"
 
 # Guest-side script: installs ARM64 cross-compilers, QEMU ARMv8-A (virt + TrustZone EL3/S-EL1),
-# OP-TEE OS (export-ta_arm64 devkit for QEMU ARMv8-A & Raspberry Pi 5 Cortex-A76), and optee_client (libteec).
+# OP-TEE OS (export-ta_arm64 devkit for QEMU ARMv8-A), and optee_client (libteec).
 cat <<'GUEST' > "$IMG_DIR/install-optee-sdk.sh"
 #!/bin/bash
 set -euxo pipefail

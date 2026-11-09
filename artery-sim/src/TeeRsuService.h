@@ -17,6 +17,8 @@
 #include "BootstrapMsg.h"
 #include "packet_manager.h"
 #include "tee_session.h"
+#include "RawSocket.h"
+#include "Link.h"
 #include "artery/application/ItsG5Service.h"
 #include <memory>
 #include <string>
@@ -40,6 +42,13 @@ class TeeRsuService : public artery::ItsG5Service
         void onBackhaul(const BootstrapMsg&);
         void on5gRadio(const BootstrapMsg&);
         void secureData(const BootstrapMsg&);
+        void pollHil();
+
+        bool mEnableHil = false;
+        std::string mHilIface;
+        std::unique_ptr<RawSocket> mHilRadio;
+        std::unique_ptr<RawSocket> mHilBackhaul;
+        omnetpp::cMessage* mHilPollMsg = nullptr;
 
         std::string mName;                                  // "rsu[0]"
         Bytes mGatewayPublicKey;                            // CY_g: the key of my certificate

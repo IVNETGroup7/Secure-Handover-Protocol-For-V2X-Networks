@@ -21,7 +21,7 @@ fi
 
 OMNETPP_VERSION=${OMNETPP_VERSION:-5.7.1}
 ARTERY_REF=${ARTERY_REF:-master}
-SIMU5G_REF=${SIMU5G_REF:-master}
+SIMU5G_REF=${SIMU5G_REF:-v1.2.2}
 ARTERY_BUILD_TYPE=${ARTERY_BUILD_TYPE:-Release}
 JOBS=$(nproc)
 WITH_QTENV=no
@@ -349,6 +349,11 @@ Simu5G:   $SIMU5G_DIR
 Scenario: $HERE/scenario (omnetpp.ini: D250m_80211p [ITS-G5 802.11p] and D500m_5G [Simu5G 5G NR]; results in scenario/results/)
 
 Run it through CMake (RUN_FLAGS picks the user interface and the configuration):
+  # Hardware-in-the-Loop with physical Raspberry Pi 3 (with SUMO GUI):
+  cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_TargetHandover_GUI --scheduler-class=omnetpp::cRealTimeScheduler" $build
+  cmake --build $build --target run_tee_v2x_handover
+
+  # Pure simulation (headless):
   cmake -DRUN_FLAGS="-u Cmdenv -c D250m_80211p" $build
   cmake --build $build --target run_tee_v2x_handover
 

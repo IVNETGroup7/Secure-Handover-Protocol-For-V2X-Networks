@@ -89,8 +89,8 @@ std::shared_ptr<X509> selfSigned(EVP_PKEY* key, const std::string& address)
     const Bytes serial = randomBytes(8);
     std::shared_ptr<BIGNUM> number(BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr), BN_free);
     check(number && BN_to_ASN1_INTEGER(number.get(), X509_get_serialNumber(cert.get())), "certificate serial");
-    X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600);
-    X509_gmtime_adj(X509_getm_notAfter(cert.get()), 24 * 3600);
+    ASN1_TIME_set(X509_getm_notBefore(cert.get()), 0); // valid from Unix epoch (1970-01-01) for embedded clocks
+    X509_gmtime_adj(X509_getm_notAfter(cert.get()), 10 * 365 * 24 * 3600); // valid for 10 years
     check(X509_set_pubkey(cert.get(), key) == 1, "X509_set_pubkey");
 
     X509_NAME* name = X509_get_subject_name(cert.get());
@@ -397,7 +397,9 @@ std::string HttpsClient::connect()
     mSsl = SSL_new(mContext);
     SSL_set_fd(mSsl, mFd);
     // the certificate must name the address we connected to (subjectAltName IP)
-    X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(mSsl), mAddress.c_str());
+    X509_VERIFY_PARAM* param = SSL_get0_param(mSsl);
+    X509_VERIFY_PARAM_set1_ip_asc(param, mAddress.c_str());
+    X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_NO_CHECK_TIME);
     if (SSL_connect(mSsl) != 1) {
         const long verify = SSL_get_verify_result(mSsl);
         const auto error = verify != X509_V_OK

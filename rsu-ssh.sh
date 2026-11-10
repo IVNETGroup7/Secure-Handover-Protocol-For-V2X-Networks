@@ -26,7 +26,8 @@ ARGS="${REMOTE_ARGS[*]//enp3s0/eth0}"
 ARGS="${ARGS//cloud.crt/\/root/cloud.crt}"
 
 # Run SSH and monitor for the RSU's public key (signal readiness to host)
-ssh root@$PI_IP "/root/app $ARGS --cloud-address $HOST_IP" 2>&1 | while IFS= read -r line; do
+HOST_TIME=$(date -u +'%Y-%m-%d %H:%M:%S')
+ssh root@$PI_IP "date -u -s '$HOST_TIME' >/dev/null 2>&1 || true; /root/app $ARGS --cloud-address $HOST_IP" 2>&1 | while IFS= read -r line; do
     echo "$line"
     # When RSU prints CY_g, signal ready to the parent process if ready-fd was set
     if [[ -n "$READY_FD" && "$line" =~ CY_g[[:space:]]*=[[:space:]]*([0-9a-fA-F]+) ]]; then

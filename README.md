@@ -154,7 +154,7 @@ To execute the full distributed protocol across the physical network (Raspberry 
 2. **On the Host PC**, run the network nodes pointing to your local Ethernet interface (e.g. `enp3s0`):
    ```bash
    # Run the ESA, Cloud HTTPS server, and vehicle against the physical RSU:
-   ./bootstrap --pretty --iface <your-ethernet-network-interface> \
+   PI_IP=<pi-ip> ./bootstrap --pretty --iface <your-ethernet-network-interface> \
        --cloud cloud.crt \
        --rsu-exec ./rsu-ssh.sh \
        --smartdata 32,1024,65535

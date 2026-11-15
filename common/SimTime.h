@@ -1,7 +1,7 @@
-#ifndef BOOTSTRAP_SIMTIME_H_
-#define BOOTSTRAP_SIMTIME_H_
+#ifndef COMMON_SIMTIME_H_
+#define COMMON_SIMTIME_H_
 
-// Time used by the bootstrap protocols
+// Time used across V2X protocol sessions (OMNeT++ simulation time or host wall clock)
 
 #ifdef WITH_OMNETPP
 #include <omnetpp/csimulation.h>
@@ -71,4 +71,4 @@ inline SimTime simTime()
     return SimTime::now();
 }
 
-#endif /* BOOTSTRAP_SIMTIME_H_ */
+#endif /* COMMON_SIMTIME_H_ */

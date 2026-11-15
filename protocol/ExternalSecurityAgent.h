@@ -1,5 +1,5 @@
-#ifndef BOOTSTRAP_EXTERNALSECURITYAGENT_H_
-#define BOOTSTRAP_EXTERNALSECURITYAGENT_H_
+#ifndef PROTOCOL_EXTERNALSECURITYAGENT_H_
+#define PROTOCOL_EXTERNALSECURITYAGENT_H_
 
 #include "Crypto.h"
 #include "Traits.h"
@@ -7,7 +7,7 @@
 #include <map>
 #include <string>
 
-class BootstrapMsg;
+class ProtocolMsg;
 
 // ESA: talks to RSUs over HTTPS (ignores RSUs without a session); the Active_03 goes to the vehicle's user,
 // over the HTTPS connection the user already has with the ESA
@@ -15,7 +15,7 @@ class ExternalSecurityAgent
 {
     public:
         // how a reply leaves the ESA: HTTPS session of msg.getDestination() (e.g. a socket)
-        using HttpsTransport = std::function<void(const BootstrapMsg&)>;
+        using HttpsTransport = std::function<void(const ProtocolMsg&)>;
 
         explicit ExternalSecurityAgent(const std::string& name = "esa");
         void setTransport(HttpsTransport transport) { mTransport = std::move(transport); }
@@ -23,7 +23,7 @@ class ExternalSecurityAgent
         void registerRsu(const std::string& rsu, const std::string& sessionKey, const Bytes& gatewayPublicKey);
 
         // incoming message over HTTPS
-        void handleMessage(const BootstrapMsg&);
+        void handleMessage(const ProtocolMsg&);
 
         const std::string& getFullName() const { return mName; }
         const Bytes& publicKey() const { return mPublicKey; }  // CY_e: presented to each RSU with its HTTPS session
@@ -32,8 +32,8 @@ class ExternalSecurityAgent
 
     private:
         // secure bootstrap protocol
-        void activationToken(const BootstrapMsg& received);
-        void active03(const BootstrapMsg& received);
+        void activationToken(const ProtocolMsg& received);
+        void active03(const ProtocolMsg& received);
 
         // sends over the HTTPS session of "rsu" (e.g. "rsu[0]")
         void sendToRsu(int type, const std::string& rsu, const std::string& vehicle, int seqNum, int ackNum,
@@ -71,4 +71,4 @@ class ExternalSecurityAgent
         int mReceived = 0;
 };
 
-#endif /* BOOTSTRAP_EXTERNALSECURITYAGENT_H_ */
+#endif /* PROTOCOL_EXTERNALSECURITYAGENT_H_ */

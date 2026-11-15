@@ -11,7 +11,6 @@
 //   Instantiates an isolated GatewayTaSession per TeeSession instance in-process,
 //   executing the exact same TA session logic and command IDs without hardware /dev/tee0.
 
-#include "BootstrapPayload.h"
 #include "Crypto.h"
 #include "gateway_ta.h"
 #include <cstdint>
@@ -39,6 +38,8 @@ class TeeSession
             const Bytes& authEg);
         int handleBootstrap(int msgType, const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
             Bytes& outPkt, int& outType);
+        int handleForwardingRequest(const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
+            Bytes& outPkt);
         int secureMarshalOtToIt(const Bytes& otPkt, uint64_t currentPtpTime, Bytes& outItPkt);
         int triggerHandover(const std::string& session, uint64_t ti, Block& outTau, Bytes& outYv, Bytes& outAuthD);
         int receiveForwardingNotice(const std::string& session, const Bytes& yv, const Block& tau, const Bytes& authD,

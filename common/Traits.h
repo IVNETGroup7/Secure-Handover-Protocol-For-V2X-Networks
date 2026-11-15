@@ -1,7 +1,7 @@
-#ifndef BOOTSTRAP_TRAITS_H_
-#define BOOTSTRAP_TRAITS_H_
+#ifndef COMMON_TRAITS_H_
+#define COMMON_TRAITS_H_
 
-// Vehicle data written at manufacturing time, shared by the bootstrap protocols
+// Vehicle data written at manufacturing time and shared cryptographic parameters
 
 #include "Crypto.h"
 #ifndef __OPTEE_TA__
@@ -59,4 +59,4 @@ int intuniform(std::mt19937& rng, int a, int b);
 std::string toHex(const uint8_t* data, size_t size);
 std::string toString(const Uuid&);
 
-#endif /* BOOTSTRAP_TRAITS_H_ */
+#endif /* COMMON_TRAITS_H_ */

@@ -1,13 +1,14 @@
-#ifndef BOOTSTRAP_BOOTSTRAPMSG_H_
-#define BOOTSTRAP_BOOTSTRAPMSG_H_
+#ifndef COMMON_PROTOCOLMSG_H_
+#define COMMON_PROTOCOLMSG_H_
 
-// Bootstrap message exchanged by vehicle, RSU and ESA
+// Protocol message envelope exchanged between Vehicle, RSU, and ESA across all phases
+// (initial bootstrap, Secrecy Forwarding handover, and authenticated telemetry).
 
-#include "BootstrapType.h"
 #include "Crypto.h"
+#include "MessageType.h"
 #include <string>
 
-class BootstrapMsg
+class ProtocolMsg
 {
     public:
         int getType() const { return mType; }
@@ -16,7 +17,7 @@ class BootstrapMsg
         const std::string& getVehicle() const { return mVehicle; }
         int getSeqNum() const { return mSeqNum; }
         int getAckNum() const { return mAckNum; }
-        const Bytes& getPayloadBytes() const { return mPayload; }   // step data, see BootstrapPayload.h
+        const Bytes& getPayloadBytes() const { return mPayload; }
 
         void setType(int type) { mType = type; }
         void setSender(const std::string& sender) { mSender = sender; }
@@ -36,7 +37,18 @@ class BootstrapMsg
         Bytes mPayload;
 };
 
-Bytes serialize(const BootstrapMsg&);
-BootstrapMsg deserialize(const Bytes&);   // throws error if truncated
+inline void setPayload(ProtocolMsg& msg, const Bytes& payload)
+{
+    msg.setPayloadBytes(payload);
+}
 
-#endif /* BOOTSTRAP_BOOTSTRAPMSG_H_ */
+inline Bytes getPayload(const ProtocolMsg& msg)
+{
+    return msg.getPayloadBytes();
+}
+
+Bytes serialize(const ProtocolMsg&);
+ProtocolMsg deserialize(const Bytes&);   // throws std::runtime_error if truncated
+
+#endif /* COMMON_PROTOCOLMSG_H_ */
+

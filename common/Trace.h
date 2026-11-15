@@ -1,5 +1,5 @@
-#ifndef BOOTSTRAP_TRACE_H_
-#define BOOTSTRAP_TRACE_H_
+#ifndef COMMON_TRACE_H_
+#define COMMON_TRACE_H_
 
 #include "Crypto.h"
 #include <string>
@@ -19,4 +19,4 @@ void end(const std::string& node, const std::string& text);
 
 } // namespace trace
 
-#endif /* BOOTSTRAP_TRACE_H_ */
+#endif /* COMMON_TRACE_H_ */

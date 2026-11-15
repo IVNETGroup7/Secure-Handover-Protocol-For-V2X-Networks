@@ -37,7 +37,7 @@ enum TaGatewayCommand
     // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_ADD_ACTIVATION_TOKEN     = 3,
 
-    // Handle a bootstrap or handover message in Secure World (ECDH_Request, Auth_Request, Active_01, Forwarding_Request)
+    // Handle a bootstrap message in Secure World (ECDH_Request, Auth_Request, Active_01)
     // params[0] = MEMREF_TEMP_INPUT:  packed { msg_type, current_ptp_time, session, in_pkt }
     // params[1] = MEMREF_TEMP_OUTPUT: out_pkt
     // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...), b = out_type
@@ -63,7 +63,14 @@ enum TaGatewayCommand
     // params[1] = MEMREF_TEMP_OUTPUT: out_yg (DER SubjectPublicKeyInfo)
     // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
     // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
-    TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE = 7
+    TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE = 7,
+
+    // Handle a vehicle's Forwarding_Request at the target RSU -> Forwarding_Granted
+    // params[0] = MEMREF_TEMP_INPUT:  packed { current_ptp_time, session, in_pkt }
+    // params[1] = MEMREF_TEMP_OUTPUT: out_pkt
+    // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
+    // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
+    TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST = 8
 };
 
 // Gateway status codes returned in VALUE_OUTPUT.a

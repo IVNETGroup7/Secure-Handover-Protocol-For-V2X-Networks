@@ -14,7 +14,7 @@
 // With "nextRsu" set, a vehicle activated here (Active_02 sent) is announced to that RSU right away (Secrecy
 // Forwarding, common/Handover.h): it hands over to it with no new bootstrap when it gets there.
 
-#include "BootstrapMsg.h"
+#include "ProtocolMsg.h"
 #include "packet_manager.h"
 #include "tee_session.h"
 #include "RawSocket.h"
@@ -40,11 +40,11 @@ class TeeRsuService : public artery::ItsG5Service
     private:
         void initHil();
         void initLocalTee();
-        void sendRadio(const BootstrapMsg&);
-        void sendHttps(const BootstrapMsg&);
-        void onBackhaul(const BootstrapMsg&);
-        void onRadioRx(const BootstrapMsg&);
-        void secureData(const BootstrapMsg&);
+        void sendRadio(const ProtocolMsg&);
+        void sendHttps(const ProtocolMsg&);
+        void onBackhaul(const ProtocolMsg&);
+        void onRadioRx(const ProtocolMsg&);
+        void secureData(const ProtocolMsg&);
         void maybeSyncHilClock();
         void maybeSendHilCloudCert();
         void pollHil();

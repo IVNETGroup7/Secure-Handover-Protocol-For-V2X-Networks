@@ -4,7 +4,7 @@
 // Per-session Trusted Application state and command handlers inside the Arm TrustZone OP-TEE TA.
 // Each RSU opens its own TEEC_Session, which allocates an isolated GatewayTaSession in Secure World memory.
 
-#include "BootstrapType.h"
+#include "MessageType.h"
 #include "Crypto.h"
 #include "Handover.h"
 #include "SmartData.h"
@@ -38,18 +38,37 @@ class GatewayTaSession
             const Bytes& authEg);
         int handleBootstrap(int msgType, const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
             Bytes& outPkt, int& outType);
+        int handleForwardingRequest(const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
+            Bytes& outPkt);
         int secureMarshalOtToIt(const Bytes& otPkt, uint64_t currentPtpTime, Bytes& outItPkt);
         int triggerHandover(const std::string& session, uint64_t ti, Block& outTau, Bytes& outYv, Bytes& outAuthD);
         int receiveForwardingNotice(const std::string& session, const Bytes& yv, const Block& tau, const Bytes& authD,
             Bytes& outYg);
 
     private:
-        struct Activation
+        struct PendingActivation
         {
             Bytes authD;
             uint64_t t0 = 0;
             uint64_t tf = 0;
             Bytes authEg;
+        };
+
+        struct PendingEcdh
+        {
+            Bytes kDg;
+            Bytes yV;
+        };
+
+        struct ActiveSession
+        {
+            Bytes authD;
+            Bytes authEg;
+            uint64_t t0 = 0;
+            uint64_t tf = 0;
+            Bytes kDg;
+            Bytes yV;
+            uint64_t authTime = 0;
         };
 
         struct HandoverSession
@@ -106,11 +125,9 @@ class GatewayTaSession
         Bytes mGatewayCert;
         Bytes mEsaPublicKey;
         Bytes mGroupKey;
-        std::map<std::string, Activation> mPending;
-        std::map<std::string, Activation> mActive;
-        std::map<std::string, Bytes> mKdg;
-        std::map<std::string, Bytes> mYv;
-        std::map<std::string, uint64_t> mAuthTime;
+        std::map<std::string, PendingActivation> mPendingActivations;
+        std::map<std::string, PendingEcdh> mPendingEcdh;
+        std::map<std::string, ActiveSession> mActiveSessions;
         std::map<std::string, HandoverSession> mHandovers;
         CloudState mCloud;
         std::set<size_t> mTracedSizes;

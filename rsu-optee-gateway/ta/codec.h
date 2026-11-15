@@ -1,7 +1,7 @@
 #ifndef TA_CODEC_H_
 #define TA_CODEC_H_
 
-// Wire format of the bootstrap, Secrecy Forwarding, and Secure_Data payloads inside the Trusted Application.
+// Wire format of protocol and Secure_Data payloads inside the Trusted Application.
 
 #include "Crypto.h"
 

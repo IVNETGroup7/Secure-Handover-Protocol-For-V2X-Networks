@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 1 km straight highway along the x axis: netconvert -c highway.netccfg -->
+<!-- 400 m x 400 m (3x3 intersection) Manhattan Grid: netconvert -c highway.netccfg -->
 <nodes>
-    <node id="west" x="0.00" y="0.00" type="priority"/>
-    <node id="east" x="1000.00" y="0.00" type="priority"/>
+    <!-- South row (SUMO y = 0, OMNeT++ y = 400) -->
+    <node id="n00" x="0.00"   y="0.00"   type="priority"/>
+    <node id="n10" x="200.00" y="0.00"   type="priority"/>
+    <node id="n20" x="400.00" y="0.00"   type="priority"/>
+
+    <!-- Middle row (SUMO y = 200, OMNeT++ y = 200) -->
+    <node id="n01" x="0.00"   y="200.00" type="priority"/>
+    <node id="n11" x="200.00" y="200.00" type="priority"/>
+    <node id="n21" x="400.00" y="200.00" type="priority"/>
+
+    <!-- North row (SUMO y = 400, OMNeT++ y = 0) -->
+    <node id="n02" x="0.00"   y="400.00" type="priority"/>
+    <node id="n12" x="200.00" y="400.00" type="priority"/>
+    <node id="n22" x="400.00" y="400.00" type="priority"/>
 </nodes>

@@ -1,6 +1,6 @@
 #include "TeeRsuService.h"
 #include "BackhaulBroker.h"
-#include "BootstrapPayload.h"
+#include "MessageType.h"
 #include "Link.h"
 #include "SimTime.h"
 #include "V2xFrame.h"
@@ -132,7 +132,7 @@ void TeeRsuService::initHil()
             }
             mGatewayPublicKey = hello->gatewayPublicKey;
             mEsaPublicKey = mBroker->registerRsu(mName, hello->sessionKey, mGatewayPublicKey,
-                [this](const BootstrapMsg& msg) { onBackhaul(msg); });
+                [this](const ProtocolMsg& msg) { onBackhaul(msg); });
             Bytes ack = toBytes(mName + "\n");
             ack.insert(ack.end(), mEsaPublicKey.begin(), mEsaPublicKey.end());
             sendFrame(*mHilBackhaul, FrameKind::Session_Ack, ack);
@@ -169,7 +169,7 @@ void TeeRsuService::initLocalTee()
     const GatewayCertificate certificate = newGatewayCertificate(mName);
     mGatewayPublicKey = certificate.publicKey;
     const Bytes esaPublicKey = mBroker->registerRsu(mName, sessionKey, certificate.publicKey,
-        [this](const BootstrapMsg& msg) { onBackhaul(msg); });
+        [this](const ProtocolMsg& msg) { onBackhaul(msg); });
 
     const int init = mGateway->initGateway(certificate.certificate, esaPublicKey, hexKey(par("groupKey").stdstringValue()));
     if (init != GW_OK) {
@@ -181,25 +181,28 @@ void TeeRsuService::initLocalTee()
     }
 
     PacketManager::Transport transport;
-    transport.radio = [this](const BootstrapMsg& msg) { sendRadio(msg); };
-    transport.https = [this](const BootstrapMsg& msg) { sendHttps(msg); };
+    transport.radio = [this](const ProtocolMsg& msg) { sendRadio(msg); };
+    transport.https = [this](const ProtocolMsg& msg) { sendHttps(msg); };
     transport.cloud = [this](ItPacket packet) { mBroker->postToCloud(mName, packet.bytes); };
     mGateway->setTransport(transport);
 }
 
-void TeeRsuService::onRadioRx(const BootstrapMsg& msg)
+void TeeRsuService::onRadioRx(const ProtocolMsg& msg)
 {
     // the operator chose the RSU of CY_g: the other RSUs in range leave its Activation_Request alone
     if (msg.getType() == Activation_Request
         && unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
         return;
     }
+    if (msg.getType() == Handover_Predict && msg.getDestination() == mName) {
+        ++mHandoversTriggered;
+    }
     if (mEnableHil) {
         if (!mHilRadio || (msg.getDestination() != mName && msg.getDestination() != "esa")) {
             return;
         }
         sendMsg(*mHilRadio, msg);
-        EV_INFO << mName << " [HIL]: forwarded radio " << stageName(msg.getType())
+        EV_INFO << mName << " [HIL]: forwarded radio " << messageTypeName(msg.getType())
                 << " from " << msg.getSender() << " to physical RSU on " << mHilIface << "\n";
         return;
     }
@@ -229,7 +232,7 @@ void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPack
 }
 
 // Secure_Data: OT packet -> TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT -> IT packet for the cloud
-void TeeRsuService::secureData(const BootstrapMsg& msg)
+void TeeRsuService::secureData(const ProtocolMsg& msg)
 {
     // the TA invocation's own (wall clock) time: simulation time does not move inside an event
     const auto start = std::chrono::steady_clock::now();
@@ -246,13 +249,13 @@ void TeeRsuService::secureData(const BootstrapMsg& msg)
     mBroker->postToCloud(mName, reply.payload);
 }
 
-void TeeRsuService::onBackhaul(const BootstrapMsg& msg)
+void TeeRsuService::onBackhaul(const ProtocolMsg& msg)
 {
     Enter_Method("onBackhaul");
     if (mEnableHil && mHilBackhaul) {
         try {
             sendMsg(*mHilBackhaul, msg);
-            EV_INFO << mName << " [HIL]: forwarded backhaul " << stageName(msg.getType())
+            EV_INFO << mName << " [HIL]: forwarded backhaul " << messageTypeName(msg.getType())
                     << " to physical RSU on " << mHilIface << "\n";
         } catch (const std::exception& e) {
             EV_ERROR << mName << " [HIL]: sendMsg backhaul error: " << e.what() << "\n";
@@ -266,7 +269,7 @@ void TeeRsuService::onBackhaul(const BootstrapMsg& msg)
     }
 }
 
-void TeeRsuService::sendHttps(const BootstrapMsg& msg)
+void TeeRsuService::sendHttps(const ProtocolMsg& msg)
 {
     mBroker->sendBackhaul(msg);
 
@@ -276,7 +279,7 @@ void TeeRsuService::sendHttps(const BootstrapMsg& msg)
     }
 }
 
-void TeeRsuService::sendRadio(const BootstrapMsg& msg)
+void TeeRsuService::sendRadio(const ProtocolMsg& msg)
 {
     if (msg.getType() == Forwarding_Granted) {
         ++mHandoversGranted;
@@ -352,9 +355,9 @@ void TeeRsuService::pollHil()
 
     if (mHilRadio) {
         drain(*mHilRadio, [this](FrameKind kind, const Bytes& body) {
-            if (kind == FrameKind::Bootstrap) {
+            if (kind == FrameKind::Protocol) {
                 try {
-                    BootstrapMsg msg = deserialize(body);
+                    ProtocolMsg msg = deserialize(body);
                     if (msg.getSender() != mName) {
                         return;
                     }
@@ -362,7 +365,7 @@ void TeeRsuService::pollHil()
                         ++mHandoversGranted;
                         emit(mHandoverGrantedSignal, mHandoversGranted);
                     }
-                    EV_INFO << mName << " [HIL]: received radio frame " << stageName(msg.getType())
+                    EV_INFO << mName << " [HIL]: received radio frame " << messageTypeName(msg.getType())
                             << " from physical RSU -> transmitting over simulation radio to "
                             << msg.getDestination() << "\n";
                     sendRadio(msg);
@@ -374,13 +377,13 @@ void TeeRsuService::pollHil()
     }
     if (mHilBackhaul) {
         drain(*mHilBackhaul, [this](FrameKind kind, const Bytes& body) {
-            if (kind == FrameKind::Bootstrap) {
+            if (kind == FrameKind::Protocol) {
                 try {
-                    BootstrapMsg msg = deserialize(body);
+                    ProtocolMsg msg = deserialize(body);
                     if (msg.getSender() != mName) {
                         return;
                     }
-                    EV_INFO << mName << " [HIL]: received backhaul frame " << stageName(msg.getType())
+                    EV_INFO << mName << " [HIL]: received backhaul frame " << messageTypeName(msg.getType())
                             << " from physical RSU -> forwarding to simulation backhaul broker\n";
                     if (msg.getType() == Active_02 && !mNextRsu.empty()) {
                         scheduleAt(omnetpp::simTime() + mHandoverDelay,

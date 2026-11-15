@@ -1,6 +1,6 @@
 # Comprehensive Guide to Tests, Hardware Testbench, VM, and Simulations
 
-This document is a technical reference for every test, benchmark, hardware-in-the-loop (HIL) setup, VM workflow, and V2X network simulation in **Secure-Handover-Protocol-For-V2X-Networks**, covering the **OP-TEE RSU Gateway**, **Dual-RSU Raspberry Pi 3 HIL** (`HIL_RPi3_DualRsu`), and **Secrecy Forwarding** handover.
+This document is a technical reference for every test, benchmark, hardware-in-the-loop (HIL) setup, VM workflow, and V2X network simulation in **Secure-Handover-Protocol-For-V2X-Networks**, covering the **OP-TEE RSU Gateway**, **4-RSU Manhattan Grid Raspberry Pi 3 HIL** (`HIL_RPi3_QuadRsu` / `HIL_RPi3_DualRsu`), and **CTRA trajectory prediction + Secrecy Forwarding** handover.
 
 For a concise overview and quick-start commands, see [README.md](README.md).
 
@@ -13,7 +13,7 @@ For a concise overview and quick-start commands, see [README.md](README.md).
    - [2.1 Actors & Trust Boundaries](#21-actors--trust-boundaries)
    - [2.2 Cryptographic Key Hierarchy & Equations](#22-cryptographic-key-hierarchy--equations)
    - [2.3 IEEE 1588 PTP Synchronization & Slotted OTPs](#23-ieee-1588-ptp-synchronization--slotted-otps)
-   - [2.4 Wire Protocols, Raw Ethernet Framing & Dual-RSU Multiplexing](#24-wire-protocols-raw-ethernet-framing--dual-rsu-multiplexing)
+   - [2.4 Wire Protocols, Raw Ethernet Framing & 4-RSU Multiplexing](#24-wire-protocols-raw-ethernet-framing--4-rsu-multiplexing)
 3. [OP-TEE RSU Gateway Architecture (`rsu-optee-gateway/`)](#3-op-tee-rsu-gateway-architecture-rsu-optee-gateway)
    - [3.1 Normal World (`host/`) vs. Secure World (`ta/`)](#31-normal-world-host-vs-secure-world-ta)
    - [3.2 `HOST_SIM` Mode vs. `OPTEE` Hardware Mode](#32-host_sim-mode-vs-optee-hardware-mode)
@@ -22,13 +22,13 @@ For a concise overview and quick-start commands, see [README.md](README.md).
    - [4.1 Purpose & Requirements](#41-purpose--requirements)
    - [4.2 Scenario-by-Scenario Deep Dive (`1`–`7` & `4a`–`4m`)](#42-scenario-by-scenario-deep-dive-17--4a4m)
    - [4.3 Observed Terminal Output](#43-observed-terminal-output)
-5. [Suite 2: Raspberry Pi 3 TrustZone & Dual-RSU HIL Daemon (`./app rsu`)](#5-suite-2-raspberry-pi-3-trustzone--dual-rsu-hil-daemon-app-rsu)
+5. [Suite 2: Raspberry Pi 3 TrustZone & 4-RSU HIL Daemon (`./app rsu`)](#5-suite-2-raspberry-pi-3-trustzone--4-rsu-hil-daemon-app-rsu)
    - [5.1 Cross-Compilation & Deployment (`build-rpi3.sh`)](#51-cross-compilation--deployment-build-rpi3sh)
-   - [5.2 Dual-RSU Hardware Launcher (`rsu-dual-ssh.sh`)](#52-dual-rsu-hardware-launcher-rsu-dual-sshsh)
+   - [5.2 4-RSU Hardware Launcher (`rsu-dual-ssh.sh`)](#52-4-rsu-hardware-launcher-rsu-dual-sshsh)
    - [5.3 Embedded Gateway Latency Reporting (`Benchmark`)](#53-embedded-gateway-latency-reporting-benchmark)
 6. [Suite 3: Complementary VM Workflow (`setup-vm.sh`, `make vm`, `make vm-hil`)](#6-suite-3-complementary-vm-workflow-setup-vmsh-make-vm-make-vm-hil)
    - [6.1 VM Provisioning (`setup-vm.sh`)](#61-vm-provisioning-setup-vmsh)
-   - [6.2 Self-Test & Bridged Dual-RSU HIL (`vm-make.sh`, `make vm-hil`)](#62-self-test--bridged-dual-rsu-hil-vm-makesh-make-vm-hil)
+   - [6.2 Self-Test & Bridged 4-RSU HIL (`vm-make.sh`, `make vm-hil`)](#62-self-test--bridged-4-rsu-hil-vm-makesh-make-vm-hil)
 7. [Suite 4: Artery / OMNeT++ / SUMO V2X Simulations (`artery-sim/`)](#7-suite-4-artery--omnet--sumo-v2x-simulations-artery-sim)
    - [7.1 Build Setup (`setup_artery.sh`)](#71-build-setup-setup_arterysh)
    - [7.2 Road Topology, SUMO Mobility & Custom Modules](#72-road-topology-sumo-mobility--custom-modules)
@@ -42,10 +42,10 @@ For a concise overview and quick-start commands, see [README.md](README.md).
 | Test / Configuration | Command | Primary Files | Frameworks & Tech | Key Requirements | TEE Role | What It Verifies |
 |---|---|---|---|---|---|---|
 | **OP-TEE Gateway Self-Test** | `make run` (or `make test`, or `./rsu-optee-gateway/app`) | [`rsu-optee-gateway/host/selftest.cpp`](rsu-optee-gateway/host/selftest.cpp), [`rsu-optee-gateway/ta/`](rsu-optee-gateway/ta) | C++17, OpenSSL 3 (`HOST_SIM`) or `libteec` + `.ta` (`OPTEE`) | C++17 + OpenSSL 3 on Linux (`HOST_SIM`); `/dev/tee0` + `tee-supplicant` + signed `.ta` (`OPTEE`). Takes ~5.1 s | Full TA isolation (`GatewayTaSession`, `ta_crypto`, Secure Storage) | Scenarios `1`–`7` + subtests `4a`–`4m`: bootstrap, tampered OTP, expired window `[t_0, t_f]`, early arrival `< t_0`, rogue `CY_g`, OT→IT Secure Marshaling, Cloud session rotation, Secrecy Forwarding handover + replay/cross-RSU rejection, and HIL shared-link helpers. |
-| **Artery Pure 802.11p Simulation** | `make sim` (or `opp_run_release ... -c D250m_80211p` / `_GUI`) | [`artery-sim/scenario/omnetpp.ini`](artery-sim/scenario/omnetpp.ini), [`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned), [`artery-sim/src/`](artery-sim/src) | OMNeT++ 5.7.1, Artery, INET, Veins, Vanetza (BTP/GeoNetworking), SUMO, TA (`HOST_SIM`) | Built `tee_v2x` (`libartery_tee_v2x.so`) & SUMO binary (`artery-sim/setup_artery.sh`) | Each simulated RSU owns an isolated host `TeeSession` | 1 km SUMO highway (`25 m/s`), ITS-G5 ch 180 physics, vehicle bootstrapping (`rsu[0]`), 10 Hz SmartData, and Secrecy Forwarding handover (`rsu[0]` → `rsu[1]`) at `x = 500 m`. |
-| **Dual-RSU Raspberry Pi 3 HIL** | `make rpi3 PI_IP=<ip>` + `./rsu-dual-ssh.sh --pi-ip <ip>` + `make hil-dual HIL_IFACE=<nic>` | [`rsu-optee-gateway/build-rpi3.sh`](rsu-optee-gateway/build-rpi3.sh), [`rsu-dual-ssh.sh`](rsu-dual-ssh.sh), [`artery-sim/run-hil-dual.sh`](artery-sim/run-hil-dual.sh), [`rsu_node.cpp`](rsu-optee-gateway/host/rsu_node.cpp), [`TeeRsuService.cc`](artery-sim/src/TeeRsuService.cc) | AArch64 RPi3 OP-TEE OS + `tee-supplicant` + `/dev/tee0` (`TA_FLAG_MULTI_SESSION`), OMNeT++ `cRealTimeScheduler`, Artery, SUMO, `AF_PACKET` (`0x88b5`/`0x88b6`) | RPi3 wired via Ethernet to `<nic>`, `cap_net_raw=ep` on `opp_run_release` (plus RPi3 `.ta` + `./app`) | Both `rsu[0]` (`rsu0.sealed`) and `rsu[1]` (`rsu1.sealed`) run concurrently inside OP-TEE on RPi3 | Real-time simulated vehicle, ESA, and Cloud (`BackhaulBroker`) exchanging bootstrap, 10 Hz SmartData marshaling, and TrustZone-to-TrustZone Secrecy Forwarding over physical Ethernet. |
+| **Artery Pure 802.11p Simulation** | `make sim` (or `opp_run_release ... -c D250m_80211p` / `_GUI`) | [`artery-sim/scenario/omnetpp.ini`](artery-sim/scenario/omnetpp.ini), [`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned), [`CtraPredictor.cc`](artery-sim/src/CtraPredictor.cc), [`artery-sim/src/`](artery-sim/src) | OMNeT++ 5.7.1, Artery, INET, Veins, Vanetza (BTP/GeoNetworking), SUMO, TA (`HOST_SIM`) | Built `tee_v2x` (`libartery_tee_v2x.so`) & SUMO binary (`artery-sim/setup_artery.sh`) | Each of the 4 simulated RSUs (`rsu[0]`..`rsu[3]`) owns an isolated host `TeeSession` | **400 m × 400 m 3×3 Manhattan Grid** (`85 s`, `20 m/s`), ITS-G5 ch 180 physics, vehicle bootstrapping (`rsu[0]`), 10 Hz SmartData, **CTRA** trajectory prediction + selective single-RSU pre-fetch (`Handover_Predict`), and 3 Secrecy Forwarding handovers (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`). |
+| **4-RSU Raspberry Pi 3 HIL** | `make rpi3 PI_IP=<ip>` + `./rsu-dual-ssh.sh --pi-ip <ip>` + `make hil-dual HIL_IFACE=<nic>` | [`rsu-optee-gateway/build-rpi3.sh`](rsu-optee-gateway/build-rpi3.sh), [`rsu-dual-ssh.sh`](rsu-dual-ssh.sh), [`artery-sim/run-hil-dual.sh`](artery-sim/run-hil-dual.sh), [`rsu_node.cpp`](rsu-optee-gateway/host/rsu_node.cpp), [`TeeRsuService.cc`](artery-sim/src/TeeRsuService.cc) | AArch64 RPi3 OP-TEE OS + `tee-supplicant` + `/dev/tee0` (`TA_FLAG_MULTI_SESSION`), OMNeT++ `cRealTimeScheduler`, Artery, SUMO, `AF_PACKET` (`0x88b5`/`0x88b6`) | RPi3 wired via Ethernet to `<nic>`, `cap_net_raw=ep` on `opp_run_release` (plus RPi3 `.ta` + `./app`) | All 4 RSUs (`rsu[0]`..`rsu[3]`, `rsu0.sealed`..`rsu3.sealed`) run concurrently inside OP-TEE on RPi3 | Real-time simulated Manhattan Grid vehicle with CTRA predictor, ESA, and Cloud (`BackhaulBroker`) exchanging bootstrap, 10 Hz SmartData marshaling, selective pre-fetch, and TrustZone-to-TrustZone Secrecy Forwarding over physical Ethernet. |
 | **VM Self-Test (`optee-arm64-vm`)** | `./setup-vm.sh` + `make vm` | [`setup-vm.sh`](setup-vm.sh), [`rsu-optee-gateway/vm-make.sh`](rsu-optee-gateway/vm-make.sh) | libvirt/KVM Ubuntu 24.04 VM, `optee_os` `vexpress-qemu_armv8a` DevKit, `optee_client` | KVM/libvirt on host PC, `rsync`, `ssh`, internet during provisioning | Same `./app` build/self-test flow inside `optee-arm64-vm` | Reproducible VM sandbox with ARM64 cross-compilers, OP-TEE DevKit, and `libteec` in `/opt/optee`. |
-| **VM Bridged Dual-RSU HIL** | `make vm-hil` + `make hil-dual HIL_IFACE=virbr0` | [`Makefile`](Makefile), [`rsu-optee-gateway/vm-make.sh`](rsu-optee-gateway/vm-make.sh), [`rsu-optee-gateway/Makefile`](rsu-optee-gateway/Makefile), [`rsu_node.cpp`](rsu-optee-gateway/host/rsu_node.cpp) | libvirt `virbr0` bridge, dual `./app rsu` daemons inside VM, Artery `HIL_RPi3_DualRsu` on host | Provisioned `optee-arm64-vm`, `cap_net_raw=ep` on `opp_run_release`, `virbr0` active | Concurrent `rsu[0]` + `rsu[1]` daemon processes inside VM | Mirrors the Dual-RSU RPi3 HIL setup over the KVM bridge (`virbr0`) without physical RPi3 hardware. |
+| **VM Bridged 4-RSU HIL** | `make vm-hil` + `make hil-dual HIL_IFACE=virbr0` | [`Makefile`](Makefile), [`rsu-optee-gateway/vm-make.sh`](rsu-optee-gateway/vm-make.sh), [`rsu-optee-gateway/Makefile`](rsu-optee-gateway/Makefile), [`rsu_node.cpp`](rsu-optee-gateway/host/rsu_node.cpp) | libvirt `virbr0` bridge, 4 `./app rsu` daemons inside VM, Artery `HIL_RPi3_DualRsu` on host | Provisioned `optee-arm64-vm`, `cap_net_raw=ep` on `opp_run_release`, `virbr0` active | 4 concurrent `rsu[0]`..`rsu[3]` daemon processes inside VM | Mirrors the 4-RSU Manhattan Grid RPi3 HIL setup over the KVM bridge (`virbr0`) without physical RPi3 hardware. |
 
 ---
 
@@ -55,7 +55,7 @@ Understanding what each test checks requires tracking **where trust stops** and 
 
 ### 2.1 Actors & Trust Boundaries
 
-1. **Vehicle / On-Board Unit (OBU)** ([`protocol/BootstrapService.cpp`](protocol/BootstrapService.cpp)):
+1. **Vehicle / On-Board Unit (OBU)** ([`protocol/VehicleAgent.cpp`](protocol/VehicleAgent.cpp), [`BootstrapClient.cpp`](protocol/BootstrapClient.cpp), [`HandoverClient.cpp`](protocol/HandoverClient.cpp), [`SecureDataClient.cpp`](protocol/SecureDataClient.cpp)):
    - Manufactured via `manufactureVehicle()` ([`common/Traits.cpp`](common/Traits.cpp)) with a random `UUID`, firmware digest `SHA256(f_w)` (derived from `kFirmwareImage = "gateway-firmware v1.0"`), identity $Id_d$, authenticator $Auth_d$, and trusted target gateway public key $CY_g$.
    - Authenticates to its initial RSU over V2X radio and transmits encrypted telemetry (`SmartData` JSON, [`common/SmartData.cpp`](common/SmartData.cpp)) authenticated with a sliding-slot Poly1305 One-Time Password (`OTP_dt`).
    - Holds ephemeral ECDH key $(X_V, Y_V)$ across its session so future RSU-to-RSU handovers (**Secrecy Forwarding**, [`common/Handover.cpp`](common/Handover.cpp)) require only symmetric tokens and fresh RSU ephemeral ECDH keys—never re-contacting the ESA.
@@ -111,20 +111,21 @@ All elliptic-curve keys use **NIST P-256** (`prime256v1`, `kEcdhCurve = "P-256"`
   4. Serializes JSON and encrypts it under Cloud session key $K_{eg} = \text{SHA256}(\text{ECDH}(X_s, Y_e))$;
   5. Emits an HTTP/1.1 `POST /smartdata` buffer with `X-Session-Key: <base64(Y_s)>`, rotating $(X_s, Y_s)$ every `kMessagesPerSession = 100` packets.
 
-#### Secrecy Forwarding (`rsu[0]` → `rsu[1]`)
-Handover transfers vehicle authentication without exposing $K_{dg}$ to Normal World or subsequent RSU traffic to `rsu[0]` ([`common/Handover.cpp`](common/Handover.cpp)):
-1. Source RSU TA (`rsu[0]`) computes a one-time forwarding token using activation slot $t_i$ and transmits `Forwarding_Notice` `{ Y_V, tau_{i+2}, Auth_d }` to `rsu[1]`:
+#### CTRA Pre-Fetch & Secrecy Forwarding ($G_{i+1} \to G_{i+2}$)
+Handover transfers vehicle authentication without exposing $K_{dg}$ to Normal World or subsequent RSU traffic to $G_{i+1}$ ([`common/Handover.cpp`](common/Handover.cpp), [`artery-sim/src/CtraPredictor.cc`](artery-sim/src/CtraPredictor.cc)):
+0. *(CTRA Trajectory Prediction — Artery)* Vehicle integrates $X = [x, y, v, \psi, a, \omega]^T$ over `predictionHorizon = 8.0 s` (`predictionStep = 0.1 s`) against all candidate RSUs, identifies the single most likely target RSU $G_{i+2}$ (`minDistance <= 80 m`), and sends `Handover_Predict` `{ targetRsu }` only to its current RSU $G_{i+1}$ (other candidate RSUs are not notified).
+1. Source RSU TA ($G_{i+1}$) computes a one-time forwarding token using activation slot $t_i$ and transmits `Forwarding_Notice` `{ Y_V, tau_{i+2}, Auth_d }` exclusively to $G_{i+2}$:
    $$\tau_{i+2} = \text{Poly1305}(K_{dg}, t_i, m)$$
-2. Target RSU TA (`rsu[1]`) generates ephemeral P-256 keypair $(X_G, Y_{G_{i+2}})$ and derives:
+2. Target RSU TA ($G_{i+2}$) generates ephemeral P-256 keypair $(X_G, Y_{G_{i+2}})$ and derives:
    $$K_{dh_i} = \text{ECDH}(X_G, Y_V), \qquad KT_i = \text{Poly1305}(K_{dh_i}, K_{dh_i} \oplus \tau_{i+2}, m)$$
    $$KT_i^{32} = \text{SHA256}(KT_i \parallel K_{dh_i}), \qquad \text{auth}_{i+2} = \text{SHA256}(\tau_{i+2})$$
-   Target TA stores $(KT_i^{32}, \text{auth}_{i+2}, K_{dh_i}, Auth_d)$ as a pending handover and replies via `rsu[0]` with `Handover_Command` `{ rsu[1], Y_{G_{i+2}} }`.
-3. Vehicle receives `Handover_Command` from its current RSU, derives the matching $\tau_{i+2}$, $K_{dh_i}$, $KT_i^{32}$, and $\text{auth}_{i+2}$, computes at current slot $t_c$:
+   Target TA stores $(KT_i^{32}, \text{auth}_{i+2}, K_{dh_i}, Auth_d)$ as a pending handover and replies via $G_{i+1}$ with `Handover_Command` `{ G_{i+2}, Y_{G_{i+2}} }`. With `deferHandover = true`, the vehicle pre-computes and holds $(K_{dh_i}, KT_i^{32}, \text{auth}_{i+2})$ until entering the target handover zone (`handoverRadius = 160 m`).
+3. Vehicle computes at current slot $t_c$:
    $$\text{OTP} = \text{Poly1305}(KT_i^{32}, \text{auth}_{i+2} \oplus t_c, m)$$
-   and transmits `Forwarding_Request` `{ auth_{i+2}, OTP }` to `rsu[1]`.
-4. `rsu[1]` TA validates $\text{auth}_{i+2}$ and `OTP` within the 3-slot window, promotes $K_{dh_i}$ as the vehicle's active $K_{dg}$ paired with `rsu[1]`'s group key $K_g$, consumes the pending handover (preventing replay), seals Secure Storage, and replies:
+   and transmits `Forwarding_Request` `{ auth_{i+2}, OTP }` to $G_{i+2}$.
+4. $G_{i+2}$ TA (`TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST`) validates $\text{auth}_{i+2}$ and `OTP` within the 3-slot window, promotes $K_{dh_i}$ as the vehicle's active $K_{dg}$ paired with $G_{i+2}$'s group key $K_g$, consumes the pending handover (preventing replay), seals Secure Storage, and replies:
    $$\text{Forwarding\_Granted} = E_{KT_i}(\{ Y_{G_{i+3}}, \text{auth}'_{i+2}, K_{G_{i+2}}, \text{OTP} \})$$
-   where $\text{auth}'_{i+2} = \text{SHA256}(\text{auth}_{i+2})$. Vehicle verifies `OTP` and $\text{auth}'_{i+2}$ and transitions to `rsu[1]`'s keys.
+   where $\text{auth}'_{i+2} = \text{SHA256}(\text{auth}_{i+2})$. Vehicle verifies `OTP` and $\text{auth}'_{i+2}$ and transitions to $G_{i+2}$'s keys.
 
 ---
 
@@ -138,9 +139,9 @@ Because `[t_0, t_f]` is only `5.0 s` wide and `OTP_dt` slots step every `0.1 s`,
 
 ---
 
-### 2.4 Wire Protocols, Raw Ethernet Framing & Dual-RSU Multiplexing
+### 2.4 Wire Protocols, Raw Ethernet Framing & 4-RSU Multiplexing
 
-When bridging physical hardware (RPi3) or the VM (`virbr0`) with Artery ([`net/RawSocket.h`](net/RawSocket.h), [`net/Link.h`](net/Link.h), [`common/BootstrapMsg.h`](common/BootstrapMsg.h)):
+When bridging physical hardware (RPi3) or the VM (`virbr0`) with Artery ([`net/RawSocket.h`](net/RawSocket.h), [`net/Link.h`](net/Link.h), [`common/ProtocolMsg.h`](common/ProtocolMsg.h)):
 - **EtherTypes**:
   - `kRadioEtherType = 0x88B5`: OT radio plane (`Vehicle` ↔ `RSU`)
   - `kBackhaulEtherType = 0x88B6`: IT/Backhaul plane (`RSU` ↔ `ESA` / `RSU` ↔ `RSU` / `Cloud`)
@@ -148,7 +149,7 @@ When bridging physical hardware (RPi3) or the VM (`virbr0`) with Artery ([`net/R
   - `RawSocket` opens Linux `AF_PACKET` / `SOCK_RAW` (dropping `PACKET_OUTGOING` loopback echoes) with `kMaxFrameData = 1498` bytes payload per Ethernet frame.
   - Payloads larger than `1498` B (such as 65 KB `SmartData` or X.509 PEM certificates) split into `FrameKind::Data_Fragment` chunks reassembled with `kReassemblyTimeout = 2 s`.
 - **Control & HIL Multiplexing (`FrameKind`)**:
-  - `Bootstrap`, `Data_Fragment`, `Session_Hello`, `Session_Ack` for protocol messages and startup session handshake (`rsu[0]` and `rsu[1]` present their real $CY_g$ to `BackhaulBroker`).
+  - `Protocol`, `Data_Fragment`, `Session_Hello`, `Session_Ack` for protocol messages and startup session handshake (`rsu[0]`..`rsu[3]` present their real $CY_g$ to `BackhaulBroker`).
   - `Handover_Trigger` (`packHandoverTrigger` / `parseHandoverTrigger`): Artery backhaul trigger instructing physical/VM `rsu[0]` to initiate `Forwarding_Notice` toward `rsu[1]`.
   - `Clock_Anchor` (`packClockAnchor` / `parseClockAnchor`): Artery periodically pushes simulation time $t_{\text{sim}}$ so remote RPi3/VM `./app rsu` processes anchor their `steady_clock` (`PacketManager::setClock`) to OMNeT++ `simTime()`, keeping 0.1 s OTP slots and `[t_0, t_f]` windows aligned despite Unix-epoch vs. simulator-time offsets.
   - `Cloud_Ready` / `Cloud_Refused`: Signals when each RSU TA pins Cloud $CY_e$ or if Cloud verification rejects an IT packet.
@@ -253,7 +254,7 @@ gateway OK
 
 ---
 
-## 5. Suite 2: Raspberry Pi 3 TrustZone & Dual-RSU HIL Daemon (`./app rsu`)
+## 5. Suite 2: Raspberry Pi 3 TrustZone & 4-RSU HIL Daemon (`./app rsu`)
 
 ### 5.1 Cross-Compilation & Deployment (`build-rpi3.sh`)
 
@@ -264,16 +265,18 @@ gateway OK
   3. Cross-compiles `./app` linked with `-lteec` (`TEE_MODE=OPTEE`).
   4. If `PI_IP` is set, uploads the signed `.ta` into OP-TEE's TA store and `/root/app` via `scp`/`ssh`.
 
-### 5.2 Dual-RSU Hardware Launcher (`rsu-dual-ssh.sh`)
+### 5.2 4-RSU Hardware Launcher (`rsu-dual-ssh.sh`)
 
 ```bash
 ./rsu-dual-ssh.sh --pi-ip <ip> [--rsu-iface <iface>] [--session-timeout <sec>] [--keep-state] [--remote-app <path>]
 ```
 
-- Launches **two concurrent `/root/app rsu` daemons** over SSH on the Raspberry Pi 3:
-  1. `rsu[0]` → OP-TEE TA session #1, Secure Storage ID `rsu0.sealed`
-  2. `rsu[1]` → OP-TEE TA session #2, Secure Storage ID `rsu1.sealed`
-- Both bind to `--rsu-iface` (default `eth0`), sharing one NIC via EtherTypes `0x88b5` (radio) and `0x88b6` (backhaul).
+- Launches **4 concurrent `/root/app rsu` daemons** over SSH on the Raspberry Pi 3 (one per Manhattan Grid edge):
+  1. `rsu[0]` (West edge) → OP-TEE TA session #1, Secure Storage ID `rsu0.sealed`
+  2. `rsu[1]` (North edge) → OP-TEE TA session #2, Secure Storage ID `rsu1.sealed`
+  3. `rsu[2]` (East edge) → OP-TEE TA session #3, Secure Storage ID `rsu2.sealed`
+  4. `rsu[3]` (South edge) → OP-TEE TA session #4, Secure Storage ID `rsu3.sealed`
+- All 4 bind to `--rsu-iface` (default `eth0`), sharing one NIC via EtherTypes `0x88b5` (radio) and `0x88b6` (backhaul).
 
 ### 5.3 Embedded Gateway Latency Reporting (`Benchmark`)
 
@@ -291,10 +294,10 @@ When each `./app rsu` instance exits cleanly (timeout or signal), [`Benchmark::p
 - Creates or reuses an Ubuntu 24.04 x86_64 libvirt/KVM domain named **`optee-arm64-vm`** (`setup-vm.sh [--recreate]`), attached to the libvirt `default` bridge (`virbr0`).
 - Installs ARM64 cross-compilers and `qemu-system-arm`, and builds `optee_os` (`PLATFORM=vexpress-qemu_armv8a`, `ta_dev_kit`) and `optee_client` (`libteec`) in `/opt/optee` (`/etc/profile.d/optee.sh`).
 
-### 6.2 Self-Test & Bridged Dual-RSU HIL (`vm-make.sh`, `make vm-hil`)
+### 6.2 Self-Test & Bridged 4-RSU HIL (`vm-make.sh`, `make vm-hil`)
 
 - **`make vm`**: Starts `optee-arm64-vm`, `rsync`s the repository into the VM via [`rsu-optee-gateway/vm-make.sh`](rsu-optee-gateway/vm-make.sh), sources `/etc/profile.d/optee.sh`, and runs `make -C rsu-optee-gateway run` (or custom `VM_ARGS`).
-- **`make vm-hil`**: Syncs the repo, grants `cap_net_raw=ep` (`make caps`), and runs `make hil-dual` inside `optee-arm64-vm` (launching concurrent `rsu[0]` and `rsu[1]` processes bound to the VM's libvirt NIC). Pair with `make hil-dual HIL_IFACE=virbr0` on the host PC to execute the exact same Dual-RSU Artery HIL Layer-2 flow without physical RPi3 hardware.
+- **`make vm-hil`**: Syncs the repo, grants `cap_net_raw=ep` (`make caps`), and runs `make hil-dual` (`hil-quad`) inside `optee-arm64-vm` (launching 4 concurrent `rsu[0]`..`rsu[3]` processes bound to the VM's libvirt NIC). Pair with `make hil-dual HIL_IFACE=virbr0` on the host PC to execute the exact same 4-RSU Artery HIL Layer-2 flow without physical RPi3 hardware.
 
 ---
 
@@ -311,37 +314,43 @@ When each `./app rsu` instance exits cleanly (timeout or signal), [`Benchmark::p
 
 ### 7.2 Road Topology, SUMO Mobility & Custom Modules
 
-- **SUMO Mobility** ([`highway.sumocfg`](artery-sim/scenario/highway.sumocfg), [`highway.rou.xml`](artery-sim/scenario/highway.rou.xml)): Straight **1 km highway (`0..1000 m`)**; vehicle `v0` (`node[0]`) enters moving at **`25 m/s`** (`90 km/h`), crosses **`handoverX = 500 m`** at **`t ~ 18 s`**, and exits within `sim-time-limit = 40 s`.
-- **Network** ([`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned)):
-  - `rsu[0]` at `(250 m, 10 m, 10 m)` (`nextRsu = "rsu[1]"`)
-  - `rsu[1]` at `(750 m, 10 m, 10 m)`
+- **SUMO Mobility** ([`highway.sumocfg`](artery-sim/scenario/highway.sumocfg), [`highway.net.xml`](artery-sim/scenario/highway.net.xml), [`highway.rou.xml`](artery-sim/scenario/highway.rou.xml)): **400 m × 400 m 3×3 Manhattan Grid**; vehicle `v0` (`node[0]`) enters on `w_0` moving at **`20 m/s`** along route `manhattan_loop` (`w_0 w_1 n_0 n_1 e_0 e_1 s_0 s_1`) and traverses all 4 perimeter edges within `sim-time-limit = 85 s`.
+- **Network** ([`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned), `numRoadSideUnits = 4`):
+  - `rsu[0]` (West edge) at `(10 m, 200 m, 10 m)` → OP-TEE TA session #1 (`rsu0.sealed`)
+  - `rsu[1]` (North edge) at `(200 m, 10 m, 10 m)` → OP-TEE TA session #2 (`rsu1.sealed`)
+  - `rsu[2]` (East edge) at `(390 m, 200 m, 10 m)` → OP-TEE TA session #3 (`rsu2.sealed`)
+  - `rsu[3]` (South edge) at `(200 m, 390 m, 10 m)` → OP-TEE TA session #4 (`rsu3.sealed`)
   - `backhaulBroker` ([`BackhaulBroker`](artery-sim/src/BackhaulBroker.cc), `latency = 20 ms`) hosting the ESA (`ExternalSecurityAgent`) and Cloud verification (`cloudStored`, `cloudRefused`, `cloudJsonBytes`).
 - **Artery Services** ([`artery-sim/src/`](artery-sim/src)):
-  - [`V2xFrame.h`](artery-sim/src/V2xFrame.h): Wraps `BootstrapMsg` packets in Vanetza BTP (`port 2025`; `DP0` for bootstrap/handover signaling, `DP2` for 10 Hz `Secure_Data`).
-  - [`VehicleTeeService.cc`](artery-sim/src/VehicleTeeService.cc): Runs `BootstrapService` (`firstRsu = "rsu[0]"`, `startDelay = 0.5 s`, `dataInterval = 100 ms`, `dataSize = 200 B`, `handoverX = 500 m`).
+  - [`CtraPredictor.h`](artery-sim/src/CtraPredictor.h) / [`CtraPredictor.cc`](artery-sim/src/CtraPredictor.cc): Constant Turn Rate and Acceleration (CTRA) trajectory predictor ($X = [x, y, v, \psi, a, \omega]^T$) evaluating future vehicle positions (`predictionHorizon = 8.0 s`, `predictionStep = 0.1 s`) against all candidate RSUs to select the single most likely next RSU (`predictRadius = 80 m`) and trigger `Forwarding_Request` once within `handoverRadius = 160 m`.
+  - [`V2xFrame.h`](artery-sim/src/V2xFrame.h): Wraps `ProtocolMsg` packets in Vanetza BTP (`port 2025`; `DP0` for initial bootstrap signaling, `DP2` for 10 Hz `Secure_Data`, `Handover_Predict`, and `Forwarding_Request`).
+  - [`VehicleTeeService.cc`](artery-sim/src/VehicleTeeService.cc): Runs `VehicleAgent` (`BootstrapClient`, `HandoverClient`, `SecureDataClient`) with `CtraPredictor` (`firstRsu = "rsu[0]"`, `startDelay = 0.5 s`, `dataInterval = 100 ms`, `dataSize = 200 B`).
   - [`TeeRsuService.cc`](artery-sim/src/TeeRsuService.cc):
     - When `enableHil = false` (`D250m_80211p`), creates an isolated host `TeeSession` + `PacketManager` per RSU.
-    - When `enableHil = true` (`HIL_RPi3_DualRsu`), `initHil()` does not instantiate local `TeeSession` or `PacketManager` objects; Artery acts solely as an `AF_PACKET` bridge (`0x88b5` / `0x88b6`) polled every `1 ms`.
+    - When `enableHil = true` (`HIL_RPi3_DualRsu` / `HIL_RPi3_QuadRsu`), `initHil()` does not instantiate local `TeeSession` or `PacketManager` objects; Artery acts solely as an `AF_PACKET` bridge (`0x88b5` / `0x88b6`) polled every `1 ms`.
 
 ### 7.3 Simulation Configurations (`omnetpp.ini`)
 
 1. **`D250m_80211p` & `D250m_80211p_GUI`**:
-   - Pure IEEE 802.11p ITS-G5 (5.9 GHz ch 180, 10 MHz bandwidth, 6 Mbps bitrate, 200 mW TX power, ~250 m coverage). Run via `make sim` (`D250m_80211p`).
-2. **`HIL_RPi3_DualRsu` & `HIL_RPi3_DualRsu_GUI`**:
-   - Sets **`*.rsu[*].middleware.TeeRsuService.enableHil = true`** so **both** `rsu[0]` and `rsu[1]` reside on the physical Raspberry Pi 3 (or `virbr0` VM), launched under **`--scheduler-class=omnetpp::cRealTimeScheduler`**.
+   - Pure IEEE 802.11p ITS-G5 (5.9 GHz ch 180, 10 MHz bandwidth, 6 Mbps bitrate, 200 mW TX power) over the 4-RSU Manhattan Grid with CTRA trajectory prediction (`nextRsu = ""`, no broadcast pre-fetch). Run via `make sim` (`D250m_80211p`).
+2. **`HIL_RPi3_DualRsu` / `HIL_RPi3_QuadRsu` (+ `*_GUI`)**:
+   - Sets **`*.rsu[*].middleware.TeeRsuService.enableHil = true`** so **all 4 RSUs (`rsu[0]`..`rsu[3]`)** reside in 4 isolated OP-TEE TA sessions on the physical Raspberry Pi 3 (or `virbr0` VM), launched under **`--scheduler-class=omnetpp::cRealTimeScheduler`**.
    - Run via `make hil-dual HIL_IFACE=<nic> [GUI=1]` or `./artery-sim/run-hil-dual.sh --iface <nic> [--gui] [--rebuild]`.
    - Fails fast with an explicit error if `HIL_IFACE` / `hilIface` is omitted (`rsu[0]: HIL enabled but no host interface specified...`).
 
 ### 7.4 Observed `D250m_80211p` Trace & Scalar Results
 
-Running `D250m_80211p` with `opp_run` reached `t = 40 s` (`Event #12549`, elapsed `0.675 s`, exit code `0`) and wrote [`D250m_80211p-0.sca`](artery-sim/scenario/results/D250m_80211p-0.sca) with:
+Running `D250m_80211p` with `opp_run_release` reached `t = 85 s` (`Event #44020`, elapsed `1.146 s`, exit code `0`) and wrote [`D250m_80211p-0.sca`](artery-sim/scenario/results/D250m_80211p-0.sca) with:
 - **Vehicle (`HighwayHandover.node[0].middleware.VehicleTeeService`)**:
-  - `bootstrapped`: `1` (`bootstrapDelay:last = 0.04296401052 s`)
-  - `handovers`: `1` (`handoverE2EDelayMs:last = 0.680669144 ms`)
-  - `secureDataSent`: `374` (`175` to `rsu[0]`, `199` to `rsu[1]`)
+  - `bootstrapped`: `1` (`bootstrapDelay:last = 0.042988398672 s`)
+  - `ctraPredictionsSent`: `3`, `prefetchesCompleted`: `3` (`prefetchLeadTimeMs:last = 3659.430674552 ms`)
+  - `handovers`: `3` (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`, `handoverE2EDelayMs:last = 0.693067718 ms`)
+  - `secureDataSent`: `843` (`221` to `rsu[0]`, `239` to `rsu[1]`, `239` to `rsu[2]`, `144` to `rsu[3]`)
 - **RSUs (`TeeRsuService`)**:
-  - `rsu[0]`: `marshaledPackets = 175`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 1`
-  - `rsu[1]`: `marshaledPackets = 199`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversGranted = 1`
+  - `rsu[0]`: `marshaledPackets = 221`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 0`
+  - `rsu[1]`: `marshaledPackets = 239`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 1`
+  - `rsu[2]`: `marshaledPackets = 239`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 1`
+  - `rsu[3]`: `marshaledPackets = 144`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 0`, `handoversGranted = 1`
 - **Backhaul & Cloud (`HighwayHandover.backhaulBroker`)**:
-  - `backhaulDelivered`: `5` (`HTTPSEstablishment`, `Activation_Token`, `Active_02`, `Forwarding_Notice`, `Handover_Command`)
-  - `cloudStored`: `374` (`cloudRefused = 0`, `cloudJsonBytes:sum = 162954`)
+  - `backhaulDelivered`: `9` (3 initial bootstrap messages + 3 × `Forwarding_Notice` / `Handover_Command` pairs), `backhaulUndeliverable`: `1`
+  - `cloudStored`: `843` (`cloudRefused = 0`, `cloudJsonBytes:sum = 366993`)

@@ -299,6 +299,36 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
                 return TEE_SUCCESS;
             }
 
+            case TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST: {
+                if (t0 != TEE_PARAM_TYPE_MEMREF_INPUT || t1 != TEE_PARAM_TYPE_MEMREF_OUTPUT
+                    || t2 != TEE_PARAM_TYPE_VALUE_OUTPUT) {
+                    return TEE_ERROR_BAD_PARAMETERS;
+                }
+                const auto* buf = static_cast<const uint8_t*>(params[0].memref.buffer);
+                const Bytes in(buf, buf + params[0].memref.size);
+                wire::Reader r(in);
+                const uint64_t ptpTime = r.uint(8);
+                const std::string session = toStr(r.field());
+                const Bytes inPkt = r.field();
+
+                Bytes outPkt;
+                int status = sess->handleForwardingRequest(session, inPkt, ptpTime, outPkt);
+                if (status == GW_OK) {
+                    if (outPkt.size() > params[1].memref.size) {
+                        status = GW_ERR_BUFFER;
+                        params[1].memref.size = 0;
+                    } else {
+                        std::memcpy(params[1].memref.buffer, outPkt.data(), outPkt.size());
+                        params[1].memref.size = static_cast<uint32_t>(outPkt.size());
+                    }
+                } else {
+                    params[1].memref.size = 0;
+                }
+                params[2].value.a = static_cast<uint32_t>(status);
+                copyLogsToParam(sess, t3, params[3]);
+                return TEE_SUCCESS;
+            }
+
             default:
                 return TEE_ERROR_BAD_PARAMETERS;
         }

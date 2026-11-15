@@ -1,4 +1,5 @@
 #include "BackhaulBroker.h"
+#include "MessageType.h"
 #include "SmartData.h"
 #include "V2xFrame.h"
 #include <omnetpp.h>
@@ -19,7 +20,7 @@ ExternalSecurityAgent& BackhaulBroker::esa()
     if (!mEsa) {
         mEsa = std::make_unique<ExternalSecurityAgent>(par("esaName").stdstringValue());
         // the ESA's replies (Activation_Token) go back over the backhaul to the RSU they name
-        mEsa->setTransport([this](const BootstrapMsg& msg) { sendBackhaul(msg); });
+        mEsa->setTransport([this](const ProtocolMsg& msg) { sendBackhaul(msg); });
     }
     return *mEsa;
 }
@@ -57,7 +58,7 @@ std::string BackhaulBroker::cloudCertificate()
     return cloud().pem();
 }
 
-void BackhaulBroker::sendBackhaul(const BootstrapMsg& msg)
+void BackhaulBroker::sendBackhaul(const ProtocolMsg& msg)
 {
     Enter_Method_Silent();
     // the frame waits here for the latency of the HTTPS session (a self-message: no gates to wire)
@@ -78,7 +79,7 @@ void BackhaulBroker::handleMessage(omnetpp::cMessage* message)
     delete message;
 }
 
-void BackhaulBroker::deliver(const BootstrapMsg& msg)
+void BackhaulBroker::deliver(const ProtocolMsg& msg)
 {
     const std::string& destination = msg.getDestination();
     if (destination == esa().getFullName()) {
@@ -89,7 +90,7 @@ void BackhaulBroker::deliver(const BootstrapMsg& msg)
     const auto rsu = mRsus.find(destination);
     if (rsu == mRsus.end()) {
         // Active_03 goes to the vehicle's user ("user"), outside the scenario
-        EV_INFO << stageName(msg.getType()) << " for " << destination << ": not in the scenario\n";
+        EV_INFO << messageTypeName(msg.getType()) << " for " << destination << ": not in the scenario\n";
         ++mUndeliverable;
         return;
     }

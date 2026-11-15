@@ -69,8 +69,11 @@ GatewayTaSession::~GatewayTaSession()
 {
     ta_crypto::cleanse(mGroupKey.data(), mGroupKey.size());
     ta_crypto::cleanse(mCloud.kEg.data(), mCloud.kEg.size());
-    for (auto& [_, k] : mKdg) {
-        ta_crypto::cleanse(k.data(), k.size());
+    for (auto& [_, ecdh] : mPendingEcdh) {
+        ta_crypto::cleanse(ecdh.kDg.data(), ecdh.kDg.size());
+    }
+    for (auto& [_, sess] : mActiveSessions) {
+        ta_crypto::cleanse(sess.kDg.data(), sess.kDg.size());
     }
 }
 
@@ -147,19 +150,16 @@ void GatewayTaSession::saveState()
     wire::putUint(plain, kSealedStateVersion, 1);
     wire::putField(plain, mGroupKey);
     wire::putField(plain, mEsaPublicKey);
-    wire::putUint(plain, mActive.size(), 2);
-    for (const auto& [session, activation] : mActive) {
-        const auto kDg = mKdg.find(session);
+    wire::putUint(plain, mActiveSessions.size(), 2);
+    for (const auto& [session, active] : mActiveSessions) {
         wire::putField(plain, Bytes(session.begin(), session.end()));
-        wire::putField(plain, kDg != mKdg.end() ? kDg->second : Bytes());
-        wire::putField(plain, activation.authD);
-        wire::putField(plain, activation.authEg);
-        wire::putUint(plain, activation.t0, 8);
-        wire::putUint(plain, activation.tf, 8);
-        const auto yV = mYv.find(session);
-        const auto tI = mAuthTime.find(session);
-        wire::putField(plain, yV != mYv.end() ? yV->second : Bytes());
-        wire::putUint(plain, tI != mAuthTime.end() ? tI->second : 0, 8);
+        wire::putField(plain, active.kDg);
+        wire::putField(plain, active.authD);
+        wire::putField(plain, active.authEg);
+        wire::putUint(plain, active.t0, 8);
+        wire::putUint(plain, active.tf, 8);
+        wire::putField(plain, active.yV);
+        wire::putUint(plain, active.authTime, 8);
     }
 
     const size_t size = plain.size();
@@ -170,7 +170,7 @@ void GatewayTaSession::saveState()
         return;
     }
     print("state sealed to OP-TEE Secure Storage (" + mStorageId + "): K_g + "
-        + std::to_string(mActive.size()) + " active session(s), " + std::to_string(size) + " bytes");
+        + std::to_string(mActiveSessions.size()) + " active session(s), " + std::to_string(size) + " bytes");
 }
 
 bool GatewayTaSession::loadState(bool keepGroupKey)
@@ -192,15 +192,15 @@ bool GatewayTaSession::loadState(bool keepGroupKey)
     for (size_t i = 0; i < count; ++i) {
         const Bytes session = reader.field();
         const std::string name(session.begin(), session.end());
-        mKdg[name] = reader.field();
-        Activation activation;
-        activation.authD = reader.field();
-        activation.authEg = reader.field();
-        activation.t0 = reader.uint(8);
-        activation.tf = reader.uint(8);
-        mActive[name] = activation;
-        mYv[name] = reader.field();
-        mAuthTime[name] = reader.uint(8);
+        ActiveSession active;
+        active.kDg = reader.field();
+        active.authD = reader.field();
+        active.authEg = reader.field();
+        active.t0 = reader.uint(8);
+        active.tf = reader.uint(8);
+        active.yV = reader.field();
+        active.authTime = reader.uint(8);
+        mActiveSessions[name] = std::move(active);
     }
     if (!keepGroupKey && groupKey.size() == kGroupKeySize) {
         mGroupKey = groupKey;
@@ -214,40 +214,43 @@ bool GatewayTaSession::loadState(bool keepGroupKey)
 
 bool GatewayTaSession::withinWindow(const std::string& session, uint64_t now)
 {
-    const Activation* activation = nullptr;
-    if (auto pending = mPending.find(session); pending != mPending.end()) {
-        activation = &pending->second;
-    } else if (auto active = mActive.find(session); active != mActive.end()) {
-        activation = &active->second;
+    uint64_t t0 = 0;
+    uint64_t tf = 0;
+    bool found = false;
+    if (auto pending = mPendingActivations.find(session); pending != mPendingActivations.end()) {
+        t0 = pending->second.t0;
+        tf = pending->second.tf;
+        found = true;
+    } else if (auto active = mActiveSessions.find(session); active != mActiveSessions.end()) {
+        t0 = active->second.t0;
+        tf = active->second.tf;
+        found = true;
     }
-    if (activation && activation->t0 <= now && now <= activation->tf) {
-        check(true, session + ": t_0 = " + seconds(activation->t0) + " <= t = " + seconds(now) + " <= t_f = "
-            + seconds(activation->tf));
+    if (found && t0 <= now && now <= tf) {
+        check(true, session + ": t_0 = " + seconds(t0) + " <= t = " + seconds(now) + " <= t_f = "
+            + seconds(tf));
         return true;
     }
 
-    check(false, session + ": aborted: " + (activation ? "t = " + seconds(now) + " outside [t_0, t_f] = ["
-        + seconds(activation->t0) + ", " + seconds(activation->tf) + "]" : std::string("no activation window for this session")));
-    mKdg.erase(session);
-    mPending.erase(session);
-    mActive.erase(session);
-    mYv.erase(session);
-    mAuthTime.erase(session);
+    check(false, session + ": aborted: " + (found ? "t = " + seconds(now) + " outside [t_0, t_f] = ["
+        + seconds(t0) + ", " + seconds(tf) + "]" : std::string("no activation window for this session")));
+    mPendingEcdh.erase(session);
+    mPendingActivations.erase(session);
+    mActiveSessions.erase(session);
     return false;
 }
 
 std::optional<GatewayTaSession::VehicleKeys> GatewayTaSession::findVehicleKeys(const Bytes& authD) const
 {
-    for (const auto& [session, activation] : mActive) {
-        if (activation.authD.size() != authD.size()
-            || ta_crypto::constTimeCmp(activation.authD.data(), authD.data(), authD.size()) != 0) {
+    for (const auto& [session, active] : mActiveSessions) {
+        if (active.authD.size() != authD.size()
+            || ta_crypto::constTimeCmp(active.authD.data(), authD.data(), active.authD.size()) != 0) {
             continue;
         }
-        const auto kDg = mKdg.find(session);
-        if (kDg == mKdg.end()) {
+        if (active.kDg.empty()) {
             return std::nullopt;
         }
-        return VehicleKeys{ session, kDg->second, mGroupKey };
+        return VehicleKeys{ session, active.kDg, mGroupKey };
     }
     return std::nullopt;
 }
@@ -270,11 +273,9 @@ void GatewayTaSession::newCloudSession()
 Bytes GatewayTaSession::ecdhResponse(const std::string& session, const Bytes& in)
 {
     const wire::Ecdh request = wire::unpackEcdh(in);
-    mYv[session] = request.publicKey; // Y_V: kept for the Secrecy Forwarding of this vehicle
-
     const auto derived = ta_crypto::generateAndDeriveEcdh(request.publicKey);
-    mKdg[session] = derived.sharedSecret;
-    mActive.erase(session);
+    mPendingEcdh[session] = PendingEcdh{ derived.sharedSecret, request.publicKey }; // Y_V kept for Secrecy Forwarding
+    mActiveSessions.erase(session);
     print(session + ": ECDH done, K_dg kept in the TA");
 
     return wire::pack(wire::Ecdh{ ECDH_Response, derived.publicKeyDer });
@@ -285,22 +286,22 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
     const wire::AuthRequest request = wire::unpackAuthRequest(in);
     const uint64_t tNow = otpSlot(now);
 
-    for (auto pending = mPending.begin(); pending != mPending.end();) {
-        pending = now > pending->second.tf ? mPending.erase(pending) : std::next(pending);
+    for (auto pending = mPendingActivations.begin(); pending != mPendingActivations.end();) {
+        pending = now > pending->second.tf ? mPendingActivations.erase(pending) : std::next(pending);
     }
 
     std::string bound;
-    auto match = mPending.end();
+    auto match = mPendingActivations.end();
     uint64_t tMatch = 0;
     size_t unauthenticated = 0;
-    for (const auto& [candidate, kDg] : mKdg) {
-        if (mActive.count(candidate) != 0) {
+    for (const auto& [candidate, ecdh] : mPendingEcdh) {
+        if (mActiveSessions.count(candidate) != 0) {
             continue;
         }
         ++unauthenticated;
-        for (auto pending = mPending.begin(); pending != mPending.end() && match == mPending.end(); ++pending) {
+        for (auto pending = mPendingActivations.begin(); pending != mPendingActivations.end() && match == mPendingActivations.end(); ++pending) {
             for (uint64_t t = tNow - kOtpWindow; t <= tNow + kOtpWindow; ++t) {
-                const Block otp = ta_crypto::poly1305Aes(kDg, otpNonce(pending->second.authD, t), otpMessage());
+                const Block otp = ta_crypto::poly1305Aes(ecdh.kDg, otpNonce(pending->second.authD, t), otpMessage());
                 if (ta_crypto::constTimeCmp(otp.data(), request.otp.data(), otp.size()) == 0) {
                     bound = candidate;
                     match = pending;
@@ -309,13 +310,13 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
                 }
             }
         }
-        if (match != mPending.end()) {
+        if (match != mPendingActivations.end()) {
             break;
         }
     }
-    if (match == mPending.end()) {
+    if (match == mPendingActivations.end()) {
         check(false, session + ": OTP_dt matches no combination (" + std::to_string(unauthenticated)
-            + " K_dg not yet authenticated x " + std::to_string(mPending.size()) + " pending Auth_d x "
+            + " K_dg not yet authenticated x " + std::to_string(mPendingActivations.size()) + " pending Auth_d x "
             + std::to_string(2 * kOtpWindow + 1) + " slots around t = " + std::to_string(tNow) + "): ignored");
         return std::nullopt;
     }
@@ -324,9 +325,13 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
         + match->first + ", with t = " + std::to_string(tMatch) + " (my slot " + (slotOffset >= 0 ? "+" : "")
         + std::to_string(slotOffset) + ")");
 
-    mActive[bound] = match->second;
-    mAuthTime[bound] = tMatch;
-    mPending.erase(match);
+    const PendingEcdh ecdh = mPendingEcdh.at(bound);
+    mActiveSessions[bound] = ActiveSession{
+        match->second.authD, match->second.authEg, match->second.t0, match->second.tf,
+        ecdh.kDg, ecdh.yV, tMatch
+    };
+    mPendingActivations.erase(match);
+    mPendingEcdh.erase(bound);
     saveState();
 
     wire::AuthGranted m;
@@ -334,20 +339,20 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
     m.otp = request.otp;
     m.kG = mGroupKey;
     m.esaPublicKey = mEsaPublicKey;
-    m.authEg = mActive[bound].authEg;
-    Bytes sealed = ta_crypto::aesGcmEncrypt(mKdg.at(bound), wire::pack(m));
+    m.authEg = mActiveSessions.at(bound).authEg;
+    Bytes sealed = ta_crypto::aesGcmEncrypt(mActiveSessions.at(bound).kDg, wire::pack(m));
     print(session + ": Auth_Granted = E_K_dg(M), " + std::to_string(sealed.size()) + " bytes");
     return sealed;
 }
 
 std::optional<Bytes> GatewayTaSession::active02(const std::string& session, const Bytes& in)
 {
-    auto kDg = mKdg.find(session);
-    if (kDg == mKdg.end()) {
+    const auto active = mActiveSessions.find(session);
+    if (active == mActiveSessions.end() || active->second.kDg.empty()) {
         check(false, session + ": no K_dg for this session: ignored");
         return std::nullopt;
     }
-    const auto plain = ta_crypto::aesGcmDecrypt(kDg->second, in);
+    const auto plain = ta_crypto::aesGcmDecrypt(active->second.kDg, in);
     if (!plain) {
         check(false, session + ": E_K_dg(M) does not decrypt with the K_dg of this session: ignored");
         return std::nullopt;
@@ -398,11 +403,11 @@ std::optional<Bytes> GatewayTaSession::forwardingGranted(const std::string& sess
         + " (my slot " + (slotOffset >= 0 ? "+" : "") + std::to_string(slotOffset) + ")");
 
     const std::string vehicle = handover.session;
-    mPending.erase(vehicle);
-    mActive[vehicle] = Activation{ handover.authD, now, now, Bytes() };
-    mKdg[vehicle] = handover.keys.kDh;
-    mYv[vehicle] = handover.yv;
-    mAuthTime[vehicle] = tMatch;
+    mPendingActivations.erase(vehicle);
+    mPendingEcdh.erase(vehicle);
+    mActiveSessions[vehicle] = ActiveSession{
+        handover.authD, Bytes(), now, now, handover.keys.kDh, handover.yv, tMatch
+    };
     saveState();
 
     wire::ForwardingGranted m;
@@ -605,9 +610,9 @@ int GatewayTaSession::addActivationToken(const std::string& session, uint64_t t0
     if (session.empty() || authD.empty() || authEg.empty() || t0 >= tf) {
         return GW_ERR_ARGS;
     }
-    mPending[session] = Activation{ authD, t0, tf, authEg };
+    mPendingActivations[session] = PendingActivation{ authD, t0, tf, authEg };
     print(session + ": activation pending until t_f = " + seconds(tf) + " ("
-        + std::to_string(mPending.size()) + " pending)");
+        + std::to_string(mPendingActivations.size()) + " pending)");
     return GW_OK;
 }
 
@@ -622,28 +627,51 @@ int GatewayTaSession::handleBootstrap(int msgType, const std::string& session, c
     if (session.empty() || inPkt.empty()) {
         return GW_ERR_ARGS;
     }
-    if (msgType != ECDH_Request && msgType != Auth_Request && msgType != Active_01 && msgType != Forwarding_Request) {
+    if (msgType != ECDH_Request && msgType != Auth_Request && msgType != Active_01) {
         return GW_ERR_ARGS;
     }
 
     try {
-        if (msgType != Forwarding_Request && !withinWindow(session, currentPtpTime)) {
+        if (!withinWindow(session, currentPtpTime)) {
             return GW_IGNORED;
         }
 
         std::optional<Bytes> out;
         int type = -1;
         switch (msgType) {
-            case ECDH_Request:       out = ecdhResponse(session, inPkt); type = ECDH_Response; break;
-            case Auth_Request:       out = authGranted(session, inPkt, currentPtpTime); type = Auth_Granted; break;
-            case Active_01:          out = active02(session, inPkt); type = Active_02; break;
-            case Forwarding_Request: out = forwardingGranted(session, inPkt, currentPtpTime); type = Forwarding_Granted; break;
+            case ECDH_Request: out = ecdhResponse(session, inPkt); type = ECDH_Response; break;
+            case Auth_Request: out = authGranted(session, inPkt, currentPtpTime); type = Auth_Granted; break;
+            case Active_01:    out = active02(session, inPkt); type = Active_02; break;
         }
         if (!out) {
             return GW_IGNORED;
         }
         outPkt = std::move(*out);
         outType = type;
+        return GW_OK;
+    } catch (const std::exception& e) {
+        print(session + ": error: " + e.what());
+        return GW_ERR_CRYPTO;
+    }
+}
+
+int GatewayTaSession::handleForwardingRequest(const std::string& session, const Bytes& inPkt,
+    uint64_t currentPtpTime, Bytes& outPkt)
+{
+    outPkt.clear();
+    if (!mReady) {
+        return GW_ERR_STATE;
+    }
+    if (session.empty() || inPkt.empty()) {
+        return GW_ERR_ARGS;
+    }
+
+    try {
+        std::optional<Bytes> out = forwardingGranted(session, inPkt, currentPtpTime);
+        if (!out) {
+            return GW_IGNORED;
+        }
+        outPkt = std::move(*out);
         return GW_OK;
     } catch (const std::exception& e) {
         print(session + ": error: " + e.what());
@@ -685,21 +713,18 @@ int GatewayTaSession::triggerHandover(const std::string& session, uint64_t ti, B
     }
 
     try {
-        const auto active = mActive.find(session);
-        const auto kDg = mKdg.find(session);
-        const auto yV = mYv.find(session);
-        const auto tI = mAuthTime.find(session);
-        if (active == mActive.end() || kDg == mKdg.end() || yV == mYv.end() || yV->second.empty()) {
+        const auto active = mActiveSessions.find(session);
+        if (active == mActiveSessions.end() || active->second.kDg.empty() || active->second.yV.empty()) {
             check(false, session + ": Secrecy Forwarding of a session not active here (or without Y_V): ignored");
             return GW_IGNORED;
         }
-        if (ti == 0 && tI == mAuthTime.end()) {
+        if (ti == 0 && active->second.authTime == 0) {
             check(false, session + ": Secrecy Forwarding without t_i (activated before t_i was kept): ignored");
             return GW_IGNORED;
         }
-        const uint64_t slot = ti != 0 ? ti : tI->second;
-        outTau = computeForwardingToken(kDg->second, slot);
-        outYv = yV->second;
+        const uint64_t slot = ti != 0 ? ti : active->second.authTime;
+        outTau = computeForwardingToken(active->second.kDg, slot);
+        outYv = active->second.yV;
         outAuthD = active->second.authD;
         print(session + ": Secrecy Forwarding: tau_{i+2} = Poly1305(K_dg, t_i = " + std::to_string(slot)
             + ", m), with Y_V and Auth_d for the Forwarding_Notice (K_dg stays here)");

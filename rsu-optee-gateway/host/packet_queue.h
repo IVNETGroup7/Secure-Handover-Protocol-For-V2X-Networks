@@ -12,17 +12,17 @@
 using Bytes = std::vector<uint8_t>;
 using Clock = std::chrono::steady_clock;
 
-// from the radio: a bootstrap message (BootstrapMsg) or a data packet (SmartData.h, reassembled)
+// from the radio: a protocol message (ProtocolMsg) or a data packet (SmartData.h, reassembled)
 struct OtPacket
 {
-    enum class Kind { Bootstrap, SmartData };
+    enum class Kind { Protocol, SmartData };
     Kind kind;
-    std::string from;           // the vehicle (data packets; bootstrap messages carry their own sender)
+    std::string from;           // the vehicle (data packets; protocol messages carry their own sender)
     Bytes bytes;
     Clock::time_point received; // when the whole packet was in: start of its turn-around time
 };
 
-// to the backhaul: a bootstrap message for the ESA, or the marshaled SmartData for the cloud
+// to the backhaul: a protocol message for the ESA or another RSU, or the marshaled SmartData for the cloud
 struct ItPacket
 {
     enum class To { Esa, Cloud };

@@ -1,8 +1,9 @@
 #ifndef PACKET_MANAGER_H_
 #define PACKET_MANAGER_H_
 
-#include "BootstrapMsg.h"
 #include "BootstrapPayload.h"
+#include "HandoverPayload.h"
+#include "ProtocolMsg.h"
 #include "benchmark.h"
 #include "packet_queue.h"
 #include "tee_session.h"
@@ -10,7 +11,7 @@
 #include <set>
 #include <string>
 
-// what a TA command invocation gave back: status (gateway_ta.h) and, for GW_OK, the packet to send and its BootstrapType
+// what a TA command invocation gave back: status (gateway_ta.h) and, for GW_OK, the packet to send and its MessageType
 struct Reply
 {
     int status;
@@ -21,11 +22,11 @@ struct Reply
 class PacketManager
 {
     public:
-        // how a message leaves the RSU (e.g. a socket), as BootstrapService::Transport
+        // how a message leaves the RSU (e.g. a socket)
         struct Transport
         {
-            std::function<void(const BootstrapMsg&)> radio;     // to the vehicles
-            std::function<void(const BootstrapMsg&)> https;     // to the ESA or another RSU (destination): the
+            std::function<void(const ProtocolMsg&)> radio;      // to the vehicles
+            std::function<void(const ProtocolMsg&)> https;      // to the ESA or another RSU (destination): the
                                                                 // pre-established HTTPS sessions of the backhaul
             std::function<void(ItPacket)> cloud;                // marshaled SmartData, to the cloud (IT queue)
             std::function<void()> cloudRefused;                 // optional notification when TA refuses SmartData
@@ -37,12 +38,12 @@ class PacketManager
         void setClock(std::function<uint64_t()> clock) { mClock = std::move(clock); }
         const std::string& name() const { return mName; }
 
-        // a packet of the OT queue: bootstrap message or SmartData, by its kind
+        // a packet of the OT queue: protocol message or SmartData, by its kind
         void onOtPacket(const OtPacket&);
-        // incoming bootstrap messages: over the radio (filtered by destination) or over HTTPS (from the ESA:
+        // incoming protocol messages: over the radio (filtered by destination) or over HTTPS (from the ESA:
         // Activation_Token; from another RSU: Forwarding_Notice, Handover_Command)
-        void onRadio(const BootstrapMsg&);
-        void onHttps(const BootstrapMsg&);
+        void onRadio(const ProtocolMsg&);
+        void onHttps(const ProtocolMsg&);
 
         // Secrecy Forwarding, source RSU: the Forwarding_Notice of an activated "session" to "targetRsu";
         // false: the TA refused it (no such active session)
@@ -55,6 +56,7 @@ class PacketManager
         int addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
             const Bytes& authEg);
         Reply handleBootstrap(int type, const std::string& session, const Bytes& payload, uint64_t ptpTimeNs);
+        Reply handleForwardingRequest(const std::string& session, const Bytes& payload, uint64_t ptpTimeNs);
         Reply marshal(const Bytes& otPacket, uint64_t ptpTimeNs);
         // Secrecy Forwarding: the source's Forwarding_Notice (authSlot: t_i, 0 = the TA's own) and the target's
         // answer to it (GW_OK: payload = Y_G_{i+2})
@@ -65,10 +67,11 @@ class PacketManager
         Benchmark& benchmark() { return mBenchmark; }
 
     private:
-        void teeStep(const char* step, const BootstrapMsg& received);
+        void onBootstrapStep(const char* step, const ProtocolMsg& received);
+        void onForwardingRequest(const ProtocolMsg& received);
         void onSmartData(const OtPacket&);
-        void activationToken(const BootstrapMsg& received);
-        void forwardingNotice(const BootstrapMsg& received);
+        void activationToken(const ProtocolMsg& received);
+        void forwardingNotice(const ProtocolMsg& received);
         // over the HTTPS sessions (the ESA, another RSU) or over the radio (the vehicles)
         enum class Via { Radio, Https };
         void send(int type, const std::string& destination, int seqNum, int ackNum, const std::string& vehicle,

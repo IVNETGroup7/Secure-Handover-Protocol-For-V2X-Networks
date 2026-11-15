@@ -1,5 +1,5 @@
-#ifndef BOOTSTRAP_RAWSOCKET_H_
-#define BOOTSTRAP_RAWSOCKET_H_
+#ifndef NET_RAWSOCKET_H_
+#define NET_RAWSOCKET_H_
 
 #include "Crypto.h"
 #include <array>
@@ -40,4 +40,4 @@ class RawSocket
         std::array<uint8_t, 6> mMac{};
 };
 
-#endif /* BOOTSTRAP_RAWSOCKET_H_ */
+#endif /* NET_RAWSOCKET_H_ */

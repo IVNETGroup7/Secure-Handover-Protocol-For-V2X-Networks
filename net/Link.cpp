@@ -12,9 +12,9 @@ void sendFrame(RawSocket& link, FrameKind kind, const Bytes& body)
     link.send(data);
 }
 
-void sendMsg(RawSocket& link, const BootstrapMsg& msg)
+void sendMsg(RawSocket& link, const ProtocolMsg& msg)
 {
-    sendFrame(link, FrameKind::Bootstrap, serialize(msg));
+    sendFrame(link, FrameKind::Protocol, serialize(msg));
 }
 
 Bytes toBytes(const std::string& text)

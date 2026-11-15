@@ -1,7 +1,7 @@
 #!/bin/bash
-# Launch BOTH logically separated RSUs (rsu[0] and rsu[1]) concurrently on the same
-# Raspberry Pi 3, each backed by its own Arm TrustZone OP-TEE TA session and Secure Storage
-# object (rsu0.sealed / rsu1.sealed), for Artery Hardware-in-the-Loop (HIL_RPi3_DualRsu).
+# Launch all 4 logically separated Manhattan Grid RSUs (rsu[0], rsu[1], rsu[2], rsu[3]) concurrently
+# on the same Raspberry Pi 3, each backed by its own Arm TrustZone OP-TEE TA session and Secure Storage
+# object (rsu0.sealed .. rsu3.sealed), for Artery Hardware-in-the-Loop (HIL_RPi3_DualRsu / HIL_RPi3_QuadRsu).
 set -euo pipefail
 
 PI_IP="${PI_IP:-}"
@@ -15,10 +15,12 @@ usage() {
 Usage: $0 --pi-ip <ip> [--rsu-iface <iface>] [--session-timeout <sec>] [--keep-state] [--remote-app <path>]
    or: PI_IP=<ip> [RSU_IFACE=eth0] $0
 
-Starts two concurrent RSU gateway processes on the Raspberry Pi 3:
-  1. rsu[0] -> OP-TEE TA session #1, Secure Storage ID "rsu0.sealed"
-  2. rsu[1] -> OP-TEE TA session #2, Secure Storage ID "rsu1.sealed"
-Both share the single Ethernet NIC ($RSU_IFACE) via EtherTypes 0x88b5 (radio) and 0x88b6 (backhaul).
+Starts 4 concurrent RSU gateway processes on the Raspberry Pi 3 (Manhattan Grid edges):
+  1. rsu[0] (West edge)  -> OP-TEE TA session #1, Secure Storage ID "rsu0.sealed"
+  2. rsu[1] (North edge) -> OP-TEE TA session #2, Secure Storage ID "rsu1.sealed"
+  3. rsu[2] (East edge)  -> OP-TEE TA session #3, Secure Storage ID "rsu2.sealed"
+  4. rsu[3] (South edge) -> OP-TEE TA session #4, Secure Storage ID "rsu3.sealed"
+All 4 share the single Ethernet NIC ($RSU_IFACE) via EtherTypes 0x88b5 (radio) and 0x88b6 (backhaul).
 
 Pair with Artery on the host PC:
   ./artery-sim/run-hil-dual.sh --iface <host_iface> [--gui]
@@ -71,21 +73,24 @@ if [[ "$FRESH" -eq 1 ]]; then
 fi
 
 HOST_TIME="$(date -u +'%Y-%m-%d %H:%M:%S')"
-echo "Starting rsu[0] + rsu[1] (two OP-TEE TA sessions) on root@$PI_IP ($RSU_IFACE)..."
+echo "Starting rsu[0]..rsu[3] (4 OP-TEE TA sessions) on root@$PI_IP ($RSU_IFACE)..."
 
 ssh -t "root@$PI_IP" "
     date -u -s '$HOST_TIME' >/dev/null 2>&1 || true
     pkill -f '$REMOTE_APP rsu' 2>/dev/null || true
     cleanup() {
-        kill -TERM \${PID0:-} \${PID1:-} 2>/dev/null || true
-        wait \${PID0:-} \${PID1:-} 2>/dev/null || true
+        kill -TERM \${PID0:-} \${PID1:-} \${PID2:-} \${PID3:-} 2>/dev/null || true
+        wait \${PID0:-} \${PID1:-} \${PID2:-} \${PID3:-} 2>/dev/null || true
     }
     trap cleanup EXIT INT TERM
     $REMOTE_APP rsu --name rsu[0] --iface '$RSU_IFACE' --sealed rsu0.sealed $FRESH_FLAG --session-timeout '$SESSION_TIMEOUT' &
     PID0=\$!
     $REMOTE_APP rsu --name rsu[1] --iface '$RSU_IFACE' --sealed rsu1.sealed $FRESH_FLAG --session-timeout '$SESSION_TIMEOUT' &
     PID1=\$!
-    echo '[pi] Both OP-TEE RSU instances running (rsu[0] pid='\"\$PID0\"', rsu[1] pid='\"\$PID1\"'). Press Ctrl+C when done.'
-    wait \$PID0 \$PID1
+    $REMOTE_APP rsu --name rsu[2] --iface '$RSU_IFACE' --sealed rsu2.sealed $FRESH_FLAG --session-timeout '$SESSION_TIMEOUT' &
+    PID2=\$!
+    $REMOTE_APP rsu --name rsu[3] --iface '$RSU_IFACE' --sealed rsu3.sealed $FRESH_FLAG --session-timeout '$SESSION_TIMEOUT' &
+    PID3=\$!
+    echo '[pi] All 4 OP-TEE RSU instances running (rsu[0] pid='\"\$PID0\"', rsu[1] pid='\"\$PID1\"', rsu[2] pid='\"\$PID2\"', rsu[3] pid='\"\$PID3\"'). Press Ctrl+C when done.'
+    wait \$PID0 \$PID1 \$PID2 \$PID3
 "
-

@@ -1,5 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- eastbound, two lanes, 120 km/h limit (the vehicle's own maximum is 25 m/s, highway.rou.xml) -->
+<!-- 3x3 Manhattan Grid streets: 4 outer edges (West, North, East, South) + 2 interior cross-streets -->
 <edges>
-    <edge id="highway" from="west" to="east" numLanes="2" speed="33.33"/>
+    <!-- West edge (rsu[0] at midpoint (10, 200)) -->
+    <edge id="w_0"   from="n00" to="n01" numLanes="1" speed="25.00"/>
+    <edge id="w_1"   from="n01" to="n02" numLanes="1" speed="25.00"/>
+    <edge id="w_1_r" from="n02" to="n01" numLanes="1" speed="25.00"/>
+    <edge id="w_0_r" from="n01" to="n00" numLanes="1" speed="25.00"/>
+
+    <!-- North edge (rsu[1] at midpoint (200, 10) in OMNeT++ / (200, 390) in SUMO) -->
+    <edge id="n_0"   from="n02" to="n12" numLanes="1" speed="25.00"/>
+    <edge id="n_1"   from="n12" to="n22" numLanes="1" speed="25.00"/>
+    <edge id="n_1_r" from="n22" to="n12" numLanes="1" speed="25.00"/>
+    <edge id="n_0_r" from="n12" to="n02" numLanes="1" speed="25.00"/>
+
+    <!-- East edge (rsu[2] at midpoint (390, 200)) -->
+    <edge id="e_0"   from="n22" to="n21" numLanes="1" speed="25.00"/>
+    <edge id="e_1"   from="n21" to="n20" numLanes="1" speed="25.00"/>
+    <edge id="e_1_r" from="n20" to="n21" numLanes="1" speed="25.00"/>
+    <edge id="e_0_r" from="n21" to="n22" numLanes="1" speed="25.00"/>
+
+    <!-- South edge (rsu[3] at midpoint (200, 390) in OMNeT++ / (200, 10) in SUMO) -->
+    <edge id="s_0"   from="n20" to="n10" numLanes="1" speed="25.00"/>
+    <edge id="s_1"   from="n10" to="n00" numLanes="1" speed="25.00"/>
+    <edge id="s_1_r" from="n00" to="n10" numLanes="1" speed="25.00"/>
+    <edge id="s_0_r" from="n10" to="n20" numLanes="1" speed="25.00"/>
+
+    <!-- Interior horizontal cross-street -->
+    <edge id="h_0"   from="n01" to="n11" numLanes="1" speed="25.00"/>
+    <edge id="h_1"   from="n11" to="n21" numLanes="1" speed="25.00"/>
+    <edge id="h_1_r" from="n21" to="n11" numLanes="1" speed="25.00"/>
+    <edge id="h_0_r" from="n11" to="n01" numLanes="1" speed="25.00"/>
+
+    <!-- Interior vertical cross-street -->
+    <edge id="v_0"   from="n10" to="n11" numLanes="1" speed="25.00"/>
+    <edge id="v_1"   from="n11" to="n12" numLanes="1" speed="25.00"/>
+    <edge id="v_1_r" from="n12" to="n11" numLanes="1" speed="25.00"/>
+    <edge id="v_0_r" from="n11" to="n10" numLanes="1" speed="25.00"/>
 </edges>

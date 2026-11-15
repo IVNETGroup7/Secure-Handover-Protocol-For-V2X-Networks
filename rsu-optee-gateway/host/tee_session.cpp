@@ -49,7 +49,7 @@ void emitTaLogs(const std::string& logs)
 
 #ifdef USE_OPTEE
 constexpr size_t kLogBufferSize = 4096;
-constexpr size_t kMaxBootstrapReply = 1500;
+constexpr size_t kMaxReplySize = 1500;
 constexpr size_t kMaxFieldSize = 1024;
 
 size_t itBufferFor(size_t otPacketSize)
@@ -233,7 +233,7 @@ int TeeSession::handleBootstrap(int msgType, const std::string& session, const B
     wire::putUint(in, currentPtpTime, 8);
     wire::putField(in, strBytes(session));
     wire::putField(in, inPkt);
-    outPkt.resize(kMaxBootstrapReply);
+    outPkt.resize(kMaxReplySize);
     std::string logBuf(kLogBufferSize, '\0');
 
     TEEC_Operation op{};
@@ -261,6 +261,46 @@ int TeeSession::handleBootstrap(int msgType, const std::string& session, const B
     return status;
 #else
     const int status = mImpl->ta.handleBootstrap(msgType, session, inPkt, currentPtpTime, outPkt, outType);
+    emitTaLogs(mImpl->ta.takeLogs());
+    return status;
+#endif
+}
+
+int TeeSession::handleForwardingRequest(const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
+    Bytes& outPkt)
+{
+#ifdef USE_OPTEE
+    Bytes in;
+    wire::putUint(in, currentPtpTime, 8);
+    wire::putField(in, strBytes(session));
+    wire::putField(in, inPkt);
+    outPkt.resize(kMaxReplySize);
+    std::string logBuf(kLogBufferSize, '\0');
+
+    TEEC_Operation op{};
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_OUTPUT,
+        TEEC_VALUE_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT);
+    op.params[0].tmpref.buffer = in.data();
+    op.params[0].tmpref.size = in.size();
+    op.params[1].tmpref.buffer = outPkt.data();
+    op.params[1].tmpref.size = outPkt.size();
+    op.params[3].tmpref.buffer = logBuf.data();
+    op.params[3].tmpref.size = logBuf.size();
+
+    uint32_t origin = 0;
+    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST, &op, &origin),
+        origin, "TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST");
+    logBuf.resize(op.params[3].tmpref.size);
+    emitTaLogs(logBuf);
+    const int status = static_cast<int>(op.params[2].value.a);
+    if (status == GW_OK) {
+        outPkt.resize(op.params[1].tmpref.size);
+    } else {
+        outPkt.clear();
+    }
+    return status;
+#else
+    const int status = mImpl->ta.handleForwardingRequest(session, inPkt, currentPtpTime, outPkt);
     emitTaLogs(mImpl->ta.takeLogs());
     return status;
 #endif

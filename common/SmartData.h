@@ -1,5 +1,5 @@
-#ifndef BOOTSTRAP_SMARTDATA_H_
-#define BOOTSTRAP_SMARTDATA_H_
+#ifndef COMMON_SMARTDATA_H_
+#define COMMON_SMARTDATA_H_
 
 #include "Crypto.h"
 #include <cstdint>
@@ -51,9 +51,20 @@ Block dataOtp(const Bytes& kDg, const Bytes& authD, uint64_t slot, const Bytes& 
 // vehicle: the OT packet of "data", at time "nowNs" (its PTP-synchronized clock)
 DataMessage sealSmartData(const SmartData& data, const Bytes& kG, const Bytes& kDg, int64_t nowNs);
 
+// M = { Secure_Data, AES(K_G, Data), Auth_d, OTP_dt }
+struct SecureDataPayload
+{
+    uint8_t type;
+    Bytes cipherData;           // AES(K_G, Data): AES-128-GCM of packSmartData(Data)
+    Bytes authD;                // Auth_d
+    Block otp{};                // OTP_dt = Poly1305(K_dg, Auth_d xor t, AES(K_G, Data))
+};
+
+Bytes pack(const SecureDataPayload&);
+
 #ifndef __OPTEE_TA__
 // K_eg = SHA256(ECDH(own private key, peer public key)): the OP-TEE TA with (X_s, Y_e), the cloud with (X_e, Y_s)
 Bytes computeKEg(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey);
 #endif
 
-#endif /* BOOTSTRAP_SMARTDATA_H_ */
+#endif /* COMMON_SMARTDATA_H_ */

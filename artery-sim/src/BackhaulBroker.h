@@ -8,7 +8,7 @@
 // Messages go by destination: "esa" to the ESA, an RSU's name (e.g. "rsu[1]") to the callback it registered.
 // The ESA and the cloud are made on first use: the RSUs register in their own initialize(), which may run first.
 
-#include "BootstrapMsg.h"
+#include "ProtocolMsg.h"
 #include "ExternalSecurityAgent.h"
 #include "SmartData.h"
 #include <omnetpp/csimplemodule.h>
@@ -20,7 +20,7 @@
 class BackhaulBroker : public omnetpp::cSimpleModule
 {
     public:
-        using RsuCallback = std::function<void(const BootstrapMsg&)>;
+        using RsuCallback = std::function<void(const ProtocolMsg&)>;
 
         BackhaulBroker();
         ~BackhaulBroker() override;
@@ -33,7 +33,7 @@ class BackhaulBroker : public omnetpp::cSimpleModule
         const Bytes& gatewayPublicKey(const std::string& rsuName) const;
 
         // over the backhaul, to msg.getDestination(), "latency" later
-        void sendBackhaul(const BootstrapMsg& msg);
+        void sendBackhaul(const ProtocolMsg& msg);
 
         // the cloud: its certificate (PEM), pinned by the OP-TEE TAs (TA_GATEWAY_CMD_INIT_CLOUD_SESSION)
         std::string cloudCertificate();
@@ -47,7 +47,7 @@ class BackhaulBroker : public omnetpp::cSimpleModule
     private:
         ExternalSecurityAgent& esa();
         CloudIdentity& cloud();
-        void deliver(const BootstrapMsg& msg);
+        void deliver(const ProtocolMsg& msg);
 
         std::unique_ptr<ExternalSecurityAgent> mEsa;
         std::unique_ptr<CloudIdentity> mCloud;

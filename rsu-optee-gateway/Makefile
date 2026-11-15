@@ -37,16 +37,16 @@ else
     CC  ?= gcc
 endif
 
-BOOTSTRAP_COMMON := ../common
-BOOTSTRAP_PROTOCOL := ../protocol
-BOOTSTRAP_NET := ../net
+COMMON_DIR := ../common
+PROTOCOL_DIR := ../protocol
+NET_DIR := ../net
 ROOT := ..
 BUILD := build_$(TEE_MODE)_$(PLATFORM)
 
 COMMON_FLAGS := -O2 -g -Wall -Wextra $(CPU_FLAGS)
-Host_Include := -Ihost -Iinclude -Ita -I$(BOOTSTRAP_COMMON) -I$(BOOTSTRAP_PROTOCOL) -I$(BOOTSTRAP_NET)
+Host_Include := -Ihost -Iinclude -Ita -I$(COMMON_DIR) -I$(PROTOCOL_DIR) -I$(NET_DIR)
 Host_Cpp_Files := $(wildcard host/*.cpp)
-Host_Bootstrap_Files := $(wildcard $(BOOTSTRAP_COMMON)/*.cpp $(BOOTSTRAP_PROTOCOL)/*.cpp $(BOOTSTRAP_NET)/*.cpp)
+Host_Protocol_Files := $(wildcard $(COMMON_DIR)/*.cpp $(PROTOCOL_DIR)/*.cpp $(NET_DIR)/*.cpp)
 
 ifeq ($(TEE_MODE),OPTEE)
     Host_Defines := -DUSE_OPTEE
@@ -63,9 +63,9 @@ Host_Cpp_Flags := $(COMMON_FLAGS) $(Host_Include) $(Host_Defines) -std=c++17 -MM
 
 Host_Objects := $(patsubst host/%.cpp,$(BUILD)/host/%.o,$(Host_Cpp_Files)) \
                 $(patsubst ta/%.cpp,$(BUILD)/ta_sim/%.o,$(Extra_Ta_Files)) \
-                $(patsubst ../%.cpp,$(BUILD)/common/%.o,$(Host_Bootstrap_Files))
+                $(patsubst ../%.cpp,$(BUILD)/common/%.o,$(Host_Protocol_Files))
 
-.PHONY: all ta run caps hil-dual rpi3 vm clean
+.PHONY: all ta run caps hil-dual hil-quad rpi3 vm clean
 
 rpi3:
 	@./build-rpi3.sh $(PI_IP)
@@ -101,9 +101,9 @@ run: all
 caps: app
 	sudo setcap cap_net_raw=ep app
 
-# Launch two isolated RSU gateway processes (rsu[0] and rsu[1]) sharing one Ethernet NIC,
-# matching Raspberry Pi 3 Dual-RSU HIL so the VM (over virbr0) or local NIC pairs directly with Artery.
-hil-dual: caps
+# Launch all 4 isolated RSU gateway processes (rsu[0]..rsu[3]) sharing one Ethernet NIC,
+# matching the 4-RSU Manhattan Grid Raspberry Pi 3 HIL so the VM (over virbr0) or local NIC pairs directly with Artery.
+hil-dual hil-quad: caps
 	@iface="$(IFACE)"; \
 	if [ -z "$$iface" ]; then \
 		iface=$$(ip -o -4 route show to default 2>/dev/null | awk '{print $$5; exit}'); \
@@ -112,11 +112,13 @@ hil-dual: caps
 		echo "error: set IFACE=<nic> for hil-dual" >&2; exit 2; \
 	fi; \
 	timeout="$(or $(SESSION_TIMEOUT),120)"; \
-	echo "[hil-dual] starting rsu[0] + rsu[1] on $$iface (Ctrl+C to stop)..."; \
-	trap 'kill -TERM $$p0 $$p1 2>/dev/null || true; wait $$p0 $$p1 2>/dev/null || true' EXIT INT TERM; \
+	echo "[hil-4rsu] starting rsu[0] + rsu[1] + rsu[2] + rsu[3] (4 OP-TEE TA sessions) on $$iface (Ctrl+C to stop)..."; \
+	trap 'kill -TERM $$p0 $$p1 $$p2 $$p3 2>/dev/null || true; wait $$p0 $$p1 $$p2 $$p3 2>/dev/null || true' EXIT INT TERM; \
 	./app rsu --name rsu[0] --iface "$$iface" --sealed rsu0.sealed --fresh --session-timeout "$$timeout" & p0=$$!; \
 	./app rsu --name rsu[1] --iface "$$iface" --sealed rsu1.sealed --fresh --session-timeout "$$timeout" & p1=$$!; \
-	wait $$p0 $$p1
+	./app rsu --name rsu[2] --iface "$$iface" --sealed rsu2.sealed --fresh --session-timeout "$$timeout" & p2=$$!; \
+	./app rsu --name rsu[3] --iface "$$iface" --sealed rsu3.sealed --fresh --session-timeout "$$timeout" & p3=$$!; \
+	wait $$p0 $$p1 $$p2 $$p3
 
 # Delegate build/run to the ARM64 QEMU OP-TEE VM (VM_ARGS=hil-dual runs dual-RSU over virbr0)
 vm:

@@ -1,5 +1,5 @@
-#ifndef BOOTSTRAP_HANDOVER_H_
-#define BOOTSTRAP_HANDOVER_H_
+#ifndef COMMON_HANDOVER_H_
+#define COMMON_HANDOVER_H_
 
 #include "Crypto.h"
 #include <cstdint>
@@ -22,4 +22,4 @@ HandoverKeys handoverKeys(const Bytes& kDh, const Block& tau);
 // OTP = Poly1305(KT_i^32, auth_{i+2} xor t, m)
 Block forwardingOtp(const HandoverKeys& keys, uint64_t slot);
 
-#endif /* BOOTSTRAP_HANDOVER_H_ */
+#endif /* COMMON_HANDOVER_H_ */

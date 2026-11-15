@@ -1,7 +1,7 @@
-#ifndef BOOTSTRAP_LINK_H_
-#define BOOTSTRAP_LINK_H_
+#ifndef NET_LINK_H_
+#define NET_LINK_H_
 
-#include "BootstrapMsg.h"
+#include "ProtocolMsg.h"
 #include "RawSocket.h"
 #include <chrono>
 #include <functional>
@@ -13,7 +13,7 @@
 #include <utility>
 
 enum class FrameKind : uint8_t {
-    Bootstrap = 0,
+    Protocol = 0,
     Session_Hello = 1,
     Session_Ack = 2,
     Data_Fragment = 3,
@@ -28,7 +28,7 @@ constexpr auto kSessionRetry = std::chrono::milliseconds(100);    // RSU: Sessio
 constexpr int kPollPeriodMs = 100;                                // loops check their stop flag at least this often
 
 void sendFrame(RawSocket& link, FrameKind kind, const Bytes& body);
-void sendMsg(RawSocket& link, const BootstrapMsg& msg);
+void sendMsg(RawSocket& link, const ProtocolMsg& msg);
 Bytes toBytes(const std::string& text);
 
 struct HandoverTrigger
@@ -114,4 +114,4 @@ class Reassembler
         size_t mDropped = 0;
 };
 
-#endif /* BOOTSTRAP_LINK_H_ */
+#endif /* NET_LINK_H_ */

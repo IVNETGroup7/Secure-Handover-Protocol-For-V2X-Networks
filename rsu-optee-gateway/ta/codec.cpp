@@ -17,7 +17,7 @@ void putUint(Bytes& out, uint64_t value, int size)
 void putField(Bytes& out, const Bytes& field)
 {
     if (field.size() > 0xffff) {
-        throw std::runtime_error("bootstrap field too large");
+        throw std::runtime_error("TA codec field too large");
     }
     putUint(out, field.size(), 2);
     out.insert(out.end(), field.begin(), field.end());
@@ -54,7 +54,7 @@ Bytes Reader::field()
 void Reader::need(size_t size) const
 {
     if (mPos + size > mIn.size()) {
-        throw std::runtime_error("bootstrap payload truncated (" + std::to_string(mIn.size()) + " bytes)");
+        throw std::runtime_error("TA payload truncated (" + std::to_string(mIn.size()) + " bytes)");
     }
 }
 

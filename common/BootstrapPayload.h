@@ -1,12 +1,10 @@
-#ifndef BOOTSTRAP_BOOTSTRAPPAYLOAD_H_
-#define BOOTSTRAP_BOOTSTRAPPAYLOAD_H_
+#ifndef COMMON_BOOTSTRAPPAYLOAD_H_
+#define COMMON_BOOTSTRAPPAYLOAD_H_
 
-// Byte layout of the bootstrap messages
+// Wire payloads of the initial secure bootstrap messages (Vehicle <-> first RSU <-> ESA).
 
 #include "SimTime.h"
 #include "Traits.h"
-
-class BootstrapMsg;
 
 // M = { Activation_Request, CY_g, t_0, t_f, UUID, SHA256(f_w) }
 struct ActivationRequestPayload
@@ -69,14 +67,14 @@ struct AuthRequestPayload
 Bytes pack(const AuthRequestPayload&);
 std::vector<std::string> describe(const AuthRequestPayload&);
 
-// M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }     (the paper's (10): Auth_Granted(Auth_eg, OTP_dt, K_G, CY_e))
+// M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }
 struct AuthGrantedPayload
 {
     uint8_t type;
     Block otp;                  // OTP_dt: the one the RSU matched
     Bytes kG;                   // K_g: group key (AES-128-GCM, vehicle <-> vehicle)
     Bytes esaPublicKey;         // CY_e: ESA public key (DER SubjectPublicKeyInfo)
-    Bytes authEg;               // Auth_eg = AES(Id_d, CY_e), from the Activation_Token: the vehicle checks CY_e with it
+    Bytes authEg;               // Auth_eg = AES(Id_d, CY_e), from the Activation_Token
 };
 
 AuthGrantedPayload unpackAuthGranted(const Bytes&);
@@ -95,7 +93,7 @@ Bytes pack(const Active01Payload&);
 Active01Payload unpackActive01(const Bytes&);
 std::vector<std::string> describe(const Active01Payload&);
 
-// M = { Active_03, UUID, SHA256(f_w) }   
+// M = { Active_03, UUID, SHA256(f_w) }
 struct Active03Payload
 {
     uint8_t type;
@@ -106,73 +104,4 @@ struct Active03Payload
 Bytes pack(const Active03Payload&);
 std::vector<std::string> describe(const Active03Payload&);
 
-// BootstrapMsg.payload <-> Bytes
-void setPayload(BootstrapMsg&, const Bytes&);
-Bytes getPayload(const BootstrapMsg&);
-
-// Secrecy Forwarding
-
-// M = { Forwarding_Notice, Y_V, tau_{i+2}, Auth_d }
-
-struct ForwardingNoticePayload
-{
-    uint8_t type;
-    Bytes vehiclePublicKey;     // Y_V: the vehicle's ECDH public key of its bootstrap (DER, curve kEcdhCurve)
-    Block tau;                  // tau_{i+2} = Poly1305(K_dg, t_i, m)
-    Bytes authD;                // Auth_d: lets G_{i+2} marshal the vehicle's SmartData afterwards
-};
-
-Bytes pack(const ForwardingNoticePayload&);
-ForwardingNoticePayload unpackForwardingNotice(const Bytes&);
-std::vector<std::string> describe(const ForwardingNoticePayload&);
-
-// M = { Handover_Command, G_{i+2}, Y_G_{i+2} }
-
-struct HandoverCommandPayload
-{
-    uint8_t type;
-    std::string targetRsu;      // G_{i+2}: where the Forwarding_Request goes
-    Bytes targetRsuPublicKey;   // Y_G_{i+2}: G_{i+2}'s ECDH public key for this handover (DER)
-};
-
-Bytes pack(const HandoverCommandPayload&);
-HandoverCommandPayload unpackHandoverCommand(const Bytes&);
-std::vector<std::string> describe(const HandoverCommandPayload&);
-
-// M = { Forwarding_Request, auth_{i+2}, OTP }
-struct ForwardingRequestPayload
-{
-    uint8_t type;
-    Sha256 auth;                // auth_{i+2} = SHA256(tau_{i+2})
-    Block otp;                  // OTP = Poly1305(KT_i^32, auth_{i+2} xor t_c, m)
-};
-
-Bytes pack(const ForwardingRequestPayload&);
-std::vector<std::string> describe(const ForwardingRequestPayload&);
-
-// M = { Forwarding_Granted, Y_G_{i+3}, auth'_{i+2}, K_G_{i+2}, OTP }
-
-struct ForwardingGrantedPayload
-{
-    uint8_t type;
-    Bytes nextRsuPublicKey;     // Y_G_{i+3}: the next RSU's key, pre-loaded (empty: none yet)
-    Sha256 authPrime;           // auth'_{i+2} = SHA256(auth_{i+2})
-    Bytes kG;                   // K_G_{i+2}: G_{i+2}'s group key
-    Block otp;                  // OTP: the one of the Forwarding_Request, echoed (freshness)
-};
-
-ForwardingGrantedPayload unpackForwardingGranted(const Bytes&);
-std::vector<std::string> describe(const ForwardingGrantedPayload&);
-
-// M = { Secure_Data, AES(K_G, Data), Auth_d, OTP_dt }
-struct SecureDataPayload
-{
-    uint8_t type;
-    Bytes cipherData;           // AES(K_G, Data): AES-128-GCM of packSmartData(Data)
-    Bytes authD;                // Auth_d
-    Block otp;                  // OTP_dt = Poly1305(K_dg, Auth_d xor t, AES(K_G, Data))
-};
-
-Bytes pack(const SecureDataPayload&);
-
-#endif /* BOOTSTRAP_BOOTSTRAPPAYLOAD_H_ */
+#endif /* COMMON_BOOTSTRAPPAYLOAD_H_ */

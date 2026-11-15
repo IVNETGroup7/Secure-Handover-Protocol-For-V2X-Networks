@@ -1,6 +1,6 @@
 #include "ExternalSecurityAgent.h"
-#include "BootstrapService.h"
-#include "BootstrapMsg.h"
+#include "MessageType.h"
+#include "ProtocolMsg.h"
 #include "BootstrapPayload.h"
 #include "Trace.h"
 #include <algorithm>
@@ -21,7 +21,7 @@ void ExternalSecurityAgent::registerRsu(const std::string& rsu, const std::strin
         + toHex(gatewayPublicKey.data(), gatewayPublicKey.size()));
 }
 
-void ExternalSecurityAgent::handleMessage(const BootstrapMsg& bootstrap)
+void ExternalSecurityAgent::handleMessage(const ProtocolMsg& bootstrap)
 {
     if (mGateways.count(bootstrap.getSender()) == 0) {
         std::cerr << mName << ": dropping message from " << bootstrap.getSender() << " (no HTTPS session)" << std::endl;
@@ -36,7 +36,7 @@ void ExternalSecurityAgent::handleMessage(const BootstrapMsg& bootstrap)
     }
 }
 
-void ExternalSecurityAgent::activationToken(const BootstrapMsg& received)
+void ExternalSecurityAgent::activationToken(const ProtocolMsg& received)
 {
     // 1. we get the t_0 and t_f values (from the message that has arrived)
     // 2. we must calculate Id_d = SHA256(UUID + SHA256(fw_d)), values that we already received
@@ -49,7 +49,7 @@ void ExternalSecurityAgent::activationToken(const BootstrapMsg& received)
     // M = { Activation_Token, t_0, t_f, Auth_d, Auth_eg }
 
     // ESA, on the vehicle's Activation_Request, relayed by an RSU
-    trace::step(mName, "activationToken", stageName(received.getType()), received.getSender(), received.getVehicle());
+    trace::step(mName, "activationToken", messageTypeName(received.getType()), received.getSender(), received.getVehicle());
 
     // M = { Activation_Request, CY_g, t_0, t_f, UUID, SHA256(f_w) }
     const ActivationRequestPayload request = unpackActivationRequest(getPayload(received));
@@ -84,10 +84,10 @@ void ExternalSecurityAgent::activationToken(const BootstrapMsg& received)
         received.getAckNum(), received.getSeqNum() + 1, pack(token));
 }
 
-void ExternalSecurityAgent::active03(const BootstrapMsg& received)
+void ExternalSecurityAgent::active03(const ProtocolMsg& received)
 {
     // ESA, on the Active_02 relayed by the RSU: the last step of the protocol
-    trace::step(mName, "active03", stageName(received.getType()), received.getSender(), received.getVehicle());
+    trace::step(mName, "active03", messageTypeName(received.getType()), received.getSender(), received.getVehicle());
 
     // M = { Active_02, Auth_d, OTP_dt, Auth_de }
     const Active01Payload m = unpackActive01(getPayload(received));
@@ -175,7 +175,7 @@ void ExternalSecurityAgent::send(int type, const std::string& destination, const
     }
 
 
-    BootstrapMsg msg;
+    ProtocolMsg msg;
     msg.setType(type);
     msg.setSender(getFullName());
     msg.setDestination(destination);

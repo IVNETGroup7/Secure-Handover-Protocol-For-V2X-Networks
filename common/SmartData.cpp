@@ -125,6 +125,15 @@ DataMessage unpackDataMessage(const Bytes& bytes)
     return message;
 }
 
+Bytes pack(const SecureDataPayload& m)
+{
+    Bytes out;
+    putUint(out, m.type, 1);
+    const Bytes packet = packDataMessage(DataMessage{ m.cipherData, m.authD, m.otp });
+    out.insert(out.end(), packet.begin(), packet.end());
+    return out;
+}
+
 uint64_t dataOtpSlot(int64_t ns)
 {
     return static_cast<uint64_t>(std::floor((ns / 1e9) / kOtpTimeStep));

@@ -1,6 +1,8 @@
 #include "packet_manager.h"
 #include "BootstrapPayload.h"
-#include "BootstrapService.h"
+#include "HandoverPayload.h"
+#include "MessageType.h"
+#include "ProtocolMsg.h"
 #include "SimTime.h"
 #include "Trace.h"
 #include "gateway_ta.h"
@@ -26,7 +28,7 @@ void PacketManager::onOtPacket(const OtPacket& packet)
         onSmartData(packet);
         return;
     }
-    BootstrapMsg msg;
+    ProtocolMsg msg;
     try {
         msg = deserialize(packet.bytes);
     } catch (const std::exception& e) { // another program on the link: reported, not fatal
@@ -107,9 +109,9 @@ void PacketManager::onSmartData(const OtPacket& packet)
     mBenchmark.queued(packet.bytes.size(), duration_cast<nanoseconds>(Clock::now() - dequeued));
 }
 
-void PacketManager::onRadio(const BootstrapMsg& msg)
+void PacketManager::onRadio(const ProtocolMsg& msg)
 {
-    // radio: unicast is logical (BootstrapService::isForMe); "esa": the ESA has no radio, the RSU relays it
+    // radio: unicast is logical; "esa": the ESA has no radio, the RSU relays it
     if (msg.getDestination() != mName && msg.getDestination() != "esa") {
         return;
     }
@@ -126,24 +128,38 @@ void PacketManager::onRadio(const BootstrapMsg& msg)
     switch (msg.getType()) {
         case Activation_Request: {
             // HTTPSEstablishment: relayed unchanged over the HTTPS session; the ESA unpacks M
-            trace::step(mName, "HTTPSEstablishment", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
+            trace::step(mName, "HTTPSEstablishment", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
             send(Activation_Request, "esa", msg.getSeqNum(), msg.getAckNum(), msg.getVehicle(), getPayload(msg),
                 Via::Https);
             break;
         }
         case PTP_Delay_Request: {
             // PTPDelayResponse: M = { PTP_Delay_Response, t_4 }
-            trace::step(mName, "PTPDelayResponse", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
+            trace::step(mName, "PTPDelayResponse", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
             PtpPayload m;
             m.type = PTP_Delay_Response;
             m.timestamp = SimTime::fromNs(static_cast<int64_t>(now())); // t_4: PTP_Delay_Request received
             send(PTP_Delay_Response, msg.getSender(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m), Via::Radio);
             break;
         }
-        case ECDH_Request:       teeStep("ECDHResponse", msg); break;
-        case Auth_Request:       teeStep("SaveRSU + AuthGranted", msg); break;
-        case Active_01:          teeStep("Active02", msg); break;
-        case Forwarding_Request: teeStep("ForwardingGranted", msg); break;   // Secrecy Forwarding, target RSU
+        case ECDH_Request:       onBootstrapStep("ECDHResponse", msg); break;
+        case Auth_Request:       onBootstrapStep("SaveRSU + AuthGranted", msg); break;
+        case Active_01:          onBootstrapStep("Active02", msg); break;
+        case Forwarding_Request: onForwardingRequest(msg); break;   // Secrecy Forwarding, target RSU
+        case Handover_Predict: {
+            // Vehicle CTRA predictor notified this source RSU of the single most likely target RSU:
+            // pre-fetch tokens exclusively with that target RSU (no broadcast to other candidate RSUs)
+            const HandoverPredictPayload m = unpackHandoverPredict(getPayload(msg));
+            trace::step(mName, "HandoverPredict (CTRA pre-fetch)", messageTypeName(msg.getType()),
+                msg.getSender(), msg.getVehicle());
+            for (const std::string& line : describe(m)) {
+                trace::detail(mName, line);
+            }
+            if (!m.targetRsu.empty() && m.targetRsu != mName) {
+                startHandover(msg.getVehicle(), m.targetRsu);
+            }
+            break;
+        }
         case Secure_Data:
             // the OT packet in a bootstrap message (no reassembly): the Secure Marshaling as for the data frames
             onSmartData({ OtPacket::Kind::SmartData, msg.getSender(), getPayload(msg), Clock::now() });
@@ -152,7 +168,7 @@ void PacketManager::onRadio(const BootstrapMsg& msg)
     }
 }
 
-void PacketManager::onHttps(const BootstrapMsg& msg)
+void PacketManager::onHttps(const ProtocolMsg& msg)
 {
     if (msg.getDestination() != mName) {
         return;
@@ -162,7 +178,7 @@ void PacketManager::onHttps(const BootstrapMsg& msg)
         case Forwarding_Notice: forwardingNotice(msg); break;   // from the source RSU (I am the target)
         case Handover_Command:
             // from the target RSU (I am the source): to the vehicle, still in my range (maybe not yet in the target's)
-            trace::step(mName, "HandoverCommand (relay)", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
+            trace::step(mName, "HandoverCommand (relay)", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
             send(Handover_Command, msg.getVehicle(), msg.getAckNum(), msg.getSeqNum() + 1, "", getPayload(msg),
                 Via::Radio);
             break;
@@ -170,10 +186,10 @@ void PacketManager::onHttps(const BootstrapMsg& msg)
     }
 }
 
-void PacketManager::activationToken(const BootstrapMsg& msg)
+void PacketManager::activationToken(const ProtocolMsg& msg)
 {
     // PTP: the activation goes into the TA (pending until its OTP), then PTPSync starts the clock exchange
-    trace::step(mName, "PTP", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
+    trace::step(mName, "PTP", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
     const ActivationTokenPayload token = unpackActivationToken(getPayload(msg));
     const int status = addActivationToken(msg.getVehicle(), static_cast<uint64_t>(token.t0.ns()),
         static_cast<uint64_t>(token.tf.ns()), token.authD, token.authEg);
@@ -183,7 +199,7 @@ void PacketManager::activationToken(const BootstrapMsg& msg)
     }
 
     // PTPSync: M = { PTP_Sync, t_1 }, t_1 taken as it goes out
-    trace::step(mName, "PTPSync", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
+    trace::step(mName, "PTPSync", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
     PtpPayload m;
     m.type = PTP_Sync;
     m.timestamp = SimTime::fromNs(static_cast<int64_t>(now()));
@@ -210,11 +226,11 @@ bool PacketManager::startHandover(const std::string& session, const std::string&
     return true;
 }
 
-void PacketManager::forwardingNotice(const BootstrapMsg& msg)
+void PacketManager::forwardingNotice(const ProtocolMsg& msg)
 {
     // target RSU G_{i+2}: K_dh_i, KT_i and auth_{i+2} pre-computed in the TA; Y_G_{i+2} goes back to the
     // source in a Handover_Command for the vehicle
-    trace::step(mName, "ForwardingNotice (OP-TEE TA)", stageName(msg.getType()), msg.getSender(), msg.getVehicle());
+    trace::step(mName, "ForwardingNotice (OP-TEE TA)", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
     const ForwardingNoticePayload notice = unpackForwardingNotice(getPayload(msg));
     for (const std::string& line : describe(notice)) {
         trace::detail(mName, line);
@@ -235,9 +251,9 @@ void PacketManager::forwardingNotice(const BootstrapMsg& msg)
 }
 
 // ECDH_Request, Auth_Request, Active_01: into the TA; its reply goes where its type says
-void PacketManager::teeStep(const char* step, const BootstrapMsg& received)
+void PacketManager::onBootstrapStep(const char* step, const ProtocolMsg& received)
 {
-    trace::step(mName, std::string(step) + " (OP-TEE TA)", stageName(received.getType()), received.getSender(),
+    trace::step(mName, std::string(step) + " (OP-TEE TA)", messageTypeName(received.getType()), received.getSender(),
         received.getVehicle());
     const Reply reply = handleBootstrap(received.getType(), received.getVehicle(), getPayload(received), now());
     if (reply.status == GW_IGNORED) {
@@ -259,16 +275,34 @@ void PacketManager::teeStep(const char* step, const BootstrapMsg& received)
     }
     send(reply.type, received.getSender(), received.getAckNum(), received.getSeqNum() + 1, "", reply.payload,
         Via::Radio);
-    if (reply.type == Forwarding_Granted) {
-        trace::end(mName, "handover done (" + received.getVehicle() + " now with " + mName + ")");
-    }
 }
 
-// BootstrapService::sendBootstrap (RSU): the ESA and the other RSUs over HTTPS, the vehicles over the radio
+// Forwarding_Request (Secrecy Forwarding, target RSU): into the TA -> Forwarding_Granted
+void PacketManager::onForwardingRequest(const ProtocolMsg& received)
+{
+    trace::step(mName, "ForwardingGranted (OP-TEE TA)", messageTypeName(received.getType()), received.getSender(),
+        received.getVehicle());
+    const Reply reply = handleForwardingRequest(received.getVehicle(), getPayload(received), now());
+    if (reply.status == GW_IGNORED) {
+        ++mIgnored;
+        trace::detail(mName, "the TA refused it: nothing sent");
+        return;
+    }
+    if (reply.status != GW_OK) {
+        trace::check(mName, false,
+            std::string("TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST: ") + statusName(reply.status));
+        return;
+    }
+    send(Forwarding_Granted, received.getSender(), received.getAckNum(), received.getSeqNum() + 1, "", reply.payload,
+        Via::Radio);
+    trace::end(mName, "handover done (" + received.getVehicle() + " now with " + mName + ")");
+}
+
+// send over the HTTPS sessions (the ESA, another RSU) or over the radio (the vehicles)
 void PacketManager::send(int type, const std::string& destination, int seqNum, int ackNum, const std::string& vehicle,
     const Bytes& payload, Via via)
 {
-    BootstrapMsg msg;
+    ProtocolMsg msg;
     msg.setType(type);
     msg.setSender(mName);
     msg.setDestination(destination);
@@ -305,6 +339,14 @@ Reply PacketManager::handleBootstrap(int type, const std::string& session, const
 {
     Reply reply;
     reply.status = mTee.handleBootstrap(type, session, payload, ptpTimeNs, reply.payload, reply.type);
+    return reply;
+}
+
+Reply PacketManager::handleForwardingRequest(const std::string& session, const Bytes& payload, uint64_t ptpTimeNs)
+{
+    Reply reply;
+    reply.type = Forwarding_Granted;
+    reply.status = mTee.handleForwardingRequest(session, payload, ptpTimeNs, reply.payload);
     return reply;
 }
 

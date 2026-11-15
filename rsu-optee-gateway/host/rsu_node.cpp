@@ -76,8 +76,8 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
     PacketQueue<OtPacket> ot;
     PacketQueue<ItPacket> it;
     PacketManager::Transport transport;
-    transport.radio = [&](const BootstrapMsg& msg) { sendMsg(radio, msg); };
-    transport.https = [&](const BootstrapMsg& msg) { it.push({ ItPacket::To::Esa, "", serialize(msg), {}, 0, false }); };
+    transport.radio = [&](const ProtocolMsg& msg) { sendMsg(radio, msg); };
+    transport.https = [&](const ProtocolMsg& msg) { it.push({ ItPacket::To::Esa, "", serialize(msg), {}, 0, false }); };
     transport.cloud = [&](ItPacket packet) { it.push(std::move(packet)); };
     transport.cloudRefused = [&]() {
         if (hilCloudReady) {
@@ -95,8 +95,8 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
     Reassembler backhaulReassembler;
     auto step = [&] {
         drain(radio, [&](FrameKind kind, const Bytes& body) {
-            if (kind == FrameKind::Bootstrap) {
-                ot.push({ OtPacket::Kind::Bootstrap, "", body, Clock::now() });
+            if (kind == FrameKind::Protocol) {
+                ot.push({ OtPacket::Kind::Protocol, "", body, Clock::now() });
             } else if (kind == FrameKind::Data_Fragment) {
                 if (auto packet = reassembler.add(body); packet && packet->to == options.name) {
                     ot.push({ OtPacket::Kind::SmartData, packet->from, std::move(packet->bytes), Clock::now() });
@@ -105,8 +105,8 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
         });
         drain(backhaul, [&](FrameKind kind, const Bytes& body) {
             try {
-                if (kind == FrameKind::Bootstrap) {
-                    const BootstrapMsg msg = deserialize(body);
+                if (kind == FrameKind::Protocol) {
+                    const ProtocolMsg msg = deserialize(body);
                     if (msg.getDestination() == options.name) { // the session is ours alone; the link is shared
                         gateway.onHttps(msg);
                     }
@@ -146,7 +146,7 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
         }
         while (auto packet = it.pop()) {
             if (packet->to == ItPacket::To::Esa) {
-                sendFrame(backhaul, FrameKind::Bootstrap, packet->bytes);
+                sendFrame(backhaul, FrameKind::Protocol, packet->bytes);
             } else if (hilCloudReady) {
                 sendData(backhaul, options.name, "cloud", packet->bytes);
                 gateway.benchmark().posted(packet->otSize, Clock::now() - packet->received);

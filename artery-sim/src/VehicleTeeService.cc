@@ -1,6 +1,6 @@
 #include "VehicleTeeService.h"
 #include "BackhaulBroker.h"
-#include "Bootstrap.h"
+#include "Trace.h"
 #include "V2xFrame.h"
 #include "artery/application/VehicleDataProvider.h"
 #include <omnetpp.h>
@@ -9,10 +9,18 @@
 #include <vanetza/dcc/profile.hpp>
 #include <vanetza/geonet/interface.hpp>
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 Define_Module(VehicleTeeService)
+
+namespace
+{
+constexpr double kPi = 3.14159265358979323846;
+} // namespace
 
 VehicleTeeService::~VehicleTeeService()
 {
@@ -24,9 +32,17 @@ void VehicleTeeService::initialize()
 {
     ItsG5Service::initialize();
     mName = getParentModule()->getParentModule()->getFullName(); // <node>.middleware.VehicleTeeService
+    mEnableCtra = par("enableCtra").boolValue();
+    mPredictionHorizon = par("predictionHorizon").doubleValue();
+    mPredictionStep = par("predictionStep").doubleValue();
+    mPredictRadius = par("predictRadius").doubleValue();
+    mHandoverRadius = par("handoverRadius").doubleValue();
     mHandoverX = par("handoverX").doubleValue();
+
     mBootstrapDelaySignal = registerSignal("bootstrapDelay");
     mHandoverDelaySignal = registerSignal("handoverE2EDelayMs");
+    mPrefetchLeadTimeSignal = registerSignal("prefetchLeadTimeMs");
+    mCtraPredictionSignal = registerSignal("ctraPredictions");
     mSecureDataSignal = registerSignal("secureDataSent");
 
     mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
@@ -36,27 +52,71 @@ void VehicleTeeService::initialize()
             par("backhaulModule").stringValue());
     }
 
+    discoverRsus();
+
     mStartTimer = new omnetpp::cMessage("bootstrap");
     mDataTimer = new omnetpp::cMessage("Secure_Data");
     scheduleAt(omnetpp::simTime() + par("startDelay"), mStartTimer);
 }
 
+void VehicleTeeService::discoverRsus()
+{
+    std::vector<CtraPredictor::RsuCandidate> candidates;
+    omnetpp::cModule* sys = getSimulation()->getSystemModule();
+    for (int i = 0; ; ++i) {
+        omnetpp::cModule* rsu = sys->getSubmodule("rsu", i);
+        if (!rsu) {
+            break;
+        }
+        if (omnetpp::cModule* mob = rsu->getSubmodule("mobility")) {
+            const double rx = mob->par("initialX").doubleValue();
+            const double ry = mob->par("initialY").doubleValue();
+            candidates.push_back({ rsu->getFullName(), rx, ry });
+        }
+    }
+    mPredictor.setCandidates(std::move(candidates));
+}
+
+void VehicleTeeService::updateKinematics()
+{
+    const auto& vdp = getFacilities().get_const<artery::VehicleDataProvider>();
+    const double x = vdp.position().x.value();
+    const double y = vdp.position().y.value();
+    const double v = vdp.speed().value();
+    // Convert Artery TrueNorth clockwise angle to OMNeT++ Cartesian heading psi (dx/dt = v*cos(psi), dy/dt = v*sin(psi))
+    const double psi = vdp.heading().value() - (kPi / 2.0);
+    const double a = vdp.acceleration().value();
+    mPredictor.update(x, y, v, psi, a, omnetpp::simTime().dbl());
+}
+
 void VehicleTeeService::startBootstrap()
 {
+    updateKinematics();
+
     // CY_g of the RSU the operator chose (here: "firstRsu"), as it registered its certificate with the ESA
-    BootstrapService::Config config;
+    VehicleAgent::Config config;
     config.name = mName;
     config.autoStart = false;
     config.clockOffset = par("clockOffset").doubleValue();
     config.gatewayPublicKey = mBroker->gatewayPublicKey(par("firstRsu").stdstringValue());
-    config.deferHandover = true;    // the Forwarding_Request waits for handoverX (checkHandover)
+    config.deferHandover = true;    // Handover_Command pre-fetches keys; Forwarding_Request waits for checkHandover()
     config.seed = static_cast<unsigned>(intuniform(0, std::numeric_limits<int>::max()));
-    mBootstrap = std::make_unique<BootstrapService>(config);
+    mAgent = std::make_unique<VehicleAgent>(config);
 
-    mBootstrap->setTransport([this](const BootstrapMsg& msg) { sendRadio(msg); });
+    mAgent->setTransport([this](const ProtocolMsg& msg) { sendRadio(msg); });
 
-    mBootstrap->setHandoverCallback([this](const BootstrapResult& result) {
+    mAgent->handover().setPrefetchCallback([this](const std::string& targetRsu) {
+        mPrefetchReadyAt = omnetpp::simTime();
+        ++mPrefetchesCompleted;
+        const double rttMs = (mPrefetchReadyAt - mPredictSentAt).dbl() * 1000.0;
+        EV_INFO << mName << ": [CTRA pre-fetch ready] Handover_Command from " << targetRsu
+                << " pre-computed in " << rttMs << " ms (holding keys until handover zone)\n";
+    });
+
+    mAgent->handover().setHandoverCallback([this](const HandoverResult& result) {
         ++mHandovers;
+        mPredictedRsu.clear();
+        mPrefetchReadyAt = omnetpp::SimTime::ZERO;
         const double ms = (omnetpp::simTime() - mRequestSentAt).dbl() * 1000.0;
         emit(mHandoverDelaySignal, ms);
         EV_INFO << mName << ": handed over to " << result.rsu << " in " << ms << " ms\n";
@@ -64,7 +124,7 @@ void VehicleTeeService::startBootstrap()
     });
 
     mStartedAt = omnetpp::simTime();
-    initBootstrap(*mBootstrap, [this](const BootstrapResult& result) {
+    mAgent->bootstrap().start([this](const BootstrapResult& result) {
         mReady = true;
         emit(mBootstrapDelaySignal, omnetpp::simTime() - mStartedAt);
         getParentModule()->getParentModule()->bubble(("bootstrap OK: " + result.rsu).c_str());
@@ -76,22 +136,94 @@ void VehicleTeeService::startBootstrap()
 
 void VehicleTeeService::sendSecureData()
 {
-    // a CAM-sized SmartData: where (x, m), when (the vehicle's clock, set by sendSecureData), what (1: CAM-like)
-    const std::string rsu = mBootstrap->currentRsu();
-    mBootstrap->sendSecureData(randomBytes(static_cast<size_t>(par("dataSize").intValue())),
+    const std::string rsu = mAgent->session().currentRsu();
+    mAgent->data().send(randomBytes(static_cast<size_t>(par("dataSize").intValue())),
         static_cast<uint32_t>(std::max(0.0, positionX())), 1);
     ++mSecureDataSent;
     ++mSentTo[rsu];
     emit(mSecureDataSignal, mSecureDataSent);
 }
 
+void VehicleTeeService::checkPrediction()
+{
+    if (!mReady || !mEnableCtra || !mAgent || mAgent->handover().inFlight()) {
+        return;
+    }
+
+    const std::string current = mAgent->session().currentRsu();
+    if (current.empty()) {
+        return;
+    }
+
+    const auto pred = mPredictor.predictNextRsu(current, mPredictionHorizon, mPredictionStep, mPredictRadius);
+    if (!pred) {
+        return;
+    }
+
+    const bool newTarget = (pred->targetRsu != mPredictedRsu);
+    const bool retryLostPrefetch = (!mAgent->handover().pending()
+        && (omnetpp::simTime() - mPredictSentAt).dbl() >= 1.0);
+    if (!newTarget && !retryLostPrefetch) {
+        return;
+    }
+
+    mPredictedRsu = pred->targetRsu;
+    mPredictSentAt = omnetpp::simTime();
+    ++mPredictionsSent;
+    emit(mCtraPredictionSignal, mPredictionsSent);
+
+    const auto& st = mPredictor.state();
+    char summary[256];
+    std::snprintf(summary, sizeof(summary),
+        "CTRA state [x=%.1f m, y=%.1f m, v=%.1f m/s, psi=%.1f deg, a=%.2f m/s^2, omega=%.2f rad/s] "
+        "-> most likely RSU: %s (d_curr=%.1f m, d_min=%.1f m in %.1f s)",
+        st.x, st.y, st.v, st.psi * 180.0 / kPi, st.a, st.omega,
+        pred->targetRsu.c_str(), pred->currentDistance, pred->minDistance, pred->timeToClosest);
+    trace::step(mName, "CTRA Trajectory Predictor");
+    trace::detail(mName, summary);
+    trace::detail(mName, "notifying ONLY " + pred->targetRsu + " via " + current
+        + " (selective token pre-fetch, other candidate RSUs untouched)");
+
+    EV_INFO << mName << ": " << summary << "\n";
+    getParentModule()->getParentModule()->bubble(("CTRA predict: " + pred->targetRsu).c_str());
+    mAgent->handover().requestPrediction(pred->targetRsu);
+}
+
 void VehicleTeeService::checkHandover()
 {
-    if (mBootstrap && mBootstrap->handoverPending() && (mHandoverX < 0 || positionX() >= mHandoverX)) {
-        EV_INFO << mName << ": at x = " << positionX() << " m, Forwarding_Request to " << mBootstrap->handoverTarget()
-            << "\n";
+    if (!mAgent) {
+        return;
+    }
+
+    // Retry Forwarding_Request if a single 802.11p frame was lost on the air
+    if (mAgent->handover().inFlight() && (omnetpp::simTime() - mRequestSentAt).dbl() >= 0.5) {
         mRequestSentAt = omnetpp::simTime();
-        mBootstrap->requestForwarding();
+        mAgent->handover().requestForwarding();
+        return;
+    }
+
+    if (!mAgent->handover().pending()) {
+        return;
+    }
+
+    const std::string& target = mAgent->handover().targetRsu();
+    bool shouldRequest = false;
+    if (mEnableCtra) {
+        shouldRequest = mPredictor.shouldExecuteHandover(mAgent->session().currentRsu(), target, mHandoverRadius);
+    } else {
+        shouldRequest = (mHandoverX < 0 || positionX() >= mHandoverX);
+    }
+
+    if (shouldRequest) {
+        if (mPrefetchReadyAt > omnetpp::SimTime::ZERO) {
+            const double leadMs = (omnetpp::simTime() - mPrefetchReadyAt).dbl() * 1000.0;
+            emit(mPrefetchLeadTimeSignal, leadMs);
+        }
+        EV_INFO << mName << ": at (" << mPredictor.state().x << ", " << mPredictor.state().y
+                << ") m (dist=" << mPredictor.distanceToRsu(target) << " m), Forwarding_Request to pre-fetched "
+                << target << "\n";
+        mRequestSentAt = omnetpp::simTime();
+        mAgent->handover().requestForwarding();
     }
 }
 
@@ -101,12 +233,12 @@ void VehicleTeeService::indicate(const vanetza::btp::DataIndication&, omnetpp::c
     Enter_Method("indicate");
     std::unique_ptr<omnetpp::cPacket> owned(packet);
     const auto frame = dynamic_cast<const V2xFrame*>(packet);
-    if (!frame || !mBootstrap) {
+    if (!frame || !mAgent) {
         return;
     }
     try {
-        mBootstrap->indicate(frame->msg()); // filters by destination (logical unicast)
-        checkHandover();                    // a Handover_Command may have just arrived
+        mAgent->indicate(frame->msg()); // filters by destination (logical unicast)
+        checkHandover();                // a Handover_Command may have just arrived
     } catch (const std::runtime_error& e) { // a malformed frame or payload: dropped, the simulation goes on
         EV_ERROR << mName << ": frame dropped: " << e.what() << "\n";
     }
@@ -117,6 +249,8 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
     if (msg == mStartTimer) {
         startBootstrap();
     } else if (msg == mDataTimer) {
+        updateKinematics();
+        checkPrediction();
         checkHandover();
         sendSecureData();
         scheduleAt(omnetpp::simTime() + par("dataInterval"), mDataTimer);
@@ -125,12 +259,14 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
     }
 }
 
-void VehicleTeeService::sendRadio(const BootstrapMsg& msg)
+void VehicleTeeService::sendRadio(const ProtocolMsg& msg)
 {
-    // DCC profile: the protocol's messages (bootstrap, Forwarding_Request: a few, short) as TC0 / DP0; Secure_Data,
-    // periodic at 10 Hz, as DP2, as CAMs. DCC grants DP0 a burst of 20 packets per 10 s only (ETSI TS 102 687):
-    // 10 Hz on DP0 drains it, then the packets wait in a 2-packet queue (too late for their OTP) or are dropped
-    const auto profile = msg.getType() == Secure_Data ? vanetza::dcc::Profile::DP2 : vanetza::dcc::Profile::DP0;
+    // DCC profile: initial bootstrap messages as TC0 / DP0; once active, post-bootstrap traffic
+    // (Handover_Predict, Forwarding_Request, Secure_Data at 10 Hz) uses DP2 to avoid DP0's 10 s DCC lockout.
+    const bool postBootstrap = msg.getType() == Secure_Data
+        || msg.getType() == Handover_Predict
+        || msg.getType() == Forwarding_Request;
+    const auto profile = postBootstrap ? vanetza::dcc::Profile::DP2 : vanetza::dcc::Profile::DP0;
 
     // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
     vanetza::btp::DataRequestB req;
@@ -150,13 +286,15 @@ void VehicleTeeService::finish()
 {
     recordScalar("bootstrapped", mReady ? 1 : 0);
     recordScalar("secureDataSent", mSecureDataSent);
+    recordScalar("ctraPredictionsSent", mPredictionsSent);
+    recordScalar("prefetchesCompleted", mPrefetchesCompleted);
     recordScalar("handovers", mHandovers);
     for (const auto& [rsu, sent] : mSentTo) {
         recordScalar(("secureDataSentTo " + rsu).c_str(), sent);
     }
-    if (mBootstrap) {
-        recordScalar("bootstrapMessagesSent", mBootstrap->sent());
-        recordScalar("bootstrapMessagesReceived", mBootstrap->received());
+    if (mAgent) {
+        recordScalar("protocolMessagesSent", mAgent->session().sent());
+        recordScalar("protocolMessagesReceived", mAgent->session().received());
     }
     ItsG5Service::finish();
 }

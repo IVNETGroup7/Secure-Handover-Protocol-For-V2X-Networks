@@ -1,5 +1,5 @@
-#ifndef BOOTSTRAP_CRYPTO_H_
-#define BOOTSTRAP_CRYPTO_H_
+#ifndef COMMON_CRYPTO_H_
+#define COMMON_CRYPTO_H_
 
 #ifndef __OPTEE_TA__
 #include <openssl/evp.h>
@@ -56,4 +56,4 @@ Bytes selfSignedCertificate(EVP_PKEY* key, const std::string& commonName);
 // nullopt when it does not parse or does not verify
 std::optional<Bytes> verifiedCertificateKey(const Bytes& certificateDer);
 
-#endif /* BOOTSTRAP_CRYPTO_H_ */
+#endif /* COMMON_CRYPTO_H_ */

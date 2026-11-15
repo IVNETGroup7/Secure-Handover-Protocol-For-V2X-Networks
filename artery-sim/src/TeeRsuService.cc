@@ -12,6 +12,7 @@
 #include <vanetza/geonet/interface.hpp>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 Define_Module(TeeRsuService)
@@ -70,7 +71,18 @@ void TeeRsuService::initialize()
 
     mEnableHil = par("enableHil").boolValue();
     mHilIface = par("hilIface").stdstringValue();
+    if (mHilIface.empty()) {
+        if (const char* envIface = std::getenv("HIL_IFACE")) {
+            mHilIface = envIface;
+        }
+    }
     if (mEnableHil) {
+        if (mHilIface.empty()) {
+            throw omnetpp::cRuntimeError(
+                "%s: HIL enabled but no host interface specified; set HIL_IFACE=<iface> or pass "
+                "--*.rsu[*].middleware.TeeRsuService.hilIface=\\\"<iface>\\\"",
+                mName.c_str());
+        }
         EV_INFO << mName << ": Hardware-in-the-Loop (HIL) enabled on interface " << mHilIface << "\n";
         try {
             mHilRadio = std::make_unique<RawSocket>(mHilIface, kRadioEtherType);

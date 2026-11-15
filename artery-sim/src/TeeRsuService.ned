@@ -16,5 +16,5 @@ simple TeeRsuService like ItsG5Service
         double handoverDelay @unit(s) = default(0s);    // from the vehicle's activation to its Forwarding_Notice
         string backhaulModule = default("backhaulBroker");
         bool enableHil = default(false);            // Hardware-in-the-Loop: bridge this RSU to physical hardware
-        string hilIface = default("enp3s0");        // network interface connected to the physical RSU (e.g. enp3s0)
+        string hilIface = default("");            // network interface connected to the physical RSU (or set HIL_IFACE env var)
 }

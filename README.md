@@ -198,7 +198,7 @@ A vehicle activated with source RSU $G_{i+1}$ transitions to target RSU $G_{i+2}
 
 1. **`D250m_80211p`**: IEEE 802.11p / ITS-G5 at 5.9 GHz, 6 Mbps, 200 mW (~250 m coverage per RSU).
 2. **`D500m_5G`**: 5G New Radio (NR) via **Simu5G**: 3.5 GHz (FR1 n78), 20 MHz (50 Resource Blocks), numerology 1 (30 kHz subcarrier spacing), 3GPP TR 38.901 Urban Microcell, gNodeB X2 handover between gNodeB[0] (x=250m) and gNodeB[1] (x=750m).
-3. **`HIL_RPi3_TargetHandover` (Hardware-in-the-Loop)**: Simulated vehicle in SUMO bootstraps with simulated `rsu[0]`, then hands over at $x = 500\,\text{m}$ across the Ethernet wire (`enp3s0`) to the **physical Raspberry Pi 3** acting as `rsu[1]`.
+3. **`HIL_RPi3_TargetHandover` (Hardware-in-the-Loop)**: Simulated vehicle in SUMO bootstraps with simulated `rsu[0]`, then hands over at $x = 500\,\text{m}$ across the host Ethernet interface (`HIL_IFACE`) to the **physical Raspberry Pi 3** acting as `rsu[1]`.
 4. **`HIL_RPi3_TargetHandover_GUI` (HIL with SUMO GUI)**: Interactive visual mode running the HIL scenario with `sumo-gui`, rendering real-time highway vehicle motion, antennas, and handover progress.
 
 ### HIL Radio Frequency & Physical Layer Parameters
@@ -223,11 +223,11 @@ artery-sim/setup_artery.sh
 # (1. Ensure Raspberry Pi 3 is running: ./app rsu --iface eth0 --name rsu[1])
 # (2. Ensure raw socket capability on PC: sudo setcap cap_net_raw+ep artery-sim/deps/omnetpp-5.7.1/bin/opp_run_release)
 cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_TargetHandover_GUI --scheduler-class=omnetpp::cRealTimeScheduler" artery-sim/deps/artery/build
-cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
+HIL_IFACE=<your-ethernet-interface> cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
 
 # Run Hardware-in-the-Loop (Headless):
 cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_TargetHandover --scheduler-class=omnetpp::cRealTimeScheduler" artery-sim/deps/artery/build
-cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
+HIL_IFACE=<your-ethernet-interface> cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
 
 # Run pure IEEE 802.11p simulation (Headless or with _GUI):
 cmake -DRUN_FLAGS="-u Cmdenv -c D250m_80211p" artery-sim/deps/artery/build

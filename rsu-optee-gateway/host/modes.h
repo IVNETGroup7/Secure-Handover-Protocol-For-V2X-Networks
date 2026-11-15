@@ -3,24 +3,19 @@
 
 // What ./app runs once the OP-TEE TA session is opened (host/main.cpp)
 
-#include "Https.h"
 #include "tee_session.h"
-#include <cstdint>
 #include <string>
 
 // in-memory bootstrap against the repository's own vehicle and ESA (host/selftest.cpp);
 // "storageId": Secure Storage object ID prefix for the second RSU (another TA session) of Secrecy Forwarding
 int runSelfTest(TeeSession& tee, const std::string& storageId);
 
-// the gateway as the RSU node on the raw sockets, with the frames of net/Link.h (host/rsu_node.cpp)
+// the gateway as an HIL RSU node on raw Ethernet sockets (0x88b5 radio, 0x88b6 backhaul)
 struct RsuOptions
 {
-    std::string iface = "lo";
+    std::string iface = "eth0";
     std::string name = "rsu[0]";
-    int readyFd = -1;               // fork mode of ../bootstrap: written once the node is ready
-    std::string cloudCertificate;   // the cloud's certificate (PEM) we trust; empty: no cloud
-    std::string cloudAddress = kCloudAddress;
-    uint16_t cloudPort = kCloudPort;
+    unsigned sessionTimeoutSeconds = 120;
 };
 int runRsuNode(TeeSession& tee, const RsuOptions& options);
 

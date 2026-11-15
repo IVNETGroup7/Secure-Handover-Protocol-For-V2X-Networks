@@ -47,13 +47,12 @@ if [ -z "$host" ]; then
 fi
 
 # Ensure target directory exists and user owns their home
-"${SSH[@]}" "$host" "sudo chown -R \$(id -un):\$(id -gn) \$HOME && mkdir -p \$HOME/$VM_DIR && rm -f \$HOME/$VM_DIR/rsu-optee-gateway/.caps_*" 2>/dev/null || true
+"${SSH[@]}" "$host" "sudo chown -R \$(id -un):\$(id -gn) \$HOME && mkdir -p \$HOME/$VM_DIR" 2>/dev/null || true
 
 rsync -rlp --checksum --delete -e "${SSH[*]}" \
-    --exclude=.git --exclude=.vscode --exclude='*.pdf' --exclude=/bootstrap --exclude='build*/' \
+    --exclude=.git --exclude=.vscode --exclude='*.pdf' --exclude='build*/' \
     --exclude='*.o' --exclude='*.d' --exclude='*.ta' --exclude=/rsu-optee-gateway/app \
-    --exclude='.caps_*' --exclude='gateway.sealed*' --exclude=cloud.crt \
-    --exclude=/artery-sim/deps/ --exclude=/artery-sim/scenario/results/ --exclude='/artery-sim/scenario/*.sealed' \
+    --exclude='*.sealed*' --exclude=/artery-sim/deps/ --exclude=/artery-sim/scenario/results/ \
     --exclude=/artery-sim/scenario/.cmdenv-log --exclude=/artery-sim/scenario/.qtenvrc \
     "$REPO/" "$host:$VM_DIR/"
 

@@ -13,8 +13,7 @@ class Benchmark
 
         void taCall(size_t size, Duration taCall, int status);
         void queued(size_t size, Duration otToIt);          // the IT packet went into the IT queue
-        void posted(size_t size, Duration radioToCloud);    // the cloud answered 2xx
-        void postFailed(size_t size);
+        void posted(size_t size, Duration radioToCloud);    // handed to the backhaul/cloud link
 
         bool empty() const { return mRows.empty(); }
         void print(std::FILE* out, const std::string& node) const;
@@ -32,7 +31,6 @@ class Benchmark
         {
             Stat taCall, otToIt, radioToCloud;
             std::map<int, size_t> statuses;     // gateway_ta.h status -> packets
-            size_t postFailures = 0;
         };
 
         std::map<size_t, Row> mRows;    // OT packet size -> its times

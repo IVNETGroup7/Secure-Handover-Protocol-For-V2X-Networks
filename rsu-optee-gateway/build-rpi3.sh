@@ -6,7 +6,6 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Target configuration
 OPTEE_RPI3_DIR="${OPTEE_RPI3_DIR:-$HOME/optee-rpi3}"
@@ -83,28 +82,20 @@ make app \
 
 echo "  -> Built: $SCRIPT_DIR/app"
 
-echo "=== 4. Cross-compiling bootstrap runner ==="
-cd "$ROOT_DIR"
-"${CROSS_COMPILE_HOST}g++" -std=c++17 -O2 -mcpu=cortex-a53 \
-    -Icommon -Iprotocol -Inet \
-    main.cpp common/*.cpp protocol/*.cpp net/*.cpp \
-    -lssl -lcrypto -lpthread -o bootstrap
-
-echo "  -> Built: $ROOT_DIR/bootstrap"
-
 echo ""
 echo "Build complete!"
 
 if [ -n "$1" ]; then
     PI_IP="$1"
-    echo "=== 5. Deploying to Raspberry Pi 3 at $PI_IP ==="
+    echo "=== 4. Deploying to Raspberry Pi 3 at $PI_IP ==="
     ssh "root@$PI_IP" "mkdir -p /lib/optee_armtz /root"
     scp "$SCRIPT_DIR/ta/${TA_UUID}.ta" "root@$PI_IP:/lib/optee_armtz/"
-    scp "$SCRIPT_DIR/app" "$ROOT_DIR/bootstrap" "$SCRIPT_DIR/cloud.crt" "root@$PI_IP:/root/" 2>/dev/null || true
+    scp "$SCRIPT_DIR/app" "root@$PI_IP:/root/"
     echo "Files transferred successfully to $PI_IP!"
-    echo "To test on the Pi, run:"
-    echo "  ssh root@$PI_IP"
-    echo "  ./app"
+    echo "To run the self-test on the Pi:"
+    echo "  ssh root@$PI_IP /root/app"
+    echo "To launch dual-RSU HIL (rsu[0] + rsu[1]) paired with Artery on the host:"
+    echo "  ../rsu-dual-ssh.sh --pi-ip $PI_IP"
 else
     echo "To deploy manually to your Pi 3, run:"
     echo "  $0 <PI_IP>"

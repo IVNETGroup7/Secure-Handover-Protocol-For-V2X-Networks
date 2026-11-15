@@ -137,36 +137,6 @@ ForwardingRequest unpackForwardingRequest(const Bytes& in)
     return m;
 }
 
-Bytes pack(const ForwardingRequest& m)
-{
-    Bytes out;
-    putUint(out, m.type, 1);
-    out.insert(out.end(), m.auth.begin(), m.auth.end());
-    out.insert(out.end(), m.otp.begin(), m.otp.end());
-    return out;
-}
-
-ForwardingGranted unpackForwardingGranted(const Bytes& in)
-{
-    Reader reader(in);
-    ForwardingGranted m;
-    m.type = static_cast<uint8_t>(reader.uint(1));
-    m.nextRsuPublicKey = reader.field();
-    m.authPrime = reader.array<32>();
-    m.kG = reader.field();
-    m.otp = reader.block();
-    return m;
-}
-
-Bytes pack(const SecureData& m)
-{
-    Bytes out;
-    putUint(out, m.type, 1);
-    const Bytes packet = packDataMessage(DataMessage{ m.cipherData, m.authD, m.otp });
-    out.insert(out.end(), packet.begin(), packet.end());
-    return out;
-}
-
 SecureData unpackSecureData(const Bytes& in)
 {
     Reader reader(in);

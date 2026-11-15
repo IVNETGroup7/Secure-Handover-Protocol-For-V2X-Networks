@@ -104,6 +104,7 @@ if ! sudo virsh net-info default | grep -q "Active:.*yes"; then
 fi
 sudo virsh net-autostart default
 
+# Docker on the host sets FORWARD policy to DROP, which blocks libvirt's virbr0 bridge
 if systemctl is-active --quiet docker && sudo iptables -L DOCKER-USER -n >/dev/null 2>&1; then
     sudo iptables -C DOCKER-USER -i virbr0 -j ACCEPT 2>/dev/null || sudo iptables -I DOCKER-USER -i virbr0 -j ACCEPT
     sudo iptables -C DOCKER-USER -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
@@ -128,7 +129,7 @@ if virsh dominfo "$VM_NAME" >/dev/null 2>&1 && [ "$RECREATE" = false ]; then
     done
     echo
     echo "VM is running. IP: ${VM_IP:-unknown}"
-    echo "SSH: ssh ubuntu@${VM_IP:-<VM-IP>}   (repo mounted at $GUEST_MOUNT)"
+    echo "SSH: ssh $VM_USER@${VM_IP:-<VM-IP>}   (repo mounted at $GUEST_MOUNT)"
     exit 0
 fi
 
@@ -325,4 +326,6 @@ echo "=== Success! Environment configured and VM '$VM_NAME' is running ==="
 echo "IP address: ${VM_IP:-unknown}  (virsh domifaddr $VM_NAME)"
 echo "SSH (login: $VM_USER / $VM_USER): ssh $VM_USER@${VM_IP:-<VM-IP>}"
 echo "Host repo $SHARE_DIR is mounted in the VM at $GUEST_MOUNT"
+echo "Run gateway self-test in VM: make vm"
+echo "Run dual-RSU HIL daemons in VM (pair with ./artery-sim/run-hil-dual.sh --iface virbr0): make vm-hil"
 echo "Console: virsh console $VM_NAME  (exit with Ctrl + ])"

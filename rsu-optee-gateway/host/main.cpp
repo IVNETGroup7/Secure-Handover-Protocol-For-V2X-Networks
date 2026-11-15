@@ -26,14 +26,27 @@ std::string programDir()
 
 int main(int argc, char** argv)
 {
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            std::printf("Usage:\n"
+                "  %s [selftest] [--sealed <id>] [--fresh]\n"
+                "  %s rsu [--name <rsu>] [--iface <nic>] [--sealed <id>] [--fresh] [--session-timeout <sec>]\n",
+                argv[0], argv[0]);
+            return 0;
+        }
+    }
+
     const std::string mode = argc > 1 && argv[1][0] != '-' ? argv[1] : "selftest";
     const int first = argc > 1 && argv[1][0] != '-' ? 2 : 1;
 
-    // --key value options
+    // --key value options (plus optional valueless --fresh)
     std::map<std::string, std::string> options;
     for (int i = first; i < argc; ++i) {
         const std::string key = argv[i];
-        if (key.rfind("--", 0) == 0 && i + 1 < argc) {
+        if (key == "--fresh" && (i + 1 >= argc || argv[i + 1][0] == '-')) {
+            options[key] = "1";
+        } else if (key.rfind("--", 0) == 0 && i + 1 < argc) {
             options[key] = argv[++i];
         } else {
             std::fprintf(stderr, "error: unexpected argument '%s'\n", key.c_str());
@@ -55,19 +68,18 @@ int main(int argc, char** argv)
     const std::string defaultStorage = programDir() + "/gateway.sealed";
 #endif
     const std::string storageId = option("--sealed", defaultStorage);
+    const bool freshState = option("--fresh", "0") == "1" || option("--fresh", "") == "true";
     const std::string label = mode == "rsu" ? option("--name", "rsu[0]") : "gateway";
 
     int code = 1;
     try {
-        TeeSession tee(storageId, false);
+        TeeSession tee(storageId, freshState);
         if (mode == "rsu") {
             RsuOptions rsu;
             rsu.iface = option("--iface", rsu.iface);
             rsu.name = option("--name", rsu.name);
-            rsu.readyFd = std::stoi(option("--ready-fd", "-1"));
-            rsu.cloudCertificate = option("--cloud-cert", "");
-            rsu.cloudAddress = option("--cloud-address", rsu.cloudAddress);
-            rsu.cloudPort = static_cast<uint16_t>(std::stoi(option("--cloud-port", std::to_string(rsu.cloudPort))));
+            rsu.sessionTimeoutSeconds = static_cast<unsigned>(
+                std::stoul(option("--session-timeout", std::to_string(rsu.sessionTimeoutSeconds))));
             code = runRsuNode(tee, rsu);
         } else {
             std::printf("OP-TEE TA session opened (session %llu, storage %s)\n",

@@ -25,7 +25,6 @@ void VehicleTeeService::initialize()
     ItsG5Service::initialize();
     mName = getParentModule()->getParentModule()->getFullName(); // <node>.middleware.VehicleTeeService
     mHandoverX = par("handoverX").doubleValue();
-    mUseSimu5g = par("useSimu5g").boolValue();
     mBootstrapDelaySignal = registerSignal("bootstrapDelay");
     mHandoverDelaySignal = registerSignal("handoverE2EDelayMs");
     mSecureDataSignal = registerSignal("secureDataSent");
@@ -35,10 +34,6 @@ void VehicleTeeService::initialize()
     if (!mBroker) {
         throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
             par("backhaulModule").stringValue());
-    }
-
-    if (mUseSimu5g) {
-        mBroker->register5gNode(mName, [this](const BootstrapMsg& msg) { on5gRadio(msg); }, [this]() { return positionX(); });
     }
 
     mStartTimer = new omnetpp::cMessage("bootstrap");
@@ -51,7 +46,6 @@ void VehicleTeeService::startBootstrap()
     // CY_g of the RSU the operator chose (here: "firstRsu"), as it registered its certificate with the ESA
     BootstrapService::Config config;
     config.name = mName;
-    config.role = BootstrapService::Role::Vehicle;
     config.autoStart = false;
     config.clockOffset = par("clockOffset").doubleValue();
     config.gatewayPublicKey = mBroker->gatewayPublicKey(par("firstRsu").stdstringValue());
@@ -59,9 +53,7 @@ void VehicleTeeService::startBootstrap()
     config.seed = static_cast<unsigned>(intuniform(0, std::numeric_limits<int>::max()));
     mBootstrap = std::make_unique<BootstrapService>(config);
 
-    BootstrapService::Transport transport;
-    transport.radio = [this](const BootstrapMsg& msg) { sendRadio(msg); };
-    mBootstrap->setTransport(transport);
+    mBootstrap->setTransport([this](const BootstrapMsg& msg) { sendRadio(msg); });
 
     mBootstrap->setHandoverCallback([this](const BootstrapResult& result) {
         ++mHandovers;
@@ -129,35 +121,12 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
         sendSecureData();
         scheduleAt(omnetpp::simTime() + par("dataInterval"), mDataTimer);
     } else {
-        auto frame = dynamic_cast<V2xFrame*>(msg);
-        if (frame) {
-            on5gRadio(frame->msg());
-        }
         delete msg;
-    }
-}
-
-void VehicleTeeService::on5gRadio(const BootstrapMsg& msg)
-{
-    Enter_Method("on5gRadio");
-    try {
-        if (mBootstrap) {
-            mBootstrap->indicate(msg); // filters by destination (logical unicast)
-            checkHandover();           // a Handover_Command may have just arrived
-        }
-    } catch (const std::runtime_error& e) {
-        EV_ERROR << mName << ": 5G frame dropped: " << e.what() << "\n";
     }
 }
 
 void VehicleTeeService::sendRadio(const BootstrapMsg& msg)
 {
-    if (mUseSimu5g) {
-        // Simu5G: 5G NR radio transport
-        mBroker->send5gRadio(mName, msg, positionX());
-        return;
-    }
-
     // DCC profile: the protocol's messages (bootstrap, Forwarding_Request: a few, short) as TC0 / DP0; Secure_Data,
     // periodic at 10 Hz, as DP2, as CAMs. DCC grants DP0 a burst of 20 packets per 10 s only (ETSI TS 102 687):
     // 10 Hz on DP0 drains it, then the packets wait in a 2-packet queue (too late for their OTP) or are dropped

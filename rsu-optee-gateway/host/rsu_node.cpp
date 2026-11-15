@@ -1,31 +1,26 @@
 #include "modes.h"
-#include "Https.h"
 #include "Link.h"
 #include "SmartData.h"
-#include "Trace.h"
 #include "gateway_ta.h"
 #include "packet_manager.h"
 #include "packet_queue.h"
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <exception>
-#include <fstream>
-#include <iterator>
-#include <memory>
 #include <random>
 #include <stdexcept>
 
 namespace
 {
 
-volatile std::sig_atomic_t gStop = 0;   // SIGINT / SIGTERM (../bootstrap stops the servers with SIGTERM)
+volatile std::sig_atomic_t gStop = 0;
 
 void onStopSignal(int)
 {
     gStop = 1;
 }
 
-// key of the HTTPS session with the ESA (what main.cpp's RSU sends in Session_Hello)
 std::string sessionKey()
 {
     std::random_device random;
@@ -34,31 +29,6 @@ std::string sessionKey()
         std::snprintf(key + 2 * i, 3, "%02x", static_cast<unsigned>(random() & 0xff));
     }
     return key;
-}
-
-// IT queue -> cloud: one HTTPS POST of the marshaled SmartData
-void postToCloud(HttpsClient& cloud, const std::string& node, const ItPacket& packet, PacketManager& gateway)
-{
-    try {
-        bool newSession = false;
-        const HttpResponse response = cloud.send(packet.bytes, &newSession); // the request as the TA made it
-        if (newSession) {
-            trace::detail(node, "TLS transport to the cloud: " + cloud.session() + ", certificate verified");
-        }
-        const bool ok = response.status / 100 == 2;
-        if (ok) {
-            gateway.benchmark().posted(packet.otSize, Clock::now() - packet.received);
-        } else {
-            gateway.benchmark().postFailed(packet.otSize);
-        }
-        if (packet.traced || !ok) {
-            trace::check(node, ok, "cloud: " + std::to_string(response.status) + " " + response.reason + " "
-                + response.body);
-        }
-    } catch (const std::exception& e) {
-        gateway.benchmark().postFailed(packet.otSize);
-        trace::check(node, false, std::string("POST to the cloud: ") + e.what());
-    }
 }
 
 } // namespace
@@ -74,55 +44,55 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
     RawSocket backhaul(options.iface, kBackhaulEtherType);
     PacketManager gateway(tee, options.name);
 
+    // Optional simulation-time clock anchor (used in Artery HIL mode so RPi3 RSU hardware clocks align with simTime)
+    bool clockAnchored = false;
+    std::chrono::steady_clock::time_point wallRef{};
+    int64_t simRefNs = 0;
+    gateway.setClock([&]() -> uint64_t {
+        if (!clockAnchored) {
+            return static_cast<uint64_t>(SimTime::now().ns());
+        }
+        const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - wallRef).count();
+        const int64_t t = simRefNs + elapsedNs;
+        return static_cast<uint64_t>(t > 0 ? t : 0);
+    });
+
     // HTTPS session with the ESA first: Session_Hello with my certificate (CY_g); its Session_Ack carries CY_e,
     // which goes into the OP-TEE TA with the certificate
     const GatewayCertificate certificate = newGatewayCertificate(options.name);
+    gateway.setGatewayPublicKey(certificate.publicKey);
     const Bytes esaPublicKey = openHttpsSession(backhaul, options.name, sessionKey(), certificate.certificate,
-        options.iface, [] { return gStop != 0; });
+        options.iface, [] { return gStop != 0; }, std::chrono::seconds(options.sessionTimeoutSeconds));
     const int init = gateway.initGateway(certificate.certificate, esaPublicKey);
     if (init != GW_OK) {
         throw std::runtime_error(std::string("TA_GATEWAY_CMD_INIT_GATEWAY: ") + statusName(init));
     }
 
-    // the cloud (when there is one): its certificate goes into the TA (the HTTPS Session of the Secure
-    // Marshaling, K_eg), and the Client App's TLS transport verifies the cloud with it too
-    std::unique_ptr<HttpsClient> cloud;
-    std::string cloudSession;
-    if (!options.cloudCertificate.empty()) {
-        std::ifstream file(options.cloudCertificate);
-        const std::string pem((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        if (pem.empty()) {
-            throw std::runtime_error("cannot read the cloud's certificate " + options.cloudCertificate);
-        }
-        const int session = gateway.initCloudSession(pem, options.cloudAddress);
-        if (session != GW_OK) {
-            throw std::runtime_error(std::string("TA_GATEWAY_CMD_INIT_CLOUD_SESSION: ") + statusName(session));
-        }
-        cloud = std::make_unique<HttpsClient>(options.cloudAddress, options.cloudPort, options.cloudCertificate);
-        cloudSession = cloud->connect();
-    }
+    // Cloud X.509 PEM arrives dynamically from Artery BackhaulBroker over backhaul Data_Fragment
+    bool hilCloudReady = false;
 
-    // OT queue: packets from the vehicles; IT queue: packets to the ESA and to the cloud
+    // OT queue: packets from vehicles; IT queue: packets to ESA and Cloud
     PacketQueue<OtPacket> ot;
     PacketQueue<ItPacket> it;
     PacketManager::Transport transport;
     transport.radio = [&](const BootstrapMsg& msg) { sendMsg(radio, msg); };
     transport.https = [&](const BootstrapMsg& msg) { it.push({ ItPacket::To::Esa, "", serialize(msg), {}, 0, false }); };
-    if (cloud) {
-        transport.cloud = [&](ItPacket packet) { it.push(std::move(packet)); };
-    }
+    transport.cloud = [&](ItPacket packet) { it.push(std::move(packet)); };
+    transport.cloudRefused = [&]() {
+        if (hilCloudReady) {
+            sendFrame(backhaul, FrameKind::Cloud_Refused, toBytes(options.name + "\n"));
+        }
+    };
     gateway.setTransport(transport);
 
-    std::printf("[%s] OP-TEE gateway: HTTPS session with the ESA, radio on %s (EtherType 0x88b5)\n",
-        options.name.c_str(), options.iface.c_str());
-    if (cloud) {
-        std::printf("[%s] TLS transport to the cloud %s:%u: %s, certificate verified (%s)\n", options.name.c_str(),
-            options.cloudAddress.c_str(), options.cloudPort, cloudSession.c_str(), options.cloudCertificate.c_str());
-    }
+    std::printf("[%s] OP-TEE gateway: session #%llu (storage %s), HTTPS session with ESA, radio on %s (0x88b5)\n",
+        options.name.c_str(), static_cast<unsigned long long>(tee.sessionId()), tee.storageId().c_str(),
+        options.iface.c_str());
     std::fflush(stdout);
-    signalReady(options.readyFd, certificate.publicKey); // CY_g: what the operator (here, the vehicle) sends
 
     Reassembler reassembler;
+    Reassembler backhaulReassembler;
     auto step = [&] {
         drain(radio, [&](FrameKind kind, const Bytes& body) {
             if (kind == FrameKind::Bootstrap) {
@@ -134,13 +104,38 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
             }
         });
         drain(backhaul, [&](FrameKind kind, const Bytes& body) {
-            if (kind != FrameKind::Bootstrap) {
-                return;
-            }
             try {
-                const BootstrapMsg msg = deserialize(body);
-                if (msg.getDestination() == options.name) { // the session is ours alone; the link is shared
-                    gateway.onHttps(msg);
+                if (kind == FrameKind::Bootstrap) {
+                    const BootstrapMsg msg = deserialize(body);
+                    if (msg.getDestination() == options.name) { // the session is ours alone; the link is shared
+                        gateway.onHttps(msg);
+                    }
+                } else if (kind == FrameKind::Clock_Anchor) {
+                    if (const auto simNs = parseClockAnchor(body)) {
+                        wallRef = std::chrono::steady_clock::now();
+                        simRefNs = *simNs;
+                        clockAnchored = true;
+                    }
+                } else if (kind == FrameKind::Handover_Trigger) {
+                    if (const auto trig = parseHandoverTrigger(body); trig && trig->rsu == options.name) {
+                        gateway.startHandover(trig->session, trig->targetRsu);
+                    }
+                } else if (kind == FrameKind::Data_Fragment && !hilCloudReady) {
+                    if (auto packet = backhaulReassembler.add(body);
+                        packet && packet->from == "cloud" && packet->to == options.name) {
+                        const std::string pem(packet->bytes.begin(), packet->bytes.end());
+                        const int session = gateway.initCloudSession(pem, kCloudAddress);
+                        if (session == GW_OK) {
+                            hilCloudReady = true;
+                            sendFrame(backhaul, FrameKind::Cloud_Ready, toBytes(options.name + "\n"));
+                            std::printf("[%s] Cloud session pinned in OP-TEE TA (HIL backhaul bridge)\n",
+                                options.name.c_str());
+                            std::fflush(stdout);
+                        } else {
+                            std::fprintf(stderr, "[%s] TA_GATEWAY_CMD_INIT_CLOUD_SESSION: %s\n",
+                                options.name.c_str(), statusName(session));
+                        }
+                    }
                 }
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "[%s] frame dropped: %s\n", options.name.c_str(), e.what());
@@ -152,8 +147,9 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
         while (auto packet = it.pop()) {
             if (packet->to == ItPacket::To::Esa) {
                 sendFrame(backhaul, FrameKind::Bootstrap, packet->bytes);
-            } else {
-                postToCloud(*cloud, options.name, *packet, gateway);
+            } else if (hilCloudReady) {
+                sendData(backhaul, options.name, "cloud", packet->bytes);
+                gateway.benchmark().posted(packet->otSize, Clock::now() - packet->received);
             }
         }
     };

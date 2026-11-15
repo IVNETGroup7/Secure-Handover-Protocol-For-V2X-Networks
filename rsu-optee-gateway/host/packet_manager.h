@@ -28,10 +28,13 @@ class PacketManager
             std::function<void(const BootstrapMsg&)> https;     // to the ESA or another RSU (destination): the
                                                                 // pre-established HTTPS sessions of the backhaul
             std::function<void(ItPacket)> cloud;                // marshaled SmartData, to the cloud (IT queue)
+            std::function<void()> cloudRefused;                 // optional notification when TA refuses SmartData
         };
 
         PacketManager(TeeSession& tee, std::string name) : mTee(tee), mName(std::move(name)) {}
         void setTransport(Transport transport) { mTransport = std::move(transport); }
+        void setGatewayPublicKey(const Bytes& key) { mGatewayPublicKey = key; }
+        void setClock(std::function<uint64_t()> clock) { mClock = std::move(clock); }
         const std::string& name() const { return mName; }
 
         // a packet of the OT queue: bootstrap message or SmartData, by its kind
@@ -70,10 +73,13 @@ class PacketManager
         enum class Via { Radio, Https };
         void send(int type, const std::string& destination, int seqNum, int ackNum, const std::string& vehicle,
             const Bytes& payload, Via via);
+        uint64_t now() const;
 
         TeeSession& mTee;
         std::string mName;
         Transport mTransport;
+        Bytes mGatewayPublicKey;
+        std::function<uint64_t()> mClock;
         int mIgnored = 0;
         Benchmark mBenchmark;
         std::set<size_t> mTracedSizes;      // SmartData: the first packet of each size is traced, the others counted

@@ -67,7 +67,6 @@ struct AuthRequestPayload
 };
 
 Bytes pack(const AuthRequestPayload&);
-AuthRequestPayload unpackAuthRequest(const Bytes&);
 std::vector<std::string> describe(const AuthRequestPayload&);
 
 // M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }     (the paper's (10): Auth_Granted(Auth_eg, OTP_dt, K_G, CY_e))
@@ -80,7 +79,6 @@ struct AuthGrantedPayload
     Bytes authEg;               // Auth_eg = AES(Id_d, CY_e), from the Activation_Token: the vehicle checks CY_e with it
 };
 
-Bytes pack(const AuthGrantedPayload&);
 AuthGrantedPayload unpackAuthGranted(const Bytes&);
 std::vector<std::string> describe(const AuthGrantedPayload&);
 
@@ -150,7 +148,6 @@ struct ForwardingRequestPayload
 };
 
 Bytes pack(const ForwardingRequestPayload&);
-ForwardingRequestPayload unpackForwardingRequest(const Bytes&);
 std::vector<std::string> describe(const ForwardingRequestPayload&);
 
 // M = { Forwarding_Granted, Y_G_{i+3}, auth'_{i+2}, K_G_{i+2}, OTP }
@@ -164,7 +161,6 @@ struct ForwardingGrantedPayload
     Block otp;                  // OTP: the one of the Forwarding_Request, echoed (freshness)
 };
 
-Bytes pack(const ForwardingGrantedPayload&);
 ForwardingGrantedPayload unpackForwardingGranted(const Bytes&);
 std::vector<std::string> describe(const ForwardingGrantedPayload&);
 
@@ -178,7 +174,5 @@ struct SecureDataPayload
 };
 
 Bytes pack(const SecureDataPayload&);
-SecureDataPayload unpackSecureData(const Bytes&);
-std::vector<std::string> describe(const SecureDataPayload&);
 
 #endif /* BOOTSTRAP_BOOTSTRAPPAYLOAD_H_ */

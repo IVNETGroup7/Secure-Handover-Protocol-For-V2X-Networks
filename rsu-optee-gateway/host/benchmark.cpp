@@ -27,11 +27,6 @@ void Benchmark::posted(size_t size, Duration radioToCloud)
     mRows[size].radioToCloud.add(radioToCloud);
 }
 
-void Benchmark::postFailed(size_t size)
-{
-    ++mRows[size].postFailures;
-}
-
 void Benchmark::print(std::FILE* out, const std::string& node) const
 {
     auto cell = [](const Stat& stat) {
@@ -50,9 +45,6 @@ void Benchmark::print(std::FILE* out, const std::string& node) const
         std::string statuses;
         for (const auto& [status, n] : row.statuses) {
             statuses += (statuses.empty() ? "" : ", ") + std::string(statusName(status)) + " x" + std::to_string(n);
-        }
-        if (row.postFailures > 0) {
-            statuses += ", POST failed x" + std::to_string(row.postFailures);
         }
         std::fprintf(out, "  %8zu %7zu  %-24s %-24s %-24s %s\n", size, row.taCall.n, cell(row.taCall).c_str(),
             cell(row.otToIt).c_str(), cell(row.radioToCloud).c_str(), statuses.c_str());

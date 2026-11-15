@@ -1,64 +1,53 @@
-# Secure bootstrap (vehicle, RSU, ESA) without Artery/OMNeT++: C++17 + OpenSSL 3
-#   make          builds and runs the 3 processes (ESA, RSU, vehicle) over raw sockets
-#   make pretty   the same, with the output of each component separated by a bar
-#   make build    only builds ./bootstrap
-#   make clean
+# Secure-Handover-Protocol-For-V2X-Networks
 #
-# Raw sockets need CAP_NET_RAW. Without sudo, the processes run in a Docker container (no VM: same kernel),
-# where they have it: an empty image (FROM scratch) with the static ./bootstrap, and --network none
-# (the container's own loopback only).
-#
-#   common/    message, payloads, crypto, vehicle traits, time
-#   protocol/  bootstrap protocol (BootstrapService, ExternalSecurityAgent) and its API (Bootstrap.h)
-#   net/       raw Ethernet sockets (AF_PACKET)
-#   main.cpp   one process per node
+# Primary focus:
+#   1. In-memory OP-TEE gateway self-test (bootstrap + tampering + Secure Marshaling + Secrecy Forwarding)
+#   2. Dual-RSU Raspberry Pi 3 Hardware-in-the-Loop (both rsu[0] and rsu[1] on RPi3 TrustZone; Artery on PC)
+#   3. Virtualized OP-TEE VM workflow (self-test and virbr0 Dual-RSU HIL mirroring the RPi3 setup)
+#   4. Pure Artery IEEE 802.11p highway handover simulation (D250m_80211p)
 
-CXX      ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -g
-CPPFLAGS += -Icommon -Iprotocol -Inet -MMD -MP
-STATIC_LIBSSL := $(shell $(CXX) -print-file-name=libssl.a 2>/dev/null)
-ifneq ($(STATIC_LIBSSL),libssl.a)
-LDFLAGS  += -static -Wl,--no-warnings   # static: runs in an empty image (no-warnings: libcrypto's dlopen notes)
-endif
-LDLIBS   += -lssl -lcrypto   # libssl: the HTTPS of the cloud (net/Https.h)
+ARTERY_BUILD := artery-sim/deps/artery/build
 
-BUILD := build
-LIB   := $(BUILD)/libbootstrap.a
-BIN   := bootstrap
-IMAGE := secure-bootstrap
+.PHONY: all build run test vm vm-hil rpi3 sim hil-dual clean help
 
-LIB_SRCS := $(wildcard common/*.cpp protocol/*.cpp net/*.cpp)
-LIB_OBJS := $(LIB_SRCS:%.cpp=$(BUILD)/%.o)
-MAIN_OBJ := $(BUILD)/main.o
+all: build
 
-.PHONY: run pretty build clean
-run: $(BUILD)/image
-	docker run --rm --network none $(IMAGE)
+build:
+	$(MAKE) -C rsu-optee-gateway all
 
-pretty: $(BUILD)/image
-	docker run --rm --network none $(IMAGE) --pretty
+run test:
+	$(MAKE) -C rsu-optee-gateway run
 
-build: $(BIN)
+vm:
+	$(MAKE) -C rsu-optee-gateway vm
 
-$(LIB): $(LIB_OBJS)
-	$(AR) rcs $@ $^
+vm-hil:
+	$(MAKE) -C rsu-optee-gateway vm VM_ARGS=hil-dual
 
-$(BIN): $(MAIN_OBJ) $(LIB)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+rpi3:
+	$(MAKE) -C rsu-optee-gateway rpi3 PI_IP=$(PI_IP)
 
-$(BUILD)/%.o: %.cpp
-	@mkdir -p $(dir $@)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+sim:
+	cmake --build $(ARTERY_BUILD) --target tee_v2x -j$$(nproc)
+	cmake -DRUN_FLAGS="-u Cmdenv -c D250m_80211p" $(ARTERY_BUILD)
+	cmake --build $(ARTERY_BUILD) --target run_tee_v2x_handover
 
-# image rebuilt only when ./bootstrap changes (stamp file)
-$(BUILD)/image: $(BIN)
-	@mkdir -p $(BUILD)/docker
-	cp $(BIN) $(BUILD)/docker/bootstrap
-	printf 'FROM scratch\nCOPY bootstrap /bootstrap\nENTRYPOINT ["/bootstrap"]\n' | docker build -q -t $(IMAGE) -f - $(BUILD)/docker
-	@touch $@
+hil-dual:
+	@test -n "$(HIL_IFACE)" || { echo "error: pass HIL_IFACE=<host_nic> (e.g. make hil-dual HIL_IFACE=enp3s0)" >&2; exit 2; }
+	./artery-sim/run-hil-dual.sh --rebuild --iface "$(HIL_IFACE)" $(if $(GUI),--gui)
 
 clean:
-	rm -rf $(BUILD) $(BIN)
-	-docker image rm -f $(IMAGE) >/dev/null 2>&1
+	$(MAKE) -C rsu-optee-gateway clean
+	rm -rf build artery-sim/scenario/results artery-sim/scenario/*.sealed \
+		artery-sim/scenario/.cmdenv-log .cmdenv-log
 
--include $(LIB_OBJS:.o=.d) $(MAIN_OBJ:.o=.d)
+help:
+	@echo "Targets:"
+	@echo "  make build                      Build rsu-optee-gateway ./app (HOST_SIM self-test + HIL daemon)"
+	@echo "  make run                        Run the 7-scenario OP-TEE gateway self-test"
+	@echo "  make vm                         Sync repo & run self-test in optee-arm64-vm"
+	@echo "  make vm-hil                     Run dual-RSU (rsu[0]+rsu[1]) in optee-arm64-vm (pair with HIL_IFACE=virbr0)"
+	@echo "  make rpi3 [PI_IP=<ip>]          Cross-compile & deploy .ta + ./app for Raspberry Pi 3"
+	@echo "  make sim                        Build tee_v2x and run Artery simulation (D250m_80211p)"
+	@echo "  make hil-dual HIL_IFACE=<nic>   Rebuild tee_v2x and run Artery HIL_RPi3_DualRsu (add GUI=1 for sumo-gui)"
+	@echo "  make clean                      Clean build artifacts, sealed state files, and simulation results"

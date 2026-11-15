@@ -1,9 +1,9 @@
 #!/bin/bash
-# Sets up OMNeT++, Artery (INET, Veins, Vanetza), Simu5G (5G New Radio), SUMO, and the
-# tee_v2x_handover scenario on the host PC (RSUs run via rsu-optee-gateway).
+# Sets up OMNeT++, Artery (INET, Veins, Vanetza), SUMO, and the tee_v2x_handover
+# scenario on the host PC (RSUs run via rsu-optee-gateway or on the Raspberry Pi 3).
 #
 # Usage:
-#   ./setup_artery.sh [--with-qtenv] [--skip-packages] [--artery-dir <dir>] [--simu5g-dir <dir>] [--jobs <n>]
+#   ./setup_artery.sh [--with-qtenv] [--skip-packages] [--artery-dir <dir>] [--jobs <n>]
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -21,20 +21,17 @@ fi
 
 OMNETPP_VERSION=${OMNETPP_VERSION:-5.7.1}
 ARTERY_REF=${ARTERY_REF:-master}
-SIMU5G_REF=${SIMU5G_REF:-v1.2.2}
 ARTERY_BUILD_TYPE=${ARTERY_BUILD_TYPE:-Release}
 JOBS=$(nproc)
 WITH_QTENV=no
 SKIP_PACKAGES=no
 ARTERY_DIR=""
-SIMU5G_DIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --with-qtenv) WITH_QTENV=yes ;;
         --skip-packages) SKIP_PACKAGES=yes ;;
         --artery-dir) ARTERY_DIR=$(cd "$2" && pwd); shift ;;
-        --simu5g-dir) SIMU5G_DIR=$(cd "$2" && pwd); shift ;;
         --jobs) JOBS=$2; shift ;;
         -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
         *) echo "error: unknown option '$1' (--help)" >&2; exit 1 ;;
@@ -280,26 +277,10 @@ install_artery() {
     git -C "$ARTERY_DIR" submodule update --init --recursive
 }
 
-# Simu5G (5G New Radio model for OMNeT++/INET)
-
-install_simu5g() {
-    step "4. Simu5G (5G New Radio model)"
-    if [ -n "$SIMU5G_DIR" ]; then
-        echo "given: $SIMU5G_DIR"
-        return
-    fi
-    SIMU5G_DIR="$DEPS/simu5g"
-    if [ ! -d "$SIMU5G_DIR/.git" ]; then
-        git clone https://github.com/Unipisa/Simu5G.git "$SIMU5G_DIR"
-        git -C "$SIMU5G_DIR" checkout "$SIMU5G_REF" || true
-    fi
-    ln -sfn "$SIMU5G_DIR" "$DEPS/simu5g"
-}
-
 # the scenario
 
 register_scenario() {
-    step "5. tee_v2x_handover in Artery's build"
+    step "4. tee_v2x_handover in Artery's build"
     local list="$ARTERY_DIR/scenarios/CMakeLists.txt"
     if ! grep -q "tee_v2x_handover" "$list"; then
         printf '\n# Secure-Handover-Protocol-For-V2X-Networks (artery-sim/setup_artery.sh)\nadd_subdirectory(%s ${CMAKE_BINARY_DIR}/scenarios/tee_v2x_handover)  # tee_v2x_handover\n' \
@@ -317,15 +298,12 @@ register_scenario() {
 }
 
 build_artery() {
-    step "6. build (Artery, the OP-TEE gateway protocol, the tee_v2x feature)"
+    step "5. build (Artery, the OP-TEE gateway protocol, the tee_v2x feature)"
     if [ -n "$OMNETPP_ROOT" ] && [ -f "$OMNETPP_ROOT/setenv" ]; then
         omnetpp_environment
     fi
     local build="$ARTERY_DIR/build"
     local cmake_args=("-DCMAKE_BUILD_TYPE=$ARTERY_BUILD_TYPE")
-    if [ -d "$SIMU5G_DIR/src" ]; then
-        cmake_args+=("-DSIMU5G_NED_DIR=$SIMU5G_DIR/src")
-    fi
     if [ -f "$build/CMakeCache.txt" ]; then
         cmake "$build"     # picks up the new subdirectory
     else
@@ -337,7 +315,6 @@ build_artery() {
 install_packages
 install_omnetpp
 install_artery
-install_simu5g
 register_scenario
 build_artery
 
@@ -345,22 +322,19 @@ step "done"
 build="$ARTERY_DIR/build"
 cat <<EOF
 Artery:   $ARTERY_DIR (build: $build)
-Simu5G:   $SIMU5G_DIR
-Scenario: $HERE/scenario (omnetpp.ini: D250m_80211p [ITS-G5 802.11p] and D500m_5G [Simu5G 5G NR]; results in scenario/results/)
+Scenario: $HERE/scenario (omnetpp.ini: HIL_RPi3_DualRsu, D250m_80211p [ITS-G5 802.11p]; results in scenario/results/)
 
-Run it through CMake (RUN_FLAGS picks the user interface and the configuration):
-  # Hardware-in-the-Loop with physical Raspberry Pi 3 (with SUMO GUI):
-  cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_TargetHandover_GUI --scheduler-class=omnetpp::cRealTimeScheduler" $build
-  cmake --build $build --target run_tee_v2x_handover
+Run it:
+  # Hardware-in-the-Loop with BOTH RSUs on one physical Raspberry Pi 3:
+  #   Terminal 1: ../rsu-dual-ssh.sh --pi-ip <PI_IP>
+  #   Terminal 2: ./run-hil-dual.sh --iface <HOST_NIC> [--gui]
+  HIL_IFACE=<HOST_NIC> cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_DualRsu_GUI --scheduler-class=omnetpp::cRealTimeScheduler" $build
+  HIL_IFACE=<HOST_NIC> cmake --build $build --target run_tee_v2x_handover
 
-  # Pure simulation (headless):
+  # Pure simulation (headless, both RSUs use in-process HOST_SIM TA sessions):
   cmake -DRUN_FLAGS="-u Cmdenv -c D250m_80211p" $build
-  cmake --build $build --target run_tee_v2x_handover
-
-  # Or run with Simu5G (5G New Radio, 3.5 GHz, 20 MHz, numerology 1, gNodeB X2 handover):
-  cmake -DRUN_FLAGS="-u Cmdenv -c D500m_5G" $build
   cmake --build $build --target run_tee_v2x_handover
 EOF
 if [ -x "$build/run_artery.sh" ]; then
-    printf 'or directly, from the scenario folder:\n  cd %s/scenario && %s/run_artery.sh -u Cmdenv -c D500m_5G\n' "$HERE" "$build"
+    printf 'or directly, from the scenario folder:\n  cd %s/scenario && %s/run_artery.sh -u Cmdenv -c D250m_80211p\n' "$HERE" "$build"
 fi

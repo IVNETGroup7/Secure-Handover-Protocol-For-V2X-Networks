@@ -68,7 +68,6 @@ Testing/
 .cache/
 
 # build output
-bootstrap
 rsu-optee-gateway/app
 *.ta
 *.elf
@@ -77,7 +76,6 @@ rsu-optee-gateway/app
 *.sealed
 *.sealed.*
 .caps_*
-cloud.crt
 .*.cmd
 ta.lds
 dyn_list

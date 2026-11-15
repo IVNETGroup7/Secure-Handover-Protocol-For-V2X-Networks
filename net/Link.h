@@ -12,7 +12,16 @@
 #include <string>
 #include <utility>
 
-enum class FrameKind : uint8_t { Bootstrap = 0, Session_Hello = 1, Session_Ack = 2, Data_Fragment = 3 };
+enum class FrameKind : uint8_t {
+    Bootstrap = 0,
+    Session_Hello = 1,
+    Session_Ack = 2,
+    Data_Fragment = 3,
+    Handover_Trigger = 4,
+    Clock_Anchor = 5,
+    Cloud_Ready = 6,
+    Cloud_Refused = 7
+};
 
 constexpr auto kSessionTimeout = std::chrono::seconds(5);         // RSU: waiting for the ESA's Session_Ack
 constexpr auto kSessionRetry = std::chrono::milliseconds(100);    // RSU: Session_Hello period
@@ -21,6 +30,18 @@ constexpr int kPollPeriodMs = 100;                                // loops check
 void sendFrame(RawSocket& link, FrameKind kind, const Bytes& body);
 void sendMsg(RawSocket& link, const BootstrapMsg& msg);
 Bytes toBytes(const std::string& text);
+
+struct HandoverTrigger
+{
+    std::string rsu;
+    std::string session;
+    std::string targetRsu;
+};
+Bytes packHandoverTrigger(const std::string& rsu, const std::string& session, const std::string& targetRsu);
+std::optional<HandoverTrigger> parseHandoverTrigger(const Bytes& body);
+Bytes packClockAnchor(int64_t simTimeNs);
+std::optional<int64_t> parseClockAnchor(const Bytes& body);
+std::optional<std::string> parseRsuTag(const Bytes& body);
 
 // hands every frame waiting on "link" to onFrame(kind, body)
 template<typename OnFrame>
@@ -46,9 +67,10 @@ struct GatewayCertificate
 GatewayCertificate newGatewayCertificate(const std::string& rsu);
 
 // RSU side of the HTTPS session with the ESA: Session_Hello (with "certificate") until its Session_Ack;
-// returns CY_e. Throws std::runtime_error after kSessionTimeout, or as soon as stop() is true
+// returns CY_e. Throws std::runtime_error after timeout, or as soon as stop() is true
 Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::string& sessionKey,
-    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop);
+    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop,
+    std::chrono::seconds timeout = kSessionTimeout);
 
 // ESA side: a Session_Hello; nullopt when it is not one (or its certificate does not verify)
 struct SessionHello
@@ -91,9 +113,5 @@ class Reassembler
         std::map<std::pair<std::string, uint32_t>, Partial> mPartials;   // (from, id)
         size_t mDropped = 0;
 };
-
-// fork mode: tells the parent this node is ready (fd < 0: nobody waits), with "info" for it (e.g. the RSU's
-// CY_g, which the operator, played by the vehicle, needs)
-void signalReady(int fd, const Bytes& info = {});
 
 #endif /* BOOTSTRAP_LINK_H_ */

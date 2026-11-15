@@ -4,7 +4,6 @@
 #include "BootstrapPayload.h"
 #include "BootstrapService.h"
 #include "ExternalSecurityAgent.h"
-#include "Https.h"
 #include "Link.h"
 #include "SimTime.h"
 #include "SmartData.h"
@@ -54,15 +53,12 @@ Outcome bootstrap(const std::string& vehicleName, unsigned seed, PacketManager& 
 
     BootstrapService::Config config;
     config.name = vehicleName;
-    config.role = BootstrapService::Role::Vehicle;
     config.seed = seed;
     config.gatewayPublicKey = gatewayPublicKey;
     config.clockOffset = clockOffset;
     BootstrapService vehicle(config);
 
-    BootstrapService::Transport vehicleLinks;
-    vehicleLinks.radio = [&](const BootstrapMsg& msg) { air.push_back({ Link::Radio, serialize(msg) }); };
-    vehicle.setTransport(vehicleLinks);
+    vehicle.setTransport([&](const BootstrapMsg& msg) { air.push_back({ Link::Radio, serialize(msg) }); });
 
     PacketManager::Transport gatewayLinks;
     gatewayLinks.radio = [&](const BootstrapMsg& msg) { air.push_back({ Link::Radio, serialize(msg) }); };
@@ -230,7 +226,7 @@ bool secureMarshaling(PacketManager& gateway, const CloudIdentity& cloud, const 
 
 // 4h-4m: node[0] from rsu[0] to rsu[1] (Secrecy Forwarding), SmartData to each; "kG1": rsu[1]'s K_g
 bool secrecyForwarding(PacketManager& rsu0, PacketManager& rsu1, const Bytes& kG1, ExternalSecurityAgent& esa,
-    const Bytes& cyG, const CloudIdentity& cloud)
+    const Bytes& cyG, const Bytes& cyG1, const CloudIdentity& cloud)
 {
     std::deque<Frame> air;
     std::vector<std::pair<std::string, Bytes>> toCloud;     // IT packets, with the RSU that made them
@@ -240,15 +236,14 @@ bool secrecyForwarding(PacketManager& rsu0, PacketManager& rsu1, const Bytes& kG
     // node[0] again (the same seed as in 1: the same UUID and Auth_d), a new bootstrap
     BootstrapService::Config config;
     config.name = "node[0]";
-    config.role = BootstrapService::Role::Vehicle;
     config.seed = 1;
     config.gatewayPublicKey = cyG;
     BootstrapService vehicle(config);
-    BootstrapService::Transport vehicleLinks;
-    vehicleLinks.radio = [&](const BootstrapMsg& msg) { air.push_back({ Link::Radio, serialize(msg) }); };
-    vehicle.setTransport(vehicleLinks);
+    vehicle.setTransport([&](const BootstrapMsg& msg) { air.push_back({ Link::Radio, serialize(msg) }); });
 
-    // both RSUs hear the whole radio (logical unicast); their HTTPS sessions reach the ESA and each other
+    // both RSUs hear the whole radio (logical unicast) and filter broadcast Activation_Requests by CY_g
+    rsu0.setGatewayPublicKey(cyG);
+    rsu1.setGatewayPublicKey(cyG1);
     for (const auto& [name, rsu] : rsus) {
         PacketManager::Transport links;
         links.radio = [&](const BootstrapMsg& msg) { air.push_back({ Link::Radio, serialize(msg) }); };
@@ -341,9 +336,84 @@ bool secrecyForwarding(PacketManager& rsu0, PacketManager& rsu1, const Bytes& kG
     }
 
     // the transports point at this function's locals
+    rsu0.setGatewayPublicKey({});
+    rsu1.setGatewayPublicKey({});
     rsu0.setTransport({});
     rsu1.setTransport({});
     esa.setTransport(nullptr);
+    return ok;
+}
+
+bool hilSharedBusCheck(PacketManager& rsu0, const Bytes& cyG0, PacketManager& rsu1, const Bytes& cyG1)
+{
+    bool ok = true;
+
+    // 1. HIL control wire helpers (Handover_Trigger, Clock_Anchor, Cloud_Ready/Refused tags)
+    const auto trig = parseHandoverTrigger(packHandoverTrigger("rsu[0]", "node[0]", "rsu[1]"));
+    ok &= trig && trig->rsu == "rsu[0]" && trig->session == "node[0]" && trig->targetRsu == "rsu[1]";
+
+    const auto anchor = parseClockAnchor(packClockAnchor(1234567890LL));
+    ok &= anchor && *anchor == 1234567890LL;
+
+    const auto tag = parseRsuTag(toBytes("rsu[1]\n"));
+    ok &= tag && *tag == "rsu[1]";
+
+    // 2. Shared-medium CY_g filter: broadcast Activation_Request naming cyG0 must be dropped by rsu[1]
+    rsu0.setGatewayPublicKey(cyG0);
+    rsu1.setGatewayPublicKey(cyG1);
+    int esaCount0 = 0;
+    int esaCount1 = 0;
+    PacketManager::Transport t0;
+    t0.https = [&](const BootstrapMsg&) { ++esaCount0; };
+    PacketManager::Transport t1;
+    t1.https = [&](const BootstrapMsg&) { ++esaCount1; };
+    rsu0.setTransport(t0);
+    rsu1.setTransport(t1);
+
+    std::mt19937 rng(42);
+    const VehicleTraits traits = manufactureVehicle(rng);
+    ActivationRequestPayload req;
+    req.type = Activation_Request;
+    req.gatewayPublicKey = cyG0;
+    req.t0 = SimTime::now();
+    req.tf = req.t0 + kActivationWindow;
+    req.uuid = traits.uuid;
+    req.firmwareHash = traits.firmwareHash;
+
+    BootstrapMsg airReq;
+    airReq.setType(Activation_Request);
+    airReq.setSender("node[0]");
+    airReq.setDestination("esa");
+    airReq.setVehicle("node[0]");
+    setPayload(airReq, pack(req));
+
+    rsu0.onRadio(airReq);
+    rsu1.onRadio(airReq);
+    ok &= (esaCount0 == 1 && esaCount1 == 0);
+
+    // 3. Anchored clock hook on PacketManager
+    bool clockCalled = false;
+    int radioReplies = 0;
+    PacketManager::Transport tClock;
+    tClock.radio = [&](const BootstrapMsg&) { ++radioReplies; };
+    rsu0.setTransport(tClock);
+    rsu0.setClock([&]() -> uint64_t {
+        clockCalled = true;
+        return static_cast<uint64_t>(SimTime::now().ns());
+    });
+    BootstrapMsg ptp;
+    ptp.setType(PTP_Delay_Request);
+    ptp.setSender("node[0]");
+    ptp.setDestination("rsu[0]");
+    setPayload(ptp, pack(PtpPayload{ PTP_Delay_Request, {} }));
+    rsu0.onRadio(ptp);
+    ok &= clockCalled && radioReplies == 1;
+
+    rsu0.setClock(nullptr);
+    rsu0.setGatewayPublicKey({});
+    rsu1.setGatewayPublicKey({});
+    rsu0.setTransport({});
+    rsu1.setTransport({});
     return ok;
 }
 
@@ -360,14 +430,14 @@ int runSelfTest(TeeSession& tee, const std::string& storageId)
     bool ok = true;
     bool marshaling = false;
     bool forwarding = false;
+    bool hilShared = false;
     Outcome normal, tampered, late, stranger, early;
     try {
         ExternalSecurityAgent esa("esa");
         PacketManager gateway(tee, "rsu[0]");
         const CloudIdentity cloud = newCloudIdentity(kCloudAddress); // this test plays the cloud of 4
 
-        // the HTTPS session with the ESA (main.cpp of the repository root): my certificate (CY_g) goes to the ESA,
-        // CY_e comes in its Session_Ack
+        // the HTTPS session with the ESA: gateway CY_g goes to the ESA, CY_e comes in its Session_Ack
         const GatewayCertificate certificate = newGatewayCertificate(gateway.name());
         esa.registerRsu(gateway.name(), "gateway-session", certificate.publicKey);
         const Bytes& cyG = certificate.publicKey; // what the operator (here, the vehicle) names in Activation_Request
@@ -409,19 +479,23 @@ int runSelfTest(TeeSession& tee, const std::string& storageId)
         std::printf("OP-TEE TA session opened for rsu[1] (session %llu, storage %s)\n",
             static_cast<unsigned long long>(tee1.sessionId()), storage1.c_str());
         PacketManager target(tee1, "rsu[1]");
+        const GatewayCertificate cert1 = newGatewayCertificate(target.name());
         const Bytes kG1 = randomBytes(kGroupKeySize);
-        const int init1 = target.initGateway(newGatewayCertificate(target.name()).certificate, esa.publicKey(), kG1);
+        const int init1 = target.initGateway(cert1.certificate, esa.publicKey(), kG1);
         const int session1 = target.initCloudSession(cloud.pem(), kCloudAddress);
         if (init1 != GW_OK || session1 != GW_OK) {
             throw std::runtime_error(std::string("rsu[1]: ") + statusName(init1) + ", " + statusName(session1));
         }
-        forwarding = secrecyForwarding(gateway, target, kG1, esa, cyG, cloud);
+        forwarding = secrecyForwarding(gateway, target, kG1, esa, cyG, cert1.publicKey, cloud);
 
         title("5. CY_g of no gateway (node[3])");
         stranger = bootstrap("node[3]", 13, gateway, esa, newGatewayCertificate("rogue").publicKey);
 
         title("6. before t_0: the window opens 10 s later (node[4])");
         early = bootstrap("node[4]", 17, gateway, esa, cyG, nullptr, 10.0);
+
+        title("7. HIL dual-RSU shared-link helpers");
+        hilShared = hilSharedBusCheck(gateway, cyG, target, cert1.publicKey);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         ok = false;
@@ -438,6 +512,9 @@ int runSelfTest(TeeSession& tee, const std::string& storageId)
     ok &= marshaling && forwarding;
     ok &= report("5. CY_g of no gateway", !stranger.vehicleReady && !stranger.protocolEnded, stranger);
     ok &= report("6. before t_0", !early.vehicleReady && !early.protocolEnded, early);
+    std::printf("  %-34s wire helpers / CY_g filter / clock anchor   %s\n",
+        "7. HIL shared-bus helpers", hilShared ? "ok" : "FAILED");
+    ok &= hilShared;
 
     std::printf("%s\n", ok ? "gateway OK" : "gateway FAILED");
     return ok ? 0 : 1;

@@ -94,14 +94,11 @@ struct SecureData
 Bytes pack(const Ecdh&);
 Bytes pack(const AuthGranted&);
 Bytes pack(const Active&);
-Bytes pack(const ForwardingRequest&);
 Bytes pack(const ForwardingGranted&);
-Bytes pack(const SecureData&);
 Ecdh unpackEcdh(const Bytes&);
 AuthRequest unpackAuthRequest(const Bytes&);
 Active unpackActive(const Bytes&);
 ForwardingRequest unpackForwardingRequest(const Bytes&);
-ForwardingGranted unpackForwardingGranted(const Bytes&);
 SecureData unpackSecureData(const Bytes&);
 
 } // namespace wire

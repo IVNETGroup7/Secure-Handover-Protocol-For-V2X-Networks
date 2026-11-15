@@ -1,5 +1,10 @@
 #include "SmartData.h"
 #include "Traits.h"
+#ifndef __OPTEE_TA__
+#include <openssl/bio.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -154,6 +159,27 @@ DataMessage sealSmartData(const SmartData& data, const Bytes& kG, const Bytes& k
 #endif
 
 #ifndef __OPTEE_TA__
+std::string CloudIdentity::pem() const
+{
+    const unsigned char* in = certificateDer.data();
+    std::unique_ptr<X509, decltype(&X509_free)> cert(
+        d2i_X509(nullptr, &in, static_cast<long>(certificateDer.size())), X509_free);
+    check(cert != nullptr, "d2i_X509");
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
+    check(bio && PEM_write_bio_X509(bio.get(), cert.get()) == 1, "PEM_write_bio_X509");
+    char* data = nullptr;
+    const long size = BIO_get_mem_data(bio.get(), &data);
+    return std::string(data, static_cast<size_t>(size));
+}
+
+CloudIdentity newCloudIdentity(const std::string& commonName)
+{
+    CloudIdentity identity;
+    identity.key = newP256Key();
+    identity.certificateDer = selfSignedCertificate(identity.key.get(), commonName);
+    return identity;
+}
+
 Bytes computeKEg(EVP_PKEY* privateKey, EVP_PKEY* peerPublicKey)
 {
     const Sha256 key = sha256(ecdh(privateKey, peerPublicKey));

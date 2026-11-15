@@ -11,6 +11,7 @@
 #include <vanetza/dcc/profile.hpp>
 #include <vanetza/geonet/interface.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -48,14 +49,19 @@ Bytes hexKey(const std::string& hex)
 
 TeeRsuService::~TeeRsuService()
 {
+    shutdownHil();
+    mGateway.reset();
+    mTee.reset();
+}
+
+void TeeRsuService::shutdownHil()
+{
     if (mHilPollMsg) {
         cancelAndDelete(mHilPollMsg);
         mHilPollMsg = nullptr;
     }
     mHilRadio.reset();
     mHilBackhaul.reset();
-    mGateway.reset();
-    mTee.reset();
 }
 
 void TeeRsuService::initialize()
@@ -64,10 +70,15 @@ void TeeRsuService::initialize()
     mName = getParentModule()->getParentModule()->getFullName(); // <rsu>.middleware.TeeRsuService
     mNextRsu = par("nextRsu").stdstringValue();
     mHandoverDelay = par("handoverDelay");
-    mUseSimu5g = par("useSimu5g").boolValue();
-    mPositionX = (mName.find("1") != std::string::npos) ? 750.0 : 250.0;
     mMarshalLatencySignal = registerSignal("marshalLatencyUs");
     mHandoverGrantedSignal = registerSignal("handoverGranted");
+
+    mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
+        par("backhaulModule").stringValue()));
+    if (!mBroker) {
+        throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
+            par("backhaulModule").stringValue());
+    }
 
     mEnableHil = par("enableHil").boolValue();
     mHilIface = par("hilIface").stdstringValue();
@@ -76,26 +87,74 @@ void TeeRsuService::initialize()
             mHilIface = envIface;
         }
     }
+
     if (mEnableHil) {
-        if (mHilIface.empty()) {
-            throw omnetpp::cRuntimeError(
-                "%s: HIL enabled but no host interface specified; set HIL_IFACE=<iface> or pass "
-                "--*.rsu[*].middleware.TeeRsuService.hilIface=\\\"<iface>\\\"",
-                mName.c_str());
-        }
-        EV_INFO << mName << ": Hardware-in-the-Loop (HIL) enabled on interface " << mHilIface << "\n";
-        try {
-            mHilRadio = std::make_unique<RawSocket>(mHilIface, kRadioEtherType);
-            mHilBackhaul = std::make_unique<RawSocket>(mHilIface, kBackhaulEtherType);
-            mHilPollMsg = new omnetpp::cMessage("hilPoll");
-            scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(1, omnetpp::SIMTIME_MS), mHilPollMsg);
-        } catch (const std::exception& e) {
-            throw omnetpp::cRuntimeError("%s: failed to initialize HIL on %s: %s",
-                mName.c_str(), mHilIface.c_str(), e.what());
-        }
+        initHil();
+    } else {
+        initLocalTee();
+    }
+}
+
+void TeeRsuService::initHil()
+{
+    if (mHilIface.empty()) {
+        throw omnetpp::cRuntimeError(
+            "%s: HIL enabled but no host interface specified; set HIL_IFACE=<iface> or pass "
+            "--*.rsu[*].middleware.TeeRsuService.hilIface=\\\"<iface>\\\"",
+            mName.c_str());
+    }
+    EV_INFO << mName << ": Hardware-in-the-Loop (HIL) enabled on interface " << mHilIface
+            << " (zero local RSU TEE state on host PC)\n";
+    try {
+        mHilRadio = std::make_unique<RawSocket>(mHilIface, kRadioEtherType);
+        mHilBackhaul = std::make_unique<RawSocket>(mHilIface, kBackhaulEtherType);
+    } catch (const std::exception& e) {
+        throw omnetpp::cRuntimeError("%s: failed to initialize HIL on %s: %s",
+            mName.c_str(), mHilIface.c_str(), e.what());
     }
 
-    // Option A: this RSU's own OP-TEE TA session, with its own Secure Storage object (fresh unless freshState = false)
+    const int timeoutMs = static_cast<int>(par("hilHandshakeTimeout").doubleValue() * 1000.0);
+    std::printf("[HIL] %s waiting up to %.1fs for physical RSU Session_Hello on %s (0x88b6)...\n",
+        mName.c_str(), timeoutMs / 1000.0, mHilIface.c_str());
+    std::fflush(stdout);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    bool registered = false;
+    while (!registered && std::chrono::steady_clock::now() < deadline) {
+        waitFor({ mHilBackhaul.get() }, 100);
+        drain(*mHilBackhaul, [&](FrameKind kind, const Bytes& body) {
+            if (registered || kind != FrameKind::Session_Hello) {
+                return;
+            }
+            const auto hello = parseSessionHello(body);
+            if (!hello || hello->rsu != mName) {
+                return;
+            }
+            mGatewayPublicKey = hello->gatewayPublicKey;
+            mEsaPublicKey = mBroker->registerRsu(mName, hello->sessionKey, mGatewayPublicKey,
+                [this](const BootstrapMsg& msg) { onBackhaul(msg); });
+            Bytes ack = toBytes(mName + "\n");
+            ack.insert(ack.end(), mEsaPublicKey.begin(), mEsaPublicKey.end());
+            sendFrame(*mHilBackhaul, FrameKind::Session_Ack, ack);
+            registered = true;
+            std::printf("[HIL] %s registered physical RSU CY_g (%zu B) with ESA -> Session_Ack sent\n",
+                mName.c_str(), mGatewayPublicKey.size());
+            std::fflush(stdout);
+        });
+    }
+    if (!registered) {
+        throw omnetpp::cRuntimeError(
+            "%s: timed out waiting for physical RSU Session_Hello on %s (start './app rsu --name %s ...' on RPi3)",
+            mName.c_str(), mHilIface.c_str(), mName.c_str());
+    }
+
+    mHilPollMsg = new omnetpp::cMessage("hilPoll");
+    scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(1, omnetpp::SIMTIME_MS), mHilPollMsg);
+}
+
+void TeeRsuService::initLocalTee()
+{
+    // This RSU's own OP-TEE TA session, with its own Secure Storage object (fresh unless freshState = false)
     std::string sealed = par("sealedStatePath").stdstringValue();
     if (sealed.empty()) {
         sealed = fileName(mName) + ".sealed";
@@ -103,13 +162,6 @@ void TeeRsuService::initialize()
     mTee = std::make_unique<TeeSession>(sealed, par("freshState").boolValue());
     mGateway = std::make_unique<PacketManager>(*mTee, mName);
 
-    // HTTPS session with the ESA over the backhaul: my certificate's key (CY_g) for CY_e
-    mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
-        par("backhaulModule").stringValue()));
-    if (!mBroker) {
-        throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
-            par("backhaulModule").stringValue());
-    }
     char sessionKey[65];
     for (int i = 0; i < 32; ++i) {
         std::snprintf(sessionKey + 2 * i, 3, "%02x", static_cast<unsigned>(intuniform(0, 255)));
@@ -133,10 +185,31 @@ void TeeRsuService::initialize()
     transport.https = [this](const BootstrapMsg& msg) { sendHttps(msg); };
     transport.cloud = [this](ItPacket packet) { mBroker->postToCloud(mName, packet.bytes); };
     mGateway->setTransport(transport);
+}
 
-    if (mUseSimu5g) {
-        mBroker->register5gNode(mName, [this](const BootstrapMsg& msg) { on5gRadio(msg); });
+void TeeRsuService::onRadioRx(const BootstrapMsg& msg)
+{
+    // the operator chose the RSU of CY_g: the other RSUs in range leave its Activation_Request alone
+    if (msg.getType() == Activation_Request
+        && unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
+        return;
     }
+    if (mEnableHil) {
+        if (!mHilRadio || (msg.getDestination() != mName && msg.getDestination() != "esa")) {
+            return;
+        }
+        sendMsg(*mHilRadio, msg);
+        EV_INFO << mName << " [HIL]: forwarded radio " << stageName(msg.getType())
+                << " from " << msg.getSender() << " to physical RSU on " << mHilIface << "\n";
+        return;
+    }
+    if (msg.getType() == Secure_Data) {
+        if (msg.getDestination() == mName) {
+            secureData(msg);
+        }
+        return;
+    }
+    mGateway->onRadio(msg); // filters by destination (logical unicast)
 }
 
 void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket* packet,
@@ -149,31 +222,7 @@ void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPack
         return;
     }
     try {
-        const BootstrapMsg msg = frame->msg();
-        if (mEnableHil && mHilRadio) {
-            if (msg.getType() == Secure_Data) {
-                if (msg.getDestination() == mName) {
-                    secureData(msg);
-                }
-                return;
-            }
-            sendMsg(*mHilRadio, msg);
-            EV_INFO << mName << " [HIL]: forwarded radio " << stageName(msg.getType())
-                    << " from " << msg.getSender() << " to physical RSU on " << mHilIface << "\n";
-            return;
-        }
-        if (msg.getType() == Secure_Data) {
-            if (msg.getDestination() == mName) {
-                secureData(msg);
-            }
-            return;
-        }
-        // the operator chose the RSU of CY_g: the other RSUs in range leave its Activation_Request alone
-        if (msg.getType() == Activation_Request
-            && unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
-            return;
-        }
-        mGateway->onRadio(msg); // filters by destination (logical unicast)
+        onRadioRx(frame->msg());
     } catch (const std::runtime_error& e) { // a malformed frame or payload: dropped, the simulation goes on
         EV_ERROR << mName << ": frame dropped: " << e.what() << "\n";
     }
@@ -182,17 +231,6 @@ void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPack
 // Secure_Data: OT packet -> TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT -> IT packet for the cloud
 void TeeRsuService::secureData(const BootstrapMsg& msg)
 {
-    if (mEnableHil && mHilRadio) {
-        try {
-            sendMsg(*mHilRadio, msg);
-            ++mMarshaled;
-            EV_INFO << mName << " [HIL]: forwarded Secure_Data to physical RSU on " << mHilIface << "\n";
-        } catch (const std::exception& e) {
-            ++mMarshalRefused;
-            EV_ERROR << mName << " [HIL]: sendMsg Secure_Data error: " << e.what() << "\n";
-        }
-        return;
-    }
     // the TA invocation's own (wall clock) time: simulation time does not move inside an event
     const auto start = std::chrono::steady_clock::now();
     const Reply reply = mGateway->marshal(getPayload(msg), static_cast<uint64_t>(SimTime::now().ns()));
@@ -245,12 +283,6 @@ void TeeRsuService::sendRadio(const BootstrapMsg& msg)
         emit(mHandoverGrantedSignal, mHandoversGranted);
     }
 
-    if (mUseSimu5g) {
-        // Simu5G: 5G NR radio transport
-        mBroker->send5gRadio(mName, msg, mPositionX);
-        return;
-    }
-
     // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
     vanetza::btp::DataRequestB req;
     req.destination_port = vanetza::host_cast(getPortNumber());
@@ -258,26 +290,6 @@ void TeeRsuService::sendRadio(const BootstrapMsg& msg)
     req.gn.traffic_class.tc_id(static_cast<unsigned>(vanetza::dcc::Profile::DP0)); // TC0
     req.gn.communication_profile = vanetza::geonet::CommunicationProfile::ITS_G5;
     request(req, new V2xFrame(msg));
-}
-
-void TeeRsuService::on5gRadio(const BootstrapMsg& msg)
-{
-    Enter_Method("on5gRadio");
-    try {
-        if (msg.getType() == Secure_Data) {
-            if (msg.getDestination() == mName) {
-                secureData(msg);
-            }
-            return;
-        }
-        if (msg.getType() == Activation_Request
-            && unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
-            return;
-        }
-        mGateway->onRadio(msg); // filters by destination (logical unicast)
-    } catch (const std::runtime_error& e) {
-        EV_ERROR << mName << ": 5G frame dropped: " << e.what() << "\n";
-    }
 }
 
 void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
@@ -289,23 +301,63 @@ void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
     }
     if (msg->isSelfMessage() && msg->getKind() == kHandoverTimer) {
         ++mHandoversTriggered;
-        mGateway->startHandover(msg->getName(), mNextRsu); // Forwarding_Notice to mNextRsu
-    } else {
-        auto frame = dynamic_cast<V2xFrame*>(msg);
-        if (frame) {
-            on5gRadio(frame->msg());
+        if (mEnableHil && mHilBackhaul) {
+            sendFrame(*mHilBackhaul, FrameKind::Handover_Trigger,
+                packHandoverTrigger(mName, msg->getName(), mNextRsu));
+            EV_INFO << mName << " [HIL]: sent Handover_Trigger (" << msg->getName() << " -> " << mNextRsu
+                    << ") to physical RSU\n";
+        } else {
+            mGateway->startHandover(msg->getName(), mNextRsu); // Forwarding_Notice to mNextRsu
         }
     }
     delete msg;
 }
 
+void TeeRsuService::maybeSyncHilClock()
+{
+    const auto wallNow = std::chrono::steady_clock::now();
+    const auto simNow = omnetpp::simTime();
+    bool sync = !mHilClockSent;
+    if (mHilClockSent) {
+        const double wallDelta = std::chrono::duration<double>(wallNow - mHilClockRefWall).count();
+        const double simDelta = (simNow - mHilClockRefSim).dbl();
+        if (std::abs(wallDelta - simDelta) > 0.020) {
+            sync = true;
+        }
+    }
+    if (sync && mHilBackhaul) {
+        sendFrame(*mHilBackhaul, FrameKind::Clock_Anchor, packClockAnchor(simNow.inUnit(omnetpp::SIMTIME_NS)));
+        mHilClockSent = true;
+        mHilClockRefWall = wallNow;
+        mHilClockRefSim = simNow;
+    }
+}
+
+void TeeRsuService::maybeSendHilCloudCert()
+{
+    if (mHilCloudReady || !mHilBackhaul) {
+        return;
+    }
+    const auto simNow = omnetpp::simTime();
+    if (mLastCloudCertSent < 0 || (simNow - mLastCloudCertSent).dbl() >= 0.1) {
+        sendData(*mHilBackhaul, "cloud", mName, toBytes(mBroker->cloudCertificate()));
+        mLastCloudCertSent = simNow;
+    }
+}
+
 void TeeRsuService::pollHil()
 {
+    maybeSyncHilClock();
+    maybeSendHilCloudCert();
+
     if (mHilRadio) {
         drain(*mHilRadio, [this](FrameKind kind, const Bytes& body) {
             if (kind == FrameKind::Bootstrap) {
                 try {
                     BootstrapMsg msg = deserialize(body);
+                    if (msg.getSender() != mName) {
+                        return;
+                    }
                     if (msg.getType() == Forwarding_Granted) {
                         ++mHandoversGranted;
                         emit(mHandoverGrantedSignal, mHandoversGranted);
@@ -325,11 +377,42 @@ void TeeRsuService::pollHil()
             if (kind == FrameKind::Bootstrap) {
                 try {
                     BootstrapMsg msg = deserialize(body);
+                    if (msg.getSender() != mName) {
+                        return;
+                    }
                     EV_INFO << mName << " [HIL]: received backhaul frame " << stageName(msg.getType())
                             << " from physical RSU -> forwarding to simulation backhaul broker\n";
+                    if (msg.getType() == Active_02 && !mNextRsu.empty()) {
+                        scheduleAt(omnetpp::simTime() + mHandoverDelay,
+                            new omnetpp::cMessage(msg.getVehicle().c_str(), kHandoverTimer));
+                    }
                     mBroker->sendBackhaul(msg);
                 } catch (const std::exception& e) {
                     EV_ERROR << mName << " [HIL]: deserialize backhaul error: " << e.what() << "\n";
+                }
+            } else if (kind == FrameKind::Data_Fragment) {
+                if (auto packet = mHilBackhaulReassembler.add(body);
+                    packet && packet->to == "cloud" && packet->from == mName) {
+                    if (mBroker->postToCloud(mName, packet->bytes)) {
+                        ++mMarshaled;
+                    } else {
+                        ++mMarshalRefused;
+                    }
+                }
+            } else if (kind == FrameKind::Cloud_Ready) {
+                if (auto tag = parseRsuTag(body); tag && *tag == mName) {
+                    mHilCloudReady = true;
+                }
+            } else if (kind == FrameKind::Cloud_Refused) {
+                if (auto tag = parseRsuTag(body); tag && *tag == mName) {
+                    ++mMarshalRefused;
+                }
+            } else if (kind == FrameKind::Session_Hello) {
+                if (auto hello = parseSessionHello(body);
+                    hello && hello->rsu == mName && hello->gatewayPublicKey == mGatewayPublicKey) {
+                    Bytes ack = toBytes(mName + "\n");
+                    ack.insert(ack.end(), mEsaPublicKey.begin(), mEsaPublicKey.end());
+                    sendFrame(*mHilBackhaul, FrameKind::Session_Ack, ack);
                 }
             }
         });
@@ -338,12 +421,7 @@ void TeeRsuService::pollHil()
 
 void TeeRsuService::finish()
 {
-    if (mHilPollMsg) {
-        cancelAndDelete(mHilPollMsg);
-        mHilPollMsg = nullptr;
-    }
-    mHilRadio.reset();
-    mHilBackhaul.reset();
+    shutdownHil();
     recordScalar("marshaledPackets", mMarshaled);
     recordScalar("marshalRefused", mMarshalRefused);
     recordScalar("teeIgnored", mGateway ? mGateway->ignored() : 0);

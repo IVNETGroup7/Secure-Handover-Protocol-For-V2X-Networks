@@ -22,9 +22,21 @@ struct DataMessage
 
 constexpr size_t kMaxSmartDataValue = 64 * 1024 - 1; 
 
+constexpr const char* kCloudAddress = "127.0.0.1";
 constexpr const char* kSmartDataPath = "/smartdata";        // the cloud's resource for the marshaled SmartData
 constexpr const char* kSessionKeyHeader = "X-Session-Key";  // Y_s (DER, base64) of the session of K_eg
 constexpr int kMessagesPerSession = 100;                    // then a new K_eg
+
+#ifndef __OPTEE_TA__
+// Cloud P-256 key pair and self-signed certificate; pinned by each RSU's OP-TEE TA via initCloudSession
+struct CloudIdentity
+{
+    std::shared_ptr<EVP_PKEY> key;      // X_e (and Y_e)
+    Bytes certificateDer;               // CY_e: Y_e, self-signed X.509 DER
+    std::string pem() const;            // certificate in PEM format
+};
+CloudIdentity newCloudIdentity(const std::string& commonName = "cloud");
+#endif
 
 Bytes packSmartData(const SmartData&);
 SmartData unpackSmartData(const Bytes&);

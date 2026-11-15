@@ -9,16 +9,14 @@
 #include <exception>
 #include <stdexcept>
 
-namespace
+// the RSU is the PTP master: its clock is the reference (default: SimTime::now(), or anchored clock in HIL)
+uint64_t PacketManager::now() const
 {
-
-// the RSU is the PTP master: its clock is the reference
-uint64_t now()
-{
+    if (mClock) {
+        return mClock();
+    }
     return static_cast<uint64_t>(SimTime::now().ns());
 }
-
-} // namespace
 
 // OT queue
 
@@ -74,10 +72,16 @@ void PacketManager::onSmartData(const OtPacket& packet)
             if (traced) {
                 trace::detail(mName, "the TA refused it: nothing for the cloud"); // its reason: the TA's own check
             }
+            if (mTransport.cloudRefused) {
+                mTransport.cloudRefused();
+            }
             return;
         default:
             if (traced) {
                 trace::check(mName, false, std::string("TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT: ") + statusName(reply.status));
+            }
+            if (mTransport.cloudRefused) {
+                mTransport.cloudRefused();
             }
             return;
     }
@@ -108,6 +112,15 @@ void PacketManager::onRadio(const BootstrapMsg& msg)
     // radio: unicast is logical (BootstrapService::isForMe); "esa": the ESA has no radio, the RSU relays it
     if (msg.getDestination() != mName && msg.getDestination() != "esa") {
         return;
+    }
+    if (!mGatewayPublicKey.empty() && msg.getType() == Activation_Request) {
+        try {
+            if (unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
+                return;
+            }
+        } catch (const std::exception&) {
+            return;
+        }
     }
 
     switch (msg.getType()) {

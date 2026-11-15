@@ -8,7 +8,6 @@ simple TeeRsuService like ItsG5Service
         @statistic[marshalLatencyUs](title="Secure Marshaling TA Invoke (wall clock)"; unit=us; record=vector,stats);
         @signal[handoverGranted](type=long);
         @statistic[handoverGranted](title="Forwarding_Granted sent"; record=count,vector);
-        bool useSimu5g = default(false);            // true: 5G NR via Simu5G; false: IEEE 802.11p (ITS-G5)
         string sealedStatePath = default("");       // "": <RSU name, no brackets>.sealed, e.g. rsu0.sealed
         bool freshState = default(true);            // drop the sealed state an earlier run left
         string groupKey = default("");              // K_g, 32 hex digits; "": generated inside the TA
@@ -17,4 +16,5 @@ simple TeeRsuService like ItsG5Service
         string backhaulModule = default("backhaulBroker");
         bool enableHil = default(false);            // Hardware-in-the-Loop: bridge this RSU to physical hardware
         string hilIface = default("");            // network interface connected to the physical RSU (or set HIL_IFACE env var)
+        double hilHandshakeTimeout @unit(s) = default(60s); // max wait for physical RSU Session_Hello on startup
 }

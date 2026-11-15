@@ -114,7 +114,7 @@ Bytes selfSignedCertificate(EVP_PKEY* key, const std::string& commonName)
     std::unique_ptr<BIGNUM, decltype(&BN_free)> number(BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr),
         BN_free);
     check(number && BN_to_ASN1_INTEGER(number.get(), X509_get_serialNumber(cert.get())), "certificate serial");
-    X509_gmtime_adj(X509_getm_notBefore(cert.get()), 0);
+    ASN1_TIME_set(X509_getm_notBefore(cert.get()), 0); // valid from Unix epoch for embedded clocks without RTC
     X509_gmtime_adj(X509_getm_notAfter(cert.get()), 365L * 24 * 3600);
     check(X509_set_pubkey(cert.get(), key) == 1, "X509_set_pubkey");
     X509_NAME* subject = X509_get_subject_name(cert.get());

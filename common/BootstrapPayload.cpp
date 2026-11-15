@@ -210,35 +210,12 @@ Bytes pack(const AuthRequestPayload& m)
     return out;
 }
 
-AuthRequestPayload unpackAuthRequest(const Bytes& in)
-{
-    Reader reader(in);
-    AuthRequestPayload m;
-    m.type = reader.uint(1);
-    m.otp = reader.array<16>();
-    return m;
-}
-
 std::vector<std::string> describe(const AuthRequestPayload& m)
 {
     return {
         "M = { " + std::string(stageName(m.type)) + ", OTP_dt }",
         "OTP_dt = " + toHex(m.otp.data(), m.otp.size()),
     };
-}
-
-Bytes pack(const AuthGrantedPayload& m)
-{
-    Bytes out;
-    putUint(out, m.type, 1);
-    out.insert(out.end(), m.otp.begin(), m.otp.end());
-    putUint(out, m.kG.size(), 2);
-    out.insert(out.end(), m.kG.begin(), m.kG.end());
-    putUint(out, m.esaPublicKey.size(), 2);
-    out.insert(out.end(), m.esaPublicKey.begin(), m.esaPublicKey.end());
-    putUint(out, m.authEg.size(), 2);
-    out.insert(out.end(), m.authEg.begin(), m.authEg.end());
-    return out;
 }
 
 AuthGrantedPayload unpackAuthGranted(const Bytes& in)
@@ -387,16 +364,6 @@ Bytes pack(const ForwardingRequestPayload& m)
     return out;
 }
 
-ForwardingRequestPayload unpackForwardingRequest(const Bytes& in)
-{
-    Reader reader(in);
-    ForwardingRequestPayload m;
-    m.type = reader.uint(1);
-    m.auth = reader.array<32>();
-    m.otp = reader.array<16>();
-    return m;
-}
-
 std::vector<std::string> describe(const ForwardingRequestPayload& m)
 {
     return {
@@ -404,19 +371,6 @@ std::vector<std::string> describe(const ForwardingRequestPayload& m)
         "auth_{i+2} = " + toHex(m.auth.data(), m.auth.size()),
         "OTP        = " + toHex(m.otp.data(), m.otp.size()),
     };
-}
-
-Bytes pack(const ForwardingGrantedPayload& m)
-{
-    Bytes out;
-    putUint(out, m.type, 1);
-    putUint(out, m.nextRsuPublicKey.size(), 2);
-    out.insert(out.end(), m.nextRsuPublicKey.begin(), m.nextRsuPublicKey.end());
-    out.insert(out.end(), m.authPrime.begin(), m.authPrime.end());
-    putUint(out, m.kG.size(), 2);
-    out.insert(out.end(), m.kG.begin(), m.kG.end());
-    out.insert(out.end(), m.otp.begin(), m.otp.end());
-    return out;
 }
 
 ForwardingGrantedPayload unpackForwardingGranted(const Bytes& in)
@@ -450,28 +404,6 @@ Bytes pack(const SecureDataPayload& m)
     const Bytes packet = packDataMessage(DataMessage{ m.cipherData, m.authD, m.otp });
     out.insert(out.end(), packet.begin(), packet.end());
     return out;
-}
-
-SecureDataPayload unpackSecureData(const Bytes& in)
-{
-    Reader reader(in);
-    SecureDataPayload m;
-    m.type = reader.uint(1);
-    const DataMessage packet = unpackDataMessage(Bytes(in.begin() + 1, in.end()));
-    m.cipherData = packet.sealedData;
-    m.authD = packet.authD;
-    m.otp = packet.otp;
-    return m;
-}
-
-std::vector<std::string> describe(const SecureDataPayload& m)
-{
-    return {
-        "M = { " + std::string(stageName(m.type)) + ", AES(K_G, Data), Auth_d, OTP_dt }",
-        "AES(K_G, Data) = " + std::to_string(m.cipherData.size()) + " B",
-        "Auth_d         = " + toHex(m.authD.data(), m.authD.size()),
-        "OTP_dt         = " + toHex(m.otp.data(), m.otp.size()),
-    };
 }
 
 void setPayload(BootstrapMsg& msg, const Bytes& payload)

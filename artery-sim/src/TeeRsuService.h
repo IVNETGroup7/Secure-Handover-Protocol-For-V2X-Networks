@@ -20,6 +20,7 @@
 #include "RawSocket.h"
 #include "Link.h"
 #include "artery/application/ItsG5Service.h"
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -37,18 +38,30 @@ class TeeRsuService : public artery::ItsG5Service
         void indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket*, const artery::NetworkInterface&) override;
 
     private:
+        void initHil();
+        void initLocalTee();
         void sendRadio(const BootstrapMsg&);
         void sendHttps(const BootstrapMsg&);
         void onBackhaul(const BootstrapMsg&);
-        void on5gRadio(const BootstrapMsg&);
+        void onRadioRx(const BootstrapMsg&);
         void secureData(const BootstrapMsg&);
+        void maybeSyncHilClock();
+        void maybeSendHilCloudCert();
         void pollHil();
+        void shutdownHil();
 
         bool mEnableHil = false;
         std::string mHilIface;
         std::unique_ptr<RawSocket> mHilRadio;
         std::unique_ptr<RawSocket> mHilBackhaul;
+        Reassembler mHilBackhaulReassembler;
         omnetpp::cMessage* mHilPollMsg = nullptr;
+        Bytes mEsaPublicKey;
+        bool mHilCloudReady = false;
+        omnetpp::simtime_t mLastCloudCertSent = -1;
+        bool mHilClockSent = false;
+        std::chrono::steady_clock::time_point mHilClockRefWall{};
+        omnetpp::simtime_t mHilClockRefSim;
 
         std::string mName;                                  // "rsu[0]"
         Bytes mGatewayPublicKey;                            // CY_g: the key of my certificate
@@ -57,8 +70,6 @@ class TeeRsuService : public artery::ItsG5Service
         BackhaulBroker* mBroker = nullptr;
         std::string mNextRsu;                               // Secrecy Forwarding target ("": none)
         omnetpp::simtime_t mHandoverDelay;
-        bool mUseSimu5g = false;
-        double mPositionX = 250.0;
 
         // statistics (results/*.sca, *.vec)
         long mMarshaled = 0;

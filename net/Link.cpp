@@ -1,6 +1,5 @@
 #include "Link.h"
 #include <poll.h>
-#include <unistd.h>
 #include <algorithm>
 #include <random>
 #include <stdexcept>
@@ -42,11 +41,12 @@ GatewayCertificate newGatewayCertificate(const std::string& rsu)
 }
 
 Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::string& sessionKey,
-    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop)
+    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop,
+    std::chrono::seconds timeout)
 {
     Bytes hello = toBytes(rsu + "\n" + sessionKey + "\n");
     hello.insert(hello.end(), certificate.begin(), certificate.end());
-    const auto giveUp = std::chrono::steady_clock::now() + kSessionTimeout;
+    const auto giveUp = std::chrono::steady_clock::now() + timeout;
     const Bytes name = toBytes(rsu + "\n");
     Bytes esaPublicKey;
     while (esaPublicKey.empty()) {
@@ -64,6 +64,56 @@ Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::s
         });
     }
     return esaPublicKey;
+}
+
+Bytes packHandoverTrigger(const std::string& rsu, const std::string& session, const std::string& targetRsu)
+{
+    return toBytes(rsu + "\n" + session + "\n" + targetRsu);
+}
+
+std::optional<HandoverTrigger> parseHandoverTrigger(const Bytes& body)
+{
+    const auto first = std::find(body.begin(), body.end(), '\n');
+    const auto second = first == body.end() ? body.end() : std::find(first + 1, body.end(), '\n');
+    if (second == body.end()) {
+        return std::nullopt;
+    }
+    return HandoverTrigger{
+        std::string(body.begin(), first),
+        std::string(first + 1, second),
+        std::string(second + 1, body.end())
+    };
+}
+
+Bytes packClockAnchor(int64_t simTimeNs)
+{
+    Bytes out(8);
+    const uint64_t raw = static_cast<uint64_t>(simTimeNs);
+    for (int i = 0; i < 8; ++i) {
+        out[static_cast<size_t>(7 - i)] = static_cast<uint8_t>(raw >> (8 * i));
+    }
+    return out;
+}
+
+std::optional<int64_t> parseClockAnchor(const Bytes& body)
+{
+    if (body.size() != 8) {
+        return std::nullopt;
+    }
+    uint64_t raw = 0;
+    for (uint8_t b : body) {
+        raw = (raw << 8) | b;
+    }
+    return static_cast<int64_t>(raw);
+}
+
+std::optional<std::string> parseRsuTag(const Bytes& body)
+{
+    const auto end = std::find(body.begin(), body.end(), '\n');
+    if (end == body.end()) {
+        return std::nullopt;
+    }
+    return std::string(body.begin(), end);
 }
 
 std::optional<SessionHello> parseSessionHello(const Bytes& body)
@@ -194,16 +244,4 @@ std::optional<Reassembler::Packet> Reassembler::add(const Bytes& body)
     }
     mPartials.erase({ *from, id });
     return packet;
-}
-
-void signalReady(int fd, const Bytes& info)
-{
-    if (fd >= 0) {
-        Bytes data{ 1 };    // ready, then the info (read until the pipe closes)
-        data.insert(data.end(), info.begin(), info.end());
-        if (write(fd, data.data(), data.size()) != static_cast<ssize_t>(data.size())) {
-            throw std::runtime_error("cannot signal readiness");
-        }
-        close(fd);
-    }
 }

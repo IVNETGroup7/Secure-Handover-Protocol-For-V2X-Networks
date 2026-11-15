@@ -1,15 +1,12 @@
 # Secure-Handover-Protocol-For-V2X-Networks
 
-Secure bootstrap, **Secrecy Forwarding** (RSU-to-RSU handover), and **Secure Marshaling** (OT → IT Cloud HTTPS) protocol between a **vehicle**, an **RSU** (Road-Side Unit), and an **ESA** (External Security Agent), implemented in C++17 + OpenSSL 3 and **Arm TrustZone (OP-TEE)**.
+Secure bootstrap, **Secrecy Forwarding** (RSU-to-RSU handover), and **Secure Marshaling** (OT → IT Cloud encapsulation) between a **vehicle**, an **RSU** (Road-Side Unit), and an **ESA** (External Security Agent), implemented in C++17 + OpenSSL 3 and **Arm TrustZone (OP-TEE)**.
 
-The primary physical hardware testbed platform is the **Raspberry Pi 3 Model B (Broadcom BCM2837, Quad-core Arm Cortex-A53 @ 1.2 GHz, 64-bit Armv8-A)** running **OP-TEE OS 4.x**. A complementary virtualized **QEMU ARMv8-A VM** is also provided for development without physical hardware.
+The physical testbed uses a **Raspberry Pi 3 Model B** running **OP-TEE OS** for **both RSUs (`rsu[0]` and `rsu[1]`)** in parallel Trusted Application sessions (`9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta`) over raw Layer-2 Ethernet (`AF_PACKET`, EtherType `0x88b5` for OT radio and `0x88b6` for IT backhaul), while **Artery + OMNeT++ + SUMO** on the host PC simulates the highway vehicle, ESA, Cloud sink, and IEEE 802.11p channel.
 
-Each node runs as an independent process communicating over raw Layer-2 Ethernet sockets (`AF_PACKET`, EtherType `0x88b5` for OT radio and `0x88b6` for IT backhaul) and TLS 1.3 HTTPS. There are two RSU implementations:
+For development without physical RPi3 hardware, a complementary **libvirt/KVM VM (`optee-arm64-vm`)** workflow (`setup-vm.sh`, `make vm`, `make vm-hil`) provides the same dual-RSU `./app` environment over the host `virbr0` bridge.
 
-- the **plain RSU**, built directly into `./bootstrap`;
-- the **OP-TEE RSU gateway** ([`rsu-optee-gateway/`](rsu-optee-gateway)): gateway identity keys ($K_g$), active session contexts, Poly1305 One-Time Password (OTP) validation, and Secure Marshaling execute inside a hardware-isolated **Arm TrustZone OP-TEE Trusted Application (TA)** (`9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta`).
-
-Once activated, a vehicle transitions between RSUs via **Secrecy Forwarding** (RSU-to-RSU handover with no ESA involvement and no re-bootstrap, [`common/Handover.h`](common/Handover.h)). The protocol can also be co-simulated on a host PC using **Artery + OMNeT++ + SUMO** ([`artery-sim/`](artery-sim)), including a real-time **Hardware-in-the-Loop (HIL)** bridge to the physical Raspberry Pi 3.
+Once activated with `rsu[0]`, a vehicle hands over to `rsu[1]` via **Secrecy Forwarding** without contacting the ESA or performing a new bootstrap ([`common/Handover.h`](common/Handover.h)). For a deep reference covering every test, C++ class, cryptographic equation, wire frame, and expected output, see [TESTS.md](TESTS.md).
 
 ---
 
@@ -17,219 +14,146 @@ Once activated, a vehicle transitions between RSUs via **Secrecy Forwarding** (R
 
 | Path | Contents |
 |---|---|
-| [`common/`](common) | Messages, payloads, crypto traits, simulated time, tracing, Secrecy Forwarding equations (`Handover.h`) |
-| [`protocol/`](protocol) | Bootstrap & handover state engines (`BootstrapService`, `ExternalSecurityAgent`) and API (`Bootstrap.h`) |
-| [`net/`](net) | Raw Ethernet sockets (`AF_PACKET`), Layer-2 framing (`Link.h`), and TLS 1.3 HTTPS client/server (`Https.h`) |
-| [`main.cpp`](main.cpp) | Multi-process runner (ESA, RSU, vehicle, cloud) |
-| [`rsu-optee-gateway/`](rsu-optee-gateway) | Arm TrustZone OP-TEE RSU gateway: `include/gateway_ta.h`, `ta/` (Secure World TA using GlobalPlatform TEE Internal Core API), `host/` (Normal World Client Application using `libteec`), cross-compilation toolchains (`build-rpi3.sh`) |
-| [`artery-sim/`](artery-sim) | Host PC Artery/OMNeT++/SUMO simulation & Hardware-in-the-Loop bridge (`setup_artery.sh`) |
-| [`setup-vm.sh`](setup-vm.sh) | *(Complementary)* Sets up an ARM64 QEMU ARMv8-A VM with `optee_os` and `optee_client` for virtual development |
+| [`Makefile`](Makefile) | Top-level entrypoints (`build`, `run`, `vm`, `vm-hil`, `rpi3`, `sim`, `hil-dual`, `clean`, `help`) |
+| [`common/`](common) | Protocol messages, binary codecs, crypto primitives, `SimTime`, tracing, vehicle traits, `SmartData`, `Handover` equations |
+| [`protocol/`](protocol) | Vehicle bootstrap & handover state machine (`Bootstrap`, `BootstrapService`) and `ExternalSecurityAgent` |
+| [`net/`](net) | Raw Layer-2 Ethernet sockets (`RawSocket`) and framing/demux/fragmentation (`Link`) |
+| [`rsu-optee-gateway/`](rsu-optee-gateway) | OP-TEE RSU gateway: `include/gateway_ta.h`, `ta/` (Secure World TA), `host/` (Normal World `./app` self-test & `rsu` daemon, `Benchmark`, `PacketManager`, `TeeSession`), `build-rpi3.sh`, `vm-make.sh` |
+| [`artery-sim/`](artery-sim) | Host-PC Artery/OMNeT++/SUMO simulation (`setup_artery.sh`, `run-hil-dual.sh`, `scenario/`, `src/`) |
+| [`setup-vm.sh`](setup-vm.sh) | Sets up the complementary Ubuntu 24.04 libvirt/KVM VM (`optee-arm64-vm`) with OP-TEE DevKit & `libteec` |
+| [`rsu-dual-ssh.sh`](rsu-dual-ssh.sh) | Launches concurrent `rsu[0]` and `rsu[1]` OP-TEE gateway sessions on the Raspberry Pi 3 over SSH |
+| [`TESTS.md`](TESTS.md) | Comprehensive reference of every test, simulation, HIL setup, class, wire format, and expected output |
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Host quick test: OP-TEE gateway self-test in in-process HOST_SIM mode
-make -C rsu-optee-gateway run
+# 1. Host self-test: 7-scenario OP-TEE gateway self-test (HOST_SIM mode)
+make run
 
-# 2. Main Physical Testbench: Cross-compile for Raspberry Pi 3 (Arm Cortex-A53)
-make -C rsu-optee-gateway rpi3
+# 2. Pure Artery IEEE 802.11p highway simulation (bootstrapping + Secrecy Forwarding handover)
+artery-sim/setup_artery.sh     # one-time dependency & CMake build
+make sim
 
-# (Optional) Cross-compile and deploy over SSH to the Raspberry Pi 3 in one command:
-make -C rsu-optee-gateway rpi3 PI_IP=xxx.xxx.xxx.xxx
+# 3. Physical Dual-RSU Raspberry Pi 3 HIL (both RSUs in RPi3 TrustZone; rest simulated on PC)
+make rpi3 PI_IP=<pi-ip>        # cross-compile & deploy .ta + ./app
+./rsu-dual-ssh.sh --pi-ip <pi-ip>
+make hil-dual HIL_IFACE=<host-nic>       # add GUI=1 for sumo-gui
 
-# 3. Full network test on host PC
-make pretty
-
-# 4. Host PC Artery simulation (OMNeT++ 5.7, Artery, Simu5G, SUMO):
-artery-sim/setup_artery.sh
-
-# 5. Complementary: Virtual QEMU ARMv8-A OP-TEE VM:
-./setup-vm.sh
+# 4. Complementary VM workflow (Dual-RSU HIL without physical RPi3 hardware)
+./setup-vm.sh                  # create/start optee-arm64-vm
+make vm                        # run self-test inside VM
+make vm-hil                    # launch dual RSU daemon inside VM (pair with: make hil-dual HIL_IFACE=virbr0)
 ```
 
 ---
 
-## 1. Plain bootstrap (root `Makefile`)
-
-Requirements: `g++` (C++17), OpenSSL 3, Docker (optional, for rootless `CAP_NET_RAW`).
+## Top-level targets ([`Makefile`](Makefile))
 
 | Command | What it does |
 |---|---|
-| `make` / `make run` | Builds and runs the 3 processes (ESA, RSU, vehicle) |
-| `make pretty` | Same, with each component's output separated by an ANSI color bar |
-| `make build` | Only builds `./bootstrap` |
-| `make clean` | Removes `build/`, `./bootstrap` and temporary artifacts |
+| `make build` | Builds `rsu-optee-gateway/app` (`HOST_SIM` self-test + `rsu` HIL daemon) |
+| `make run` / `make test` | Builds and runs the 7-scenario OP-TEE gateway self-test |
+| `make vm` | Syncs the repository into `optee-arm64-vm` and runs the self-test |
+| `make vm-hil` | Starts dual `rsu[0]` + `rsu[1]` processes inside `optee-arm64-vm` (pair with `HIL_IFACE=virbr0` on host) |
+| `make rpi3 [PI_IP=<ip>]` | Cross-compiles the `.ta` and `./app` for Raspberry Pi 3 (`-mcpu=cortex-a53`) and optionally deploys via SSH |
+| `make sim` | Rebuilds `tee_v2x` and runs the pure-simulation `D250m_80211p` scenario |
+| `make hil-dual HIL_IFACE=<nic> [GUI=1]` | Rebuilds `tee_v2x` and runs `HIL_RPi3_DualRsu` (or `HIL_RPi3_DualRsu_GUI` with `GUI=1`) |
+| `make clean` | Removes build outputs, `*.sealed*` state files, and simulation result artifacts |
 
-### Running `./bootstrap` directly
+---
 
-Without Docker you need `CAP_NET_RAW` (`sudo setcap cap_net_raw=ep ./bootstrap` or run with `sudo`):
+## 1. OP-TEE RSU Gateway (`rsu-optee-gateway/`)
+
+The gateway separates untrusted OS networking from cryptographic state and keys:
+
+- **Normal World (`host/`)**: `./app` manages raw Ethernet sockets (`0x88b5` radio, `0x88b6` backhaul), message fragmentation/reassembly, OT/IT queues (`PacketManager`), PTP clock synchronization, and `TeeSession` invocations.
+- **Secure World (`ta/`)**: `9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta` uses the GlobalPlatform TEE Internal Core API for P-256 ECDH & ECDSA, AES-128-GCM (`K_g`, `KT_i`) & AES-256-GCM (`K_dg`, `K_eg`), RFC 8439 Poly1305 one-time passwords (`OTP_dt`), Cloud certificate pinning ($CY_e$), Secure Marshaling (`OT -> IT`), Secrecy Forwarding handovers, and OP-TEE Secure Storage sealing (`TEE_STORAGE_PRIVATE`).
+
+### Build modes & CLI
+
+- **`TEE_MODE=HOST_SIM`** (default on x86_64): Runs `GatewayTaSession` in-process with OpenSSL 3 and AES-256-GCM host-sealed files for fast debugging and Artery host simulation.
+- **`TEE_MODE=OPTEE`**: Links `./app` against `libteec` (`-lteec`) to talk to `/dev/tee0` and `tee-supplicant` on the Raspberry Pi 3, and builds `ta/9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta`.
 
 ```text
-./bootstrap [--pretty] [--rsu-exec <program>]                       # ESA, RSU and vehicle
-            [--cloud <certificate.pem>]                             # start the HTTPS cloud server
-            [--smartdata <size,size,...> [--smartdata-count <n>] [--smartdata-interval <ms>]]
-./bootstrap esa|rsu|vehicle|cloud [--option value ...]              # a single node
+Usage:
+  ./rsu-optee-gateway/app [selftest] [--sealed <id>] [--fresh]
+  ./rsu-optee-gateway/app rsu [--name <rsu>] [--iface <nic>] [--sealed <id>] [--fresh] [--session-timeout <sec>]
 ```
 
----
+Running `./rsu-optee-gateway/app` (or `make run`) executes 7 scenarios (plus subtests `4a`–`4m`), ending with:
 
-## 2. OP-TEE RSU Gateway (`rsu-optee-gateway/`)
-
-The OP-TEE RSU gateway isolates untrusted network operations from sensitive cryptographic state:
-- **Normal World (`host/`)**: Client Application (`./app`) that manages raw Ethernet sockets (`0x88b5` radio, `0x88b6` backhaul), PTP timestamps, and TLS transport to the Cloud, invoking the Trusted Application via `TeeSession` (`TEEC_InitializeContext`, `TEEC_OpenSession`, `TEEC_InvokeCommand`).
-- **Secure World (`ta/`)**: Trusted Application (`9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta`) written against the **GlobalPlatform TEE Internal Core API 1.2** (`<tee_internal_api.h>`):
-  - **P-256 ECDH & ECDSA**: `TEE_TYPE_ECDH_KEYPAIR`, `TEE_ALG_ECDH_P256`, `TEE_ALG_ECDSA_P256` (`TEE_GenerateKey`, `TEE_AsymmetricDeriveKey`, `TEE_AsymmetricVerifyDigest`).
-  - **Authenticated Encryption**: `TEE_ALG_AES_GCM` (`TEE_AEInit`, `TEE_AEEncryptFinal`, `TEE_AEDecryptFinal`) for 128-bit (`K_g`, `KT_i`) and 256-bit (`K_dg`, `K_eg`) keys.
-  - **One-Time Passwords (`OTP_dt`)**: RFC 8439 Poly1305 (`poly1305Aes`) for sub-millisecond per-frame authenticators.
-  - **Secure Storage**: `TEE_CreatePersistentObject` / `TEE_OpenPersistentObject` (`TEE_STORAGE_PRIVATE`) to seal active vehicle sessions and $K_g$ across power cycles.
-
-### Build modes (`rsu-optee-gateway/Makefile`)
-
-- **`TEE_MODE=OPTEE`**: Links `./app` against `-lteec` (`<tee_client_api.h>`) to communicate with `/dev/tee0` and `tee-supplicant` on the physical Raspberry Pi 3 or in the QEMU VM, building `ta/9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta`.
-- **`TEE_MODE=HOST_SIM`**: Links `./app` with the TA session state machine in-process for native debugging on x86_64 host PCs without `/dev/tee0`.
-
-| Command (inside `rsu-optee-gateway/`) | What it does |
-|---|---|
-| `make` / `make all` | Builds `./app` (and `ta/*.ta` when `TA_DEV_KIT_DIR` is set) |
-| `make run` | Builds and runs `./app` in self-test mode (scenarios 1–6: bootstrap, tamper checks, Secure Marshaling 4a–4g, Secrecy Forwarding 4h–4m) |
-| `make network` | Runs `../bootstrap --pretty --rsu-exec ./app`: real ESA + vehicle + Cloud, with RSU = OP-TEE gateway |
-| `make bench` | Runs the Secure Marshaling benchmark (32 B to 64 KB SmartData payloads, 100 packets each) |
-| `make rpi3` | Cross-compiles `./app`, `.ta`, and `bootstrap` for **Raspberry Pi 3** (`-mcpu=cortex-a53`) |
-| `make vm` | *(Complementary)* Runs build/test inside the ARM64 QEMU OP-TEE VM via `./vm-make.sh` |
-| `make clean` | Removes build outputs, sealed state files (`gateway.sealed*`), and capability stamps |
-
----
-
-### Main Physical Testbench: Raspberry Pi 3 (Arm Cortex-A53)
-
-The primary physical evaluation executes on a physical **Raspberry Pi 3 Model B** running an OP-TEE OS 4.x + Linux Buildroot environment (`/dev/tee0` and `tee-supplicant`).
-
-#### 1. Cross-compilation and Deployment
-
-The project provides an automated toolchain script ([`rsu-optee-gateway/build-rpi3.sh`](rsu-optee-gateway/build-rpi3.sh)) that compiles the TA, patches the ELF OS/ABI header (`EI_OSABI` to `0x00`), signs the TA with the OP-TEE key, cross-compiles `./app` and `./bootstrap`, and deploys them over SSH:
-
-```bash
-# Build TA, host app, and bootstrap:
-make -C rsu-optee-gateway rpi3
-
-# Or build and automatically deploy over SSH in one step:
-make -C rsu-optee-gateway rpi3 PI_IP=XXX.XXX.XXX.XXX
-```
-
-#### 2. Running on the Raspberry Pi 3
-
-On the board via SSH or serial console:
-
-```bash
-# 1. Ensure tee-supplicant is running in the background:
-pgrep tee-supplicant || tee-supplicant &
-
-# 2. Run the complete self-test suite on the real TrustZone core:
-./app
-```
-
-Expected output:
 ```text
-[gateway] ta    init_gateway: CY_e prime256v1 (91 bytes), K_g generated inside (16 bytes)
-[gateway] ta    ✔ 1. normal bootstrap: activation token accepted, session #1 active
-[gateway] ta    ✔ 2. tampered OTP rejected
-[gateway] ta    ✔ 3. late auth rejected
-[gateway] ta    ✔ 4a-4g. Secure Marshaling (32 B .. 64 KB SmartData)
-[gateway] ta    ✔ 4h-4m. Secrecy Forwarding: Forwarding_Notice -> Handover_Command -> Forwarding_Request -> Forwarding_Granted
-[gateway] ta    ✔ 5. rogue gateway rejected
-[gateway] ta    ✔ 6. early arrival rejected
-[gateway] gateway OK
+results:
+  1. normal                          vehicle ready: yes  protocol ended: yes  ignored by the TA: 0   ok
+  2. OTP changed on the air          vehicle ready: no   protocol ended: no   ignored by the TA: 1   ok
+  3. Auth_Request after t_f          vehicle ready: no   protocol ended: no   ignored by the TA: 1   ok
+  4. handover rsu[0] -> rsu[1]       Secure Marshaling (4a-4g): ok, Secrecy Forwarding (4h-4m): ok   ok
+  5. CY_g of no gateway              vehicle ready: no   protocol ended: no   ignored by the TA: 0   ok
+  6. before t_0                      vehicle ready: no   protocol ended: no   ignored by the TA: 0   ok
+  7. HIL shared-bus helpers          wire helpers / CY_g filter / clock anchor   ok
+gateway OK
 ```
 
-#### 3. Running the Full Network Testbench with Host PC
-
-To execute the full distributed protocol across the physical network (Raspberry Pi 3 as RSU, Host PC running vehicle, ESA, and Cloud):
-
-1. **On the Raspberry Pi 3**, launch the gateway daemon on Ethernet interface `eth0`:
-   ```bash
-   ./app rsu --iface eth0 --name rsu[0]
-   ```
-2. **On the Host PC**, run the network nodes pointing to your local Ethernet interface (e.g. `enp3s0`):
-   ```bash
-   # Run the ESA, Cloud HTTPS server, and vehicle against the physical RSU:
-   PI_IP=<pi-ip> ./bootstrap --pretty --iface <your-ethernet-network-interface> \
-       --cloud cloud.crt \
-       --rsu-exec ./rsu-ssh.sh \
-       --smartdata 32,1024,65535
-   ```
+*(Other `rsu-optee-gateway/` targets include `make caps` to grant `cap_net_raw=ep` on `./app`, and `make hil-dual` to run concurrent `rsu[0]` + `rsu[1]` processes locally over Ethernet.)*
 
 ---
 
-### Complementary: Virtual QEMU ARMv8-A VM (`setup-vm.sh`)
+## 2. Dual-RSU Raspberry Pi 3 HIL (`HIL_RPi3_DualRsu`)
 
-A complementary virtualized OP-TEE environment is available:
+In **Dual-RSU HIL**, both RSUs execute in OP-TEE on the Raspberry Pi 3:
 
-```bash
-# Set up the QEMU ARMv8-A VM with OP-TEE OS and libteec:
-./setup-vm.sh
+1. **Cross-compile & deploy** onto the Raspberry Pi 3:
+   ```bash
+   make rpi3 PI_IP=<pi-ip>
+   ```
+2. **Start both RSUs in OP-TEE on the Raspberry Pi 3** (requires `tee-supplicant` + `/dev/tee0`):
+   ```bash
+   ./rsu-dual-ssh.sh --pi-ip <pi-ip>
+   ```
+   This launches two independent `./app rsu` daemons sharing `eth0`:
+   - `rsu[0]` with Secure Storage ID `rsu0.sealed` (OP-TEE TA session #1)
+   - `rsu[1]` with Secure Storage ID `rsu1.sealed` (OP-TEE TA session #2)
+3. **Run Artery on the host PC** (ensure `sudo setcap cap_net_raw=ep artery-sim/deps/omnetpp-5.7.1/bin/opp_run_release` or run with privileges):
+   ```bash
+   make hil-dual HIL_IFACE=<host-nic>          # headless
+   make hil-dual HIL_IFACE=<host-nic> GUI=1    # with sumo-gui + Qtenv
+   ```
+   *(Or invoke `./artery-sim/run-hil-dual.sh --iface <host-nic> [--gui] [--rebuild]` directly.)*
 
-# Build and execute within the VM:
-make -C rsu-optee-gateway vm
-```
+Artery drives SUMO highway mobility (`25 m/s` over `0..1000 m`), ITS-G5 802.11p channel physics, vehicle `node[0]`, the ESA, and Cloud signature/decryption verification (`BackhaulBroker`), bridging `0x88b5` radio and `0x88b6` backhaul traffic over `<host-nic>` so `rsu[0]` and `rsu[1]` execute bootstrapping, SmartData marshaling, and TrustZone-to-TrustZone **Secrecy Forwarding** on the physical RPi3.
 
 ---
 
-## 3. Secrecy Forwarding (RSU-to-RSU Handover)
+## 3. Complementary VM Workflow (`setup-vm.sh`, `make vm`, `make vm-hil`)
 
-A vehicle activated with source RSU $G_{i+1}$ transitions to target RSU $G_{i+2}$ without contacting the ESA or performing asymmetric key handshakes ([`common/Handover.h`](common/Handover.h)):
+`./setup-vm.sh` provisions an Ubuntu 24.04 x86_64 libvirt/KVM VM (`optee-arm64-vm`) with the ARM64 cross-toolchain, `qemu-system-arm`, `optee_os` `vexpress-qemu_armv8a` (`ta_dev_kit`), and `optee_client` (`libteec`) in `/opt/optee`.
 
-| # | Message | From → To | Transport | What it carries / does |
+- **Self-test inside the VM**: `make vm` syncs the repo via `rsu-optee-gateway/vm-make.sh` and runs the self-test.
+- **Dual-RSU HIL against the VM**:
+  1. Terminal 1: `make vm-hil` (syncs the repo, grants `cap_net_raw=ep` in the VM, and starts concurrent `rsu[0]` + `rsu[1]` processes bound to the VM's libvirt NIC).
+  2. Terminal 2 (host PC): `make hil-dual HIL_IFACE=virbr0` (pairs Artery `HIL_RPi3_DualRsu` over the KVM bridge `virbr0` using the same Ethernet multiplexing path as physical RPi3 HIL).
+
+---
+
+## 4. Secrecy Forwarding (`common/Handover.h`)
+
+A vehicle activated with source RSU $G_{i+1}$ (`rsu[0]`) transitions to target RSU $G_{i+2}$ (`rsu[1]`) without contacting the ESA or running a new bootstrap:
+
+| # | Message | Direction | Transport | What it does |
 |---|---|---|---|---|
-| 1 | `Forwarding_Notice` (16) | $G_{i+1} \to G_{i+2}$ | HTTPS Backhaul (`0x88b6`) | $Y_V$, $\text{Auth}_d$, $\tau_{i+2} = \text{Poly1305}(K_{dg}, t_i, m)$: `TA_GATEWAY_CMD_TRIGGER_HANDOVER` |
-| 2 | `Handover_Command` (17) | $G_{i+2} \to G_{i+1} \to \text{Vehicle}$ | Backhaul / Radio | $Y_{G_{i+2}}$; $G_{i+2}$ pre-computes $K_{dh}, KT_i, \text{auth}_{i+2}$: `TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE` |
-| 3 | `Forwarding_Request` (18) | $\text{Vehicle} \to G_{i+2}$ | Radio (`0x88b5`) | $\text{auth}_{i+2} = \text{SHA256}(\tau)$, $\text{OTP} = \text{Poly1305}(KT_i^{32}, \text{auth} \oplus t_c, m)$ |
-| 4 | `Forwarding_Granted` (19) | $G_{i+2} \to \text{Vehicle}$ | Radio (`0x88b5`) | $\text{AES-128-GCM}(KT_i, \{ \text{auth}', K_{G_{i+2}}, \text{OTP} \})$: vehicle switches to target key $K_{G_{i+2}}$ |
-| – | `Secure_Data` (20) | $\text{Vehicle} \to \text{RSU}$ | Radio (`0x88b5`) | SmartData OT packet, marshaled in RSU TA (`TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT`) $\to$ Cloud HTTPS |
+| 1 | `Forwarding_Notice` (`16`) | $G_{i+1} \to G_{i+2}$ | Backhaul (`0x88b6`) | Sends $Y_V$, $\text{Auth}_d$, $\tau_{i+2} = \text{Poly1305}(K_{dg}, t_i, m)$ (`TA_GATEWAY_CMD_TRIGGER_HANDOVER`) |
+| 2 | `Handover_Command` (`17`) | $G_{i+2} \to G_{i+1} \to \text{Vehicle}$ | Backhaul / Radio | Carries $Y_{G_{i+2}}$; $G_{i+2}$ TA pre-computes $K_{dh_i}$, $KT_i$, $\text{auth}_{i+2}$ (`TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE`) |
+| 3 | `Forwarding_Request` (`18`) | $\text{Vehicle} \to G_{i+2}$ | Radio (`0x88b5`) | Sends $\text{auth}_{i+2} = \text{SHA256}(\tau_{i+2})$ and $\text{OTP} = \text{Poly1305}(KT_i^{32}, \text{auth}_{i+2} \oplus t_c, m)$ |
+| 4 | `Forwarding_Granted` (`19`) | $G_{i+2} \to \text{Vehicle}$ | Radio (`0x88b5`) | Sends $E_{KT_i}(\{Y_{G_{i+3}}, \text{auth}'_{i+2}, K_{G_{i+2}}, \text{OTP}\})$; vehicle switches to target key $K_{G_{i+2}}$ |
+| – | `Secure_Data` (`20`) | $\text{Vehicle} \to \text{RSU}$ | Radio (`0x88b5`) | SmartData OT packet marshaled in TA (`TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT`) → IT Cloud backhaul (`0x88b6`) |
 
 ---
 
-## 4. Artery Simulation & Hardware-in-the-Loop (`artery-sim/`)
+## 5. Artery Simulation Scenarios (`artery-sim/scenario/omnetpp.ini`)
 
-[`artery-sim/`](artery-sim) runs on the host PC, integrating **OMNeT++ 5.7**, **Artery / Vanetza** (ITS-G5 802.11p), **Simu5G** (5G NR) and **SUMO** road mobility.
-
-### Simulation Configurations (`scenario/omnetpp.ini`)
-
-1. **`D250m_80211p`**: IEEE 802.11p / ITS-G5 at 5.9 GHz, 6 Mbps, 200 mW (~250 m coverage per RSU).
-2. **`D500m_5G`**: 5G New Radio (NR) via **Simu5G**: 3.5 GHz (FR1 n78), 20 MHz (50 Resource Blocks), numerology 1 (30 kHz subcarrier spacing), 3GPP TR 38.901 Urban Microcell, gNodeB X2 handover between gNodeB[0] (x=250m) and gNodeB[1] (x=750m).
-3. **`HIL_RPi3_TargetHandover` (Hardware-in-the-Loop)**: Simulated vehicle in SUMO bootstraps with simulated `rsu[0]`, then hands over at $x = 500\,\text{m}$ across the host Ethernet interface (`HIL_IFACE`) to the **physical Raspberry Pi 3** acting as `rsu[1]`.
-4. **`HIL_RPi3_TargetHandover_GUI` (HIL with SUMO GUI)**: Interactive visual mode running the HIL scenario with `sumo-gui`, rendering real-time highway vehicle motion, antennas, and handover progress.
-
-### HIL Radio Frequency & Physical Layer Parameters
-
-The HIL simulation models **IEEE 802.11p (ITS-G5 / DSRC)** over the air:
-- **Carrier Frequency**: **`5.9 GHz`** (`5.900 GHz`, European ITS-G5 Control Channel / CCH)
-- **Channel Number**: **`180`** (ETSI EN 302 571 band 5.875–5.905 GHz / IEEE 1609.4)
-- **Channel Bandwidth**: **`10 MHz`** (OFDM with 64-point FFT)
-- **Data Bitrate**: **`6 Mbps`** (QPSK rate 1/2)
-- **Transmitter Power**: **`200 mW`** (+23 dBm EIRP)
-- **Antenna Height**: $10\,\text{m}$ at RSUs ($x = 250\,\text{m}$ and $x = 750\,\text{m}$)
-- **Effective Radio Range**: $\sim 250\,\text{m}$ line-of-sight per RSU
-- **Vehicle Speed**: $25\,\text{m/s}$ ($90\,\text{km/h}$), reaching handover threshold ($x = 500\,\text{m}$) at $t \approx 18\,\text{s}$
-
-### Running Simulations
-
-```bash
-# Setup dependencies and build simulation:
-artery-sim/setup_artery.sh
-
-# Run Hardware-in-the-Loop with physical Raspberry Pi 3 (Interactive SUMO GUI):
-# (1. Ensure Raspberry Pi 3 is running: ./app rsu --iface eth0 --name rsu[1])
-# (2. Ensure raw socket capability on PC: sudo setcap cap_net_raw+ep artery-sim/deps/omnetpp-5.7.1/bin/opp_run_release)
-cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_TargetHandover_GUI --scheduler-class=omnetpp::cRealTimeScheduler" artery-sim/deps/artery/build
-HIL_IFACE=<your-ethernet-interface> cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
-
-# Run Hardware-in-the-Loop (Headless):
-cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_TargetHandover --scheduler-class=omnetpp::cRealTimeScheduler" artery-sim/deps/artery/build
-HIL_IFACE=<your-ethernet-interface> cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
-
-# Run pure IEEE 802.11p simulation (Headless or with _GUI):
-cmake -DRUN_FLAGS="-u Cmdenv -c D250m_80211p" artery-sim/deps/artery/build
-cmake --build artery-sim/deps/artery/build --target run_tee_v2x_handover
-```
+| Config | Mode | What it runs |
+|---|---|---|
+| `D250m_80211p` / `D250m_80211p_GUI` | Pure host simulation (`HOST_SIM`) | IEEE 802.11p (5.9 GHz ch 180, 10 MHz, 6 Mbps, 200 mW, ~250 m RSU range); 1 km SUMO highway (`25 m/s`), `rsu[0]` at `x = 250 m`, `rsu[1]` at `x = 750 m`, handover at `x = 500 m`. |
+| `HIL_RPi3_DualRsu` / `HIL_RPi3_DualRsu_GUI` | Hardware-in-the-Loop (`cRealTimeScheduler`) | Both `rsu[0]` and `rsu[1]` have `enableHil = true`, bridging `0x88b5`/`0x88b6` frames over `HIL_IFACE` to the RPi3 (or `virbr0` VM) dual-RSU daemons. |

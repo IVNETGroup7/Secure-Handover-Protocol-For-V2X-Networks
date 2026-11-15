@@ -16,65 +16,40 @@
 
 class BootstrapMsg;
 
-// RSU: one activation the ESA authorized (Activation_Token), waiting for the vehicle's Auth_Request
-struct PendingVehicles{
-    Bytes authD;        // Auth_d
-
-    simtime_t t0;       // t_0
-
-    simtime_t tf;       // t_f
-
-    Bytes authEg;       // Auth_eg
-};
-
+// Vehicle-side Secure Bootstrap and Secrecy Forwarding handover client.
+// RSU logic runs inside Arm TrustZone (rsu-optee-gateway).
 class BootstrapService
 {
     public:
-        enum class Role { Vehicle, Rsu };
-
         struct Config
         {
-            std::string name;               // node name, e.g. "node[0]" or "rsu[0]"
-            Role role = Role::Vehicle;
-            bool autoStart = true;          // vehicle only: false = wait for initBootstrap()
-            double clockOffset = 0.0;       // s, vehicle only: initial error of the vehicle clock (PTP corrects it)
-            Bytes gatewayPublicKey;         // vehicle only: CY_g, the certificate key of the target RSU, as the
-                                            // operator knows it (see activationRequest)
-            std::string httpsSessionKey;    // RSU only: "" = random key
-            Bytes groupKey;                 // RSU only: K_g (kGroupKeySize bytes), empty = random key
-            bool deferHandover = false;     // vehicle only: a Handover_Command waits for requestForwarding()
+            std::string name;               // node name, e.g. "node[0]"
+            bool autoStart = true;          // false = wait for initBootstrap()
+            double clockOffset = 0.0;       // s: initial error of the vehicle clock (PTP corrects it)
+            Bytes gatewayPublicKey;         // CY_g, the certificate key of the target RSU
+            bool deferHandover = false;     // a Handover_Command waits for requestForwarding()
                                             // (e.g. until the vehicle reaches the target RSU's area)
             unsigned seed = 0;              // RNG of the UUID / session key (reproducible)
         };
 
-        // how a message leaves the node (e.g. a socket); set by whoever owns the node
-        struct Transport
-        {
-            std::function<void(const BootstrapMsg&)> radio;     // vehicle <-> RSU: receivers filter by destination
-            std::function<void(const BootstrapMsg&)> https;     // RSU -> ESA: pre-established HTTPS session
-        };
+        using Transport = std::function<void(const BootstrapMsg&)>;
 
         explicit BootstrapService(const Config&);
         void setTransport(Transport transport) { mTransport = std::move(transport); }
 
-        // incoming messages: over the radio (filtered by destination) or over HTTPS (from the ESA)
+        // incoming message over the radio (filtered by destination)
         void indicate(const BootstrapMsg&);
-        void handleHttps(const BootstrapMsg&);
 
-        // autoStart: starts the bootstrap of a vehicle when it enters the network
+        // autoStart: starts the bootstrap when the vehicle enters the network
         void trigger();
 
-        // vehicle: starts the bootstrap (see initBootstrap)
+        // starts the bootstrap (see initBootstrap)
         void start(BootstrapCallback onCompleted = nullptr);
 
         std::string myName() const;
-        const std::string& httpsSessionKey() const { return mHttpsSessionKey; }   // RSU only
-        const Bytes& groupKey() const { return mGroupKey; }                        // K_g (vehicle: after SaveVehicle)
+        const Bytes& groupKey() const { return mGroupKey; }                        // K_g (after SaveVehicle)
 
-        // RSU only: CY_e, the ESA public key, received when the HTTPS session is established
-        void setEsaPublicKey(const Bytes& der) { mEsaPublicKey = der; }
-
-        // vehicle, once bootstrapped: Secrecy Forwarding (common/Handover.h) to the RSU a Handover_Command names
+        // Secrecy Forwarding (common/Handover.h) to the RSU a Handover_Command names
         // onHandover runs when a Forwarding_Granted is accepted (result.rsu: the new RSU)
         void setHandoverCallback(BootstrapCallback onHandover) { mOnHandoverCompleted = std::move(onHandover); }
         // a Handover_Command arrived and its Forwarding_Request was not sent yet (deferHandover)
@@ -96,26 +71,15 @@ class BootstrapService
         // secure bootstrap protocol
         // "received" is the message that triggered the step
         void activationRequest();
-        void HTTPSEstablishment(const BootstrapMsg& received);
-        void PTP(const BootstrapMsg& received);
-        void PTPSync(const BootstrapMsg& received);
         void PTPDelayRequest(const BootstrapMsg& received);
-        void PTPDelayResponse(const BootstrapMsg& received);
         void ECDHRequest(const BootstrapMsg& received);
-        void ECDHResponse(const BootstrapMsg& received);
         void AuthRequest(const BootstrapMsg& received);
-        void SaveRSU(const BootstrapMsg& received);
-        void AuthGranted(const BootstrapMsg& received, const std::string& session);
         void SaveVehicle(const BootstrapMsg& received);
         void Active01(const BootstrapMsg& received);
-        void Active02(const BootstrapMsg& received);
-        // Secrecy Forwarding (vehicle): requestForwarding() sends the Forwarding_Request in between
+        // Secrecy Forwarding: requestForwarding() sends the Forwarding_Request in between
         void HandoverCommand(const BootstrapMsg& received);
         void ForwardingGranted(const BootstrapMsg& received);
-        // activationToken() and active03() live in ExternalSecurityAgent
 
-        // destination "esa" goes over HTTPS, anything else over the radio
-        // empty vehicle: me (vehicle) or destination (RSU)
         void sendBootstrap(int type, const std::string& destination, int seqNum, int ackNum,
             const std::string& vehicle = "", const Bytes& payload = {});
         // output (Trace.h): a step, a line under it, a validation, a value kept (for "vehicle")
@@ -125,20 +89,16 @@ class BootstrapService
         void printKeep(const std::string& name, const Bytes& value, const std::string& vehicle) const;
         void notifyCompleted(const std::string& vehicle, const std::string& rsu);
         BootstrapResult result(const std::string& vehicle, const std::string& rsu);
-        void stampTransmission(BootstrapMsg&);
         bool withinWindow(const std::string& vehicle);
         void correct_clock(simtime_t t1, simtime_t t2, simtime_t t3, simtime_t t4);
-        simtime_t localClock() const;               // vehicle: simTime() + mClockOffset; RSU: simTime() (PTP master)
+        simtime_t localClock() const;               // simTime() + mClockOffset
 
         std::string mName;
-        Role mRole;
         Transport mTransport;
         std::mt19937 mRng;
-        std::string mHttpsSessionKey;               // RSU only: HTTPS session key
-        Bytes mGroupKey;                            // K_g: RSU, handed to every vehicle it activates; vehicle, received
-        Bytes mEsaPublicKey;                        // CY_e (DER SubjectPublicKeyInfo): RSU, from the ESA; vehicle, received
+        Bytes mGroupKey;                            // K_g: received from RSU
+        Bytes mEsaPublicKey;                        // CY_e (DER SubjectPublicKeyInfo): received in Auth_Granted
 
-        // vehicle only (not protocol state: the flow is driven by the messages)
         bool mAutoStart = true;
         bool mStarted = false;                      // trigger() may run many times: send Activation_Request once
         bool mDeferHandover = false;                // Config::deferHandover
@@ -180,13 +140,8 @@ class BootstrapService
         };
         std::map<std::string, ActivationWindow> mWindows;
 
-        // K_dg per vehicle, kept after the bootstrap (vehicle: its own entry; RSU: one per vehicle)
+        // K_dg per vehicle, kept after the bootstrap
         std::map<std::string, Bytes> mKdg;
-
-        // RSU only: activations from the Activation_Token waiting for an OTP (SaveRSU searches all of them),
-        // and the ones an OTP matched (status active), indexed by the session (vehicle) they were bound to
-        std::map<std::string, PendingVehicles> mPending;
-        std::map<std::string, PendingVehicles> mActive;
 
         // statistics
         int mSent = 0;

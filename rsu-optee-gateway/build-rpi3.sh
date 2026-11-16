@@ -2,39 +2,61 @@
 # ==============================================================================
 # Build & Deploy script for Raspberry Pi 3 (Arm Cortex-A53, ARMv8-A 64-bit)
 # Cross-compiles the OP-TEE Trusted Application (TA) and Normal World host app.
+#
+# Uses the repo-vendored SDK & sysroot under rsu-optee-gateway/rpi3-sdk/ plus
+# the host's aarch64-linux-gnu- cross-compiler by default (set OPTEE_RPI3_DIR
+# to use a full OP-TEE Buildroot tree instead).
 # ==============================================================================
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Target configuration
-OPTEE_RPI3_DIR="${OPTEE_RPI3_DIR:-$HOME/optee-rpi3}"
+RPI3_SDK_DIR="${RPI3_SDK_DIR:-$SCRIPT_DIR/rpi3-sdk}"
 TA_UUID="9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718"
 
 echo "=== 1. Detecting OP-TEE RPi3 Toolchain and SDK ==="
-if [ ! -d "$OPTEE_RPI3_DIR" ]; then
-    echo "Error: OPTEE_RPI3_DIR not found at '$OPTEE_RPI3_DIR'."
-    echo "Set OPTEE_RPI3_DIR=/path/to/optee-rpi3 before running this script."
-    exit 1
+if [ -n "${OPTEE_RPI3_DIR:-}" ]; then
+    if [ ! -d "$OPTEE_RPI3_DIR" ]; then
+        echo "Error: OPTEE_RPI3_DIR not found at '$OPTEE_RPI3_DIR'."
+        exit 1
+    fi
+    TA_DEV_KIT_DIR="${TA_DEV_KIT_DIR:-$OPTEE_RPI3_DIR/optee_os/out/arm/export-ta_arm64}"
+    CROSS_COMPILE_TA="${CROSS_COMPILE_TA:-$OPTEE_RPI3_DIR/toolchains/aarch64/bin/aarch64-none-linux-gnu-}"
+    CROSS_COMPILE_HOST="${CROSS_COMPILE_HOST:-$OPTEE_RPI3_DIR/out-br/host/bin/aarch64-linux-gnu-}"
+    SYSROOT="${SYSROOT:-$OPTEE_RPI3_DIR/out-br/host/aarch64-buildroot-linux-gnu/sysroot}"
+else
+    TA_DEV_KIT_DIR="${TA_DEV_KIT_DIR:-$RPI3_SDK_DIR/export-ta_arm64}"
+    SYSROOT="${SYSROOT:-$RPI3_SDK_DIR/sysroot}"
+    CROSS_COMPILE_TA="${CROSS_COMPILE_TA:-aarch64-linux-gnu-}"
+    CROSS_COMPILE_HOST="${CROSS_COMPILE_HOST:-aarch64-linux-gnu-}"
 fi
 
-TA_DEV_KIT_DIR="${TA_DEV_KIT_DIR:-$OPTEE_RPI3_DIR/optee_os/out/arm/export-ta_arm64}"
-TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-$OPTEE_RPI3_DIR/toolchains/aarch64/aarch64-none-linux-gnu}"
-CROSS_COMPILE_TA="${CROSS_COMPILE_TA:-$OPTEE_RPI3_DIR/toolchains/aarch64/bin/aarch64-none-linux-gnu-}"
-CROSS_COMPILE_HOST="${CROSS_COMPILE_HOST:-$OPTEE_RPI3_DIR/out-br/host/bin/aarch64-linux-gnu-}"
-SYSROOT="${SYSROOT:-$OPTEE_RPI3_DIR/out-br/host/aarch64-buildroot-linux-gnu/sysroot}"
-
-SIGN_SCRIPT="$(find "$OPTEE_RPI3_DIR" -name "sign_encrypt.py" 2>/dev/null | head -n 1)"
-SIGN_KEY="$(find "$OPTEE_RPI3_DIR" -name "default_ta.pem" 2>/dev/null | head -n 1)"
+SIGN_SCRIPT="${SIGN_SCRIPT:-$TA_DEV_KIT_DIR/scripts/sign_encrypt.py}"
+SIGN_KEY="${SIGN_KEY:-$TA_DEV_KIT_DIR/keys/default_ta.pem}"
 
 if [ ! -d "$TA_DEV_KIT_DIR" ]; then
     echo "Error: TA DevKit not found at $TA_DEV_KIT_DIR"
     exit 1
 fi
-if [ ! -f "$SIGN_SCRIPT" ] || [ ! -f "$SIGN_KEY" ]; then
-    echo "Error: Signing tools (sign_encrypt.py / default_ta.pem) not found under $OPTEE_RPI3_DIR"
+if [ ! -d "$SYSROOT" ]; then
+    echo "Error: Target sysroot not found at $SYSROOT"
     exit 1
 fi
+if [ ! -f "$SIGN_SCRIPT" ] || [ ! -f "$SIGN_KEY" ]; then
+    echo "Error: Signing tools (sign_encrypt.py / default_ta.pem) not found under $TA_DEV_KIT_DIR"
+    exit 1
+fi
+for prefix in "$CROSS_COMPILE_TA" "$CROSS_COMPILE_HOST"; do
+    if ! command -v "${prefix}g++" >/dev/null 2>&1; then
+        echo "Error: Cross-compiler '${prefix}g++' not found in PATH."
+        echo "Install the AArch64 cross-toolchain for your distro:"
+        echo "  Ubuntu/Debian: sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu"
+        echo "  Arch Linux:    sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-binutils"
+        echo "  Fedora:        sudo dnf install gcc-aarch64-linux-gnu gcc-c++-aarch64-linux-gnu binutils-aarch64-linux-gnu"
+        exit 1
+    fi
+done
 
 echo "  TA DevKit:       $TA_DEV_KIT_DIR"
 echo "  TA Toolchain:    $CROSS_COMPILE_TA"
@@ -42,14 +64,18 @@ echo "  Host Toolchain:  $CROSS_COMPILE_HOST"
 echo "  Target Sysroot:  $SYSROOT"
 
 echo "=== 2. Building Trusted Application (TA) ==="
+cd "$SCRIPT_DIR"
+make clean
 cd "$SCRIPT_DIR/ta"
-make clean TA_DEV_KIT_DIR="$TA_DEV_KIT_DIR"
 
-CPPFLAGS_TA="-I$TOOLCHAIN_DIR/include/c++/14.3.1 -I$TOOLCHAIN_DIR/include/c++/14.3.1/aarch64-none-linux-gnu -I$TOOLCHAIN_DIR/libc/usr/include"
+CPPFLAGS_TA="$("${CROSS_COMPILE_TA}g++" -E -x c++ - -v </dev/null 2>&1 \
+    | sed -n '/#include <...> search starts here:/,/End of search list./p' \
+    | grep '^ ' \
+    | awk '{printf "-I%s ", $1}')"
 
 make CROSS_COMPILE="$CROSS_COMPILE_TA" \
      TA_DEV_KIT_DIR="$TA_DEV_KIT_DIR" \
-     CPPFLAGS="$CPPFLAGS_TA"
+     EXTRA_CPPFLAGS="$CPPFLAGS_TA"
 
 # Strip unnecessary GNU sections
 "${CROSS_COMPILE_TA}strip" --strip-unneeded -R .comment -R .note.gnu.gold-version -R .note.gnu.property \
@@ -73,11 +99,10 @@ echo "  -> Built: $SCRIPT_DIR/ta/${TA_UUID}.ta"
 
 echo "=== 3. Building Host Application (app) ==="
 cd "$SCRIPT_DIR"
-make clean
 make app \
     TEE_MODE=OPTEE \
     CROSS_COMPILE="$CROSS_COMPILE_HOST" \
-    CPU_FLAGS="-mcpu=cortex-a53" \
+    CPU_FLAGS="-mcpu=cortex-a53 --sysroot=$SYSROOT -static-libstdc++ -static-libgcc" \
     TEEC_EXPORT="$SYSROOT/usr"
 
 echo "  -> Built: $SCRIPT_DIR/app"
@@ -103,4 +128,3 @@ else
     echo "  scp $SCRIPT_DIR/ta/${TA_UUID}.ta root@<PI_IP>:/lib/optee_armtz/"
     echo "  scp $SCRIPT_DIR/app root@<PI_IP>:/root/"
 fi
-

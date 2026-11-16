@@ -83,3 +83,9 @@ dyn_list
 # ignoring TEE pdfs
 s10922-023-09723-6.pdf 
 tee.pdf
+
+# Vendored Raspberry Pi 3 OP-TEE SDK & minimal Buildroot sysroot
+!rsu-optee-gateway/rpi3-sdk/**/*.a
+!rsu-optee-gateway/rpi3-sdk/**/*.o
+!rsu-optee-gateway/rpi3-sdk/**/*.so
+!rsu-optee-gateway/rpi3-sdk/**/*.so.*

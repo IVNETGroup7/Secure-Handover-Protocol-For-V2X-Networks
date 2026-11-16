@@ -52,7 +52,7 @@ fi
 rsync -rlp --checksum --delete -e "${SSH[*]}" \
     --exclude=.git --exclude=.vscode --exclude='*.pdf' --exclude='build*/' \
     --exclude='*.o' --exclude='*.d' --exclude='*.ta' --exclude=/rsu-optee-gateway/app \
-    --exclude='*.sealed*' --exclude=/artery-sim/deps/ --exclude=/artery-sim/scenario/results/ \
+    --exclude='*.sealed*' --exclude=/rsu-optee-gateway/rpi3-sdk/ --exclude=/artery-sim/deps/ --exclude=/artery-sim/scenario/results/ \
     --exclude=/artery-sim/scenario/.cmdenv-log --exclude=/artery-sim/scenario/.qtenvrc \
     "$REPO/" "$host:$VM_DIR/"
 

@@ -4,7 +4,7 @@ CFG_TEE_TA_LOG_LEVEL ?= 2
 BINARY = 9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718
 
 # Include paths for shared TA header and common V2X headers
-CPPFLAGS += -I../include -I../../common -D__OPTEE_TA__
+CPPFLAGS += -I../include -I../../common -D__OPTEE_TA__ $(EXTRA_CPPFLAGS)
 
 -include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
 

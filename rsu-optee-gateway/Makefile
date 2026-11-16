@@ -51,7 +51,10 @@ Host_Protocol_Files := $(wildcard $(COMMON_DIR)/*.cpp $(PROTOCOL_DIR)/*.cpp $(NE
 ifeq ($(TEE_MODE),OPTEE)
     Host_Defines := -DUSE_OPTEE
     Host_Include += -I$(TEEC_EXPORT)/include
-    Host_Link_Flags := -L$(TEEC_EXPORT)/lib -lteec -lssl -lcrypto -lpthread -Wl,-rpath,$(TEEC_EXPORT)/lib
+    Host_Link_Flags := -L$(TEEC_EXPORT)/lib -lteec -lssl -lcrypto -lpthread
+    ifeq ($(CROSS_COMPILE),)
+        Host_Link_Flags += -Wl,-rpath,$(TEEC_EXPORT)/lib
+    endif
     Extra_Ta_Files := ta/codec.cpp
 else
     Host_Defines :=

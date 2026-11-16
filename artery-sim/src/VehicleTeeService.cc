@@ -25,6 +25,7 @@ constexpr double kPi = 3.14159265358979323846;
 VehicleTeeService::~VehicleTeeService()
 {
     cancelAndDelete(mStartTimer);
+    cancelAndDelete(mBootstrapTimeoutTimer);
     cancelAndDelete(mDataTimer);
 }
 
@@ -55,6 +56,7 @@ void VehicleTeeService::initialize()
     discoverRsus();
 
     mStartTimer = new omnetpp::cMessage("bootstrap");
+    mBootstrapTimeoutTimer = new omnetpp::cMessage("bootstrapTimeout");
     mDataTimer = new omnetpp::cMessage("Secure_Data");
     scheduleAt(omnetpp::simTime() + par("startDelay"), mStartTimer);
 }
@@ -123,15 +125,24 @@ void VehicleTeeService::startBootstrap()
         getParentModule()->getParentModule()->bubble(("handover: " + result.rsu).c_str());
     });
 
+    mAgent->bootstrap().setFailureCallback([this](const std::string& reason) {
+        cancelEvent(mBootstrapTimeoutTimer);
+        throw omnetpp::cRuntimeError("%s: bootstrap failed (%s)", mName.c_str(), reason.c_str());
+    });
+
     mStartedAt = omnetpp::simTime();
     mAgent->bootstrap().start([this](const BootstrapResult& result) {
         mReady = true;
+        cancelEvent(mBootstrapTimeoutTimer);
         emit(mBootstrapDelaySignal, omnetpp::simTime() - mStartedAt);
         getParentModule()->getParentModule()->bubble(("bootstrap OK: " + result.rsu).c_str());
         if (!mDataTimer->isScheduled()) {
             scheduleAt(omnetpp::simTime() + par("dataInterval"), mDataTimer);
         }
     });
+    if (!mReady && par("bootstrapTimeout").doubleValue() > 0.0 && !mBootstrapTimeoutTimer->isScheduled()) {
+        scheduleAt(omnetpp::simTime() + par("bootstrapTimeout"), mBootstrapTimeoutTimer);
+    }
 }
 
 void VehicleTeeService::sendSecureData()
@@ -162,7 +173,7 @@ void VehicleTeeService::checkPrediction()
 
     const bool newTarget = (pred->targetRsu != mPredictedRsu);
     const bool retryLostPrefetch = (!mAgent->handover().pending()
-        && (omnetpp::simTime() - mPredictSentAt).dbl() >= 1.0);
+        && (omnetpp::simTime() - mPredictSentAt).dbl() >= 3.0);
     if (!newTarget && !retryLostPrefetch) {
         return;
     }
@@ -195,8 +206,9 @@ void VehicleTeeService::checkHandover()
         return;
     }
 
-    // Retry Forwarding_Request if a single 802.11p frame was lost on the air
-    if (mAgent->handover().inFlight() && (omnetpp::simTime() - mRequestSentAt).dbl() >= 0.5) {
+    // Retry Forwarding_Request if an 802.11p frame was lost, after allowing
+    // enough time for an in-flight OP-TEE response (~1.7 s with concurrent ECDH).
+    if (mAgent->handover().inFlight() && (omnetpp::simTime() - mRequestSentAt).dbl() >= 2.5) {
         mRequestSentAt = omnetpp::simTime();
         mAgent->handover().requestForwarding();
         return;
@@ -248,6 +260,13 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
 {
     if (msg == mStartTimer) {
         startBootstrap();
+    } else if (msg == mBootstrapTimeoutTimer) {
+        if (!mReady) {
+            throw omnetpp::cRuntimeError(
+                "%s: bootstrap failed (timed out after %.1f s with %s; sent=%d, received=%d)",
+                mName.c_str(), par("bootstrapTimeout").doubleValue(), par("firstRsu").stringValue(),
+                mAgent ? mAgent->session().sent() : 0, mAgent ? mAgent->session().received() : 0);
+        }
     } else if (msg == mDataTimer) {
         updateKinematics();
         checkPrediction();
@@ -261,12 +280,12 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
 
 void VehicleTeeService::sendRadio(const ProtocolMsg& msg)
 {
-    // DCC profile: initial bootstrap messages as TC0 / DP0; once active, post-bootstrap traffic
-    // (Handover_Predict, Forwarding_Request, Secure_Data at 10 Hz) uses DP2 to avoid DP0's 10 s DCC lockout.
-    const bool postBootstrap = msg.getType() == Secure_Data
-        || msg.getType() == Handover_Predict
-        || msg.getType() == Forwarding_Request;
-    const auto profile = postBootstrap ? vanetza::dcc::Profile::DP2 : vanetza::dcc::Profile::DP0;
+    // DCC profile: initial pre-ECDH messages as TC0 / DP0 (< 1 s burst); once ECDH starts, Auth_Request
+    // and all subsequent traffic use DP2 to avoid DP0's 10 s BurstBudget lockout on HIL/RPi3 latency.
+    const bool preEcdh = msg.getType() == Activation_Request
+        || msg.getType() == PTP_Delay_Request
+        || msg.getType() == ECDH_Request;
+    const auto profile = preEcdh ? vanetza::dcc::Profile::DP0 : vanetza::dcc::Profile::DP2;
 
     // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
     vanetza::btp::DataRequestB req;

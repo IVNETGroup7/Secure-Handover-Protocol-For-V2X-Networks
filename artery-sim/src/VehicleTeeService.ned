@@ -16,6 +16,7 @@ simple VehicleTeeService like ItsG5Service
         @statistic[secureDataSent](title="Secure_Data sent"; record=last,vector);
         string firstRsu = default("rsu[0]");            // the RSU of the bootstrap (its CY_g in the Activation_Request)
         double startDelay @unit(s) = default(0.5s);     // entering the road -> Activation_Request
+        double bootstrapTimeout @unit(s) = default(6s); // max wait for bootstrap completion before failing simulation
         double dataInterval @unit(s) = default(100ms);  // Secure_Data period (10 Hz, as CAMs)
         int dataSize @unit(B) = default(200B);          // SmartData value per Secure_Data
         bool enableCtra = default(true);                // CTRA trajectory predictor selects single target RSU & pre-fetches

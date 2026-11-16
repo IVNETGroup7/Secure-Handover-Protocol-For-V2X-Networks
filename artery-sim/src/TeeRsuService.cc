@@ -23,6 +23,25 @@ namespace
 
 constexpr short kHandoverTimer = 1;     // self-message: announce a vehicle to the next RSU (its name is the vehicle)
 
+// Re-anchor cRealTimeScheduler after HIL/SUMO initialization finishes so t=0..startup doesn't replay at >1x speed.
+struct HilSchedulerSync : public omnetpp::cISimulationLifecycleListener
+{
+    explicit HilSchedulerSync(omnetpp::cSimulation* sim) : mSim(sim) {}
+
+    void lifecycleEvent(omnetpp::SimulationLifecycleEventType eventType, omnetpp::cObject*) override
+    {
+        if ((eventType == omnetpp::LF_POST_NETWORK_INITIALIZE
+                || eventType == omnetpp::LF_ON_SIMULATION_START)
+            && mSim) {
+            if (auto* sched = mSim->getScheduler()) {
+                sched->executionResumed();
+            }
+        }
+    }
+
+    omnetpp::cSimulation* mSim = nullptr;
+};
+
 // "rsu[0]" -> "rsu0": a storage object / file name
 std::string fileName(const std::string& name)
 {
@@ -56,6 +75,7 @@ TeeRsuService::~TeeRsuService()
 
 void TeeRsuService::shutdownHil()
 {
+    mHilSyncListener.reset();
     if (mHilPollMsg) {
         cancelAndDelete(mHilPollMsg);
         mHilPollMsg = nullptr;
@@ -133,9 +153,7 @@ void TeeRsuService::initHil()
             mGatewayPublicKey = hello->gatewayPublicKey;
             mEsaPublicKey = mBroker->registerRsu(mName, hello->sessionKey, mGatewayPublicKey,
                 [this](const ProtocolMsg& msg) { onBackhaul(msg); });
-            Bytes ack = toBytes(mName + "\n");
-            ack.insert(ack.end(), mEsaPublicKey.begin(), mEsaPublicKey.end());
-            sendFrame(*mHilBackhaul, FrameKind::Session_Ack, ack);
+            sendHilSessionAck();
             registered = true;
             std::printf("[HIL] %s registered physical RSU CY_g (%zu B) with ESA -> Session_Ack sent\n",
                 mName.c_str(), mGatewayPublicKey.size());
@@ -146,6 +164,47 @@ void TeeRsuService::initHil()
         throw omnetpp::cRuntimeError(
             "%s: timed out waiting for physical RSU Session_Hello on %s (start './app rsu --name %s ...' on RPi3)",
             mName.c_str(), mHilIface.c_str(), mName.c_str());
+    }
+
+    // Pin the Cloud certificate on the physical RSU BEFORE simulation time starts so all 4 RSUs
+    // finish OP-TEE TA_GATEWAY_CMD_INIT_CLOUD_SESSION (~2 s each on RPi3) prior to t=0.
+    const Bytes cloudPem = toBytes(mBroker->cloudCertificate());
+    auto lastCloudSent = std::chrono::steady_clock::time_point::min();
+    while (!mHilCloudReady && std::chrono::steady_clock::now() < deadline) {
+        const auto now = std::chrono::steady_clock::now();
+        if (lastCloudSent == std::chrono::steady_clock::time_point::min()
+            || now - lastCloudSent >= std::chrono::milliseconds(1000)) {
+            sendData(*mHilBackhaul, "cloud", mName, cloudPem);
+            lastCloudSent = now;
+        }
+        waitFor({ mHilBackhaul.get() }, 100);
+        drain(*mHilBackhaul, [&](FrameKind kind, const Bytes& body) {
+            if (kind == FrameKind::Cloud_Ready) {
+                if (auto tag = parseRsuTag(body); tag && *tag == mName) {
+                    mHilCloudReady = true;
+                }
+            } else if (kind == FrameKind::Session_Hello) {
+                if (auto hello = parseSessionHello(body);
+                    hello && hello->rsu == mName && hello->gatewayPublicKey == mGatewayPublicKey) {
+                    sendHilSessionAck();
+                }
+            }
+        });
+    }
+    if (!mHilCloudReady) {
+        throw omnetpp::cRuntimeError(
+            "%s: timed out waiting for physical RSU Cloud_Ready on %s",
+            mName.c_str(), mHilIface.c_str());
+    }
+    std::printf("[HIL] %s cloud session pinned (Cloud_Ready received)\n", mName.c_str());
+    std::fflush(stdout);
+
+    if (!mHilSyncListener) {
+        mHilSyncListener = std::make_unique<HilSchedulerSync>(getSimulation());
+        omnetpp::getEnvir()->addLifecycleListener(mHilSyncListener.get());
+    }
+    if (auto* sched = getSimulation()->getScheduler()) {
+        sched->executionResumed();
     }
 
     mHilPollMsg = new omnetpp::cMessage("hilPoll");
@@ -254,6 +313,9 @@ void TeeRsuService::onBackhaul(const ProtocolMsg& msg)
     Enter_Method("onBackhaul");
     if (mEnableHil && mHilBackhaul) {
         try {
+            if (msg.getType() == Activation_Token) {
+                sendHilClockAnchor();
+            }
             sendMsg(*mHilBackhaul, msg);
             EV_INFO << mName << " [HIL]: forwarded backhaul " << messageTypeName(msg.getType())
                     << " to physical RSU on " << mHilIface << "\n";
@@ -286,11 +348,17 @@ void TeeRsuService::sendRadio(const ProtocolMsg& msg)
         emit(mHandoverGrantedSignal, mHandoversGranted);
     }
 
+    // Use DP0 only for the initial PTP pair (sub-ms delay, < 1 s burst); everything after
+    // (ECDH_Response, Auth_Granted, Handover_Command, Forwarding_Granted) uses DP2 to avoid
+    // Vanetza's 10 s DP0 BurstBudget lockout when OP-TEE ECDH exceeds the 1 s DP0 burst window.
+    const bool ptp = msg.getType() == PTP_Sync || msg.getType() == PTP_Delay_Response;
+    const auto profile = ptp ? vanetza::dcc::Profile::DP0 : vanetza::dcc::Profile::DP2;
+
     // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
     vanetza::btp::DataRequestB req;
     req.destination_port = vanetza::host_cast(getPortNumber());
     req.gn.transport_type = vanetza::geonet::TransportType::SHB;
-    req.gn.traffic_class.tc_id(static_cast<unsigned>(vanetza::dcc::Profile::DP0)); // TC0
+    req.gn.traffic_class.tc_id(static_cast<unsigned>(profile));
     req.gn.communication_profile = vanetza::geonet::CommunicationProfile::ITS_G5;
     request(req, new V2xFrame(msg));
 }
@@ -316,23 +384,48 @@ void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
     delete msg;
 }
 
+void TeeRsuService::sendHilSessionAck()
+{
+    if (!mHilBackhaul) {
+        return;
+    }
+    Bytes ack = toBytes(mName + "\n");
+    ack.insert(ack.end(), mEsaPublicKey.begin(), mEsaPublicKey.end());
+    sendFrame(*mHilBackhaul, FrameKind::Session_Ack, ack);
+}
+
+void TeeRsuService::sendHilClockAnchor()
+{
+    if (!mHilBackhaul) {
+        return;
+    }
+    const auto wallNow = std::chrono::steady_clock::now();
+    const auto simNow = omnetpp::simTime();
+    sendFrame(*mHilBackhaul, FrameKind::Clock_Anchor, packClockAnchor(simNow.inUnit(omnetpp::SIMTIME_NS)));
+    mHilClockSent = true;
+    mHilClockRefWall = wallNow;
+    mHilClockRefSim = simNow;
+}
+
 void TeeRsuService::maybeSyncHilClock()
 {
+    // Only rsu[0] drives periodic clock anchors on the shared 0x88b6 bus, and rate-limits
+    // by wall clock (>= 50 ms) so TraCI startup catch-up does not burst-drop frames on the NIC.
+    if (getParentModule()->getParentModule()->getIndex() != 0) {
+        return;
+    }
     const auto wallNow = std::chrono::steady_clock::now();
     const auto simNow = omnetpp::simTime();
     bool sync = !mHilClockSent;
     if (mHilClockSent) {
         const double wallDelta = std::chrono::duration<double>(wallNow - mHilClockRefWall).count();
         const double simDelta = (simNow - mHilClockRefSim).dbl();
-        if (std::abs(wallDelta - simDelta) > 0.020) {
+        if (wallDelta >= 0.050 && std::abs(wallDelta - simDelta) > 0.020) {
             sync = true;
         }
     }
-    if (sync && mHilBackhaul) {
-        sendFrame(*mHilBackhaul, FrameKind::Clock_Anchor, packClockAnchor(simNow.inUnit(omnetpp::SIMTIME_NS)));
-        mHilClockSent = true;
-        mHilClockRefWall = wallNow;
-        mHilClockRefSim = simNow;
+    if (sync) {
+        sendHilClockAnchor();
     }
 }
 
@@ -413,9 +506,7 @@ void TeeRsuService::pollHil()
             } else if (kind == FrameKind::Session_Hello) {
                 if (auto hello = parseSessionHello(body);
                     hello && hello->rsu == mName && hello->gatewayPublicKey == mGatewayPublicKey) {
-                    Bytes ack = toBytes(mName + "\n");
-                    ack.insert(ack.end(), mEsaPublicKey.begin(), mEsaPublicKey.end());
-                    sendFrame(*mHilBackhaul, FrameKind::Session_Ack, ack);
+                    sendHilSessionAck();
                 }
             }
         });

@@ -46,7 +46,9 @@ class TeeRsuService : public artery::ItsG5Service
         void onRadioRx(const ProtocolMsg&);
         void secureData(const ProtocolMsg&);
         void maybeSyncHilClock();
+        void sendHilClockAnchor();
         void maybeSendHilCloudCert();
+        void sendHilSessionAck();
         void pollHil();
         void shutdownHil();
 
@@ -62,6 +64,7 @@ class TeeRsuService : public artery::ItsG5Service
         bool mHilClockSent = false;
         std::chrono::steady_clock::time_point mHilClockRefWall{};
         omnetpp::simtime_t mHilClockRefSim;
+        std::unique_ptr<omnetpp::cISimulationLifecycleListener> mHilSyncListener;
 
         std::string mName;                                  // "rsu[0]"
         Bytes mGatewayPublicKey;                            // CY_g: the key of my certificate

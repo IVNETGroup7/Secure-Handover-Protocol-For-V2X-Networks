@@ -66,6 +66,10 @@ void BootstrapClient::start(BootstrapCallback onCompleted)
 
 void BootstrapClient::handleMessage(const ProtocolMsg& msg)
 {
+    if (mSession.isActivated()) {
+        return;
+    }
+
     // From ECDH on, a message outside the activation window [t_0, t_f] aborts the bootstrap
     if ((msg.getType() == ECDH_Response || msg.getType() == Auth_Granted) && !withinWindow()) {
         return;
@@ -174,14 +178,21 @@ void BootstrapClient::saveVehicle(const ProtocolMsg& received)
 {
     printStep("SaveVehicle", &received);
 
+    auto reject = [&](const std::string& reason) {
+        printCheck(false, reason);
+        if (!mSession.isActivated()) {
+            fail(reason);
+        }
+    };
+
     if (mPendingKdg.empty()) {
-        printCheck(false, "no K_dg: ignored");
+        reject("no K_dg: ignored");
         return;
     }
 
     const auto plain = aesGcmDecrypt(mPendingKdg, getPayload(received));
     if (!plain) {
-        printCheck(false, "E_K_dg(M) does not decrypt with my K_dg: ignored");
+        reject("E_K_dg(M) does not decrypt with my K_dg: ignored");
         return;
     }
     printCheck(true, "E_K_dg(M) decrypts with my K_dg (GCM tag valid)");
@@ -191,7 +202,7 @@ void BootstrapClient::saveVehicle(const ProtocolMsg& received)
     }
 
     if (CRYPTO_memcmp(m.otp.data(), mOtpSent.data(), m.otp.size()) != 0) {
-        printCheck(false, "OTP_dt is not the one I sent: ignored");
+        reject("OTP_dt is not the one I sent: ignored");
         return;
     }
     printCheck(true, "OTP_dt is the one I sent");
@@ -199,13 +210,13 @@ void BootstrapClient::saveVehicle(const ProtocolMsg& received)
     const Sha256 idD = computeIdD(mSession.traits().uuid, mSession.traits().firmwareHash);
     const Bytes authEg = aes256Encrypt(idD, m.esaPublicKey);
     if (authEg.size() != m.authEg.size() || CRYPTO_memcmp(authEg.data(), m.authEg.data(), authEg.size()) != 0) {
-        printCheck(false, "Auth_eg != AES(Id_d, CY_e): CY_e is not the ESA's key, ignored");
+        reject("Auth_eg != AES(Id_d, CY_e): CY_e is not the ESA's key, ignored");
         return;
     }
     printCheck(true, "Auth_eg = AES(Id_d, CY_e): CY_e is the ESA's key");
 
     if (m.kG.size() != kGroupKeySize) {
-        printCheck(false, "K_g has " + std::to_string(m.kG.size()) + " bytes: ignored");
+        reject("K_g has " + std::to_string(m.kG.size()) + " bytes: ignored");
         return;
     }
     mEsaPublicKey = m.esaPublicKey;
@@ -263,16 +274,23 @@ bool BootstrapClient::withinWindow()
         return true;
     }
 
-    if (!mWindow) {
-        trace::end(mSession.name(), "aborted: no activation window for " + mSession.name());
-    } else {
-        trace::end(mSession.name(), "aborted: t = " + now.str() + " s outside [t_0, t_f] = ["
+    const std::string reason = !mWindow
+        ? ("no activation window for " + mSession.name())
+        : ("t = " + now.str() + " s outside [t_0, t_f] = ["
             + mWindow->t0.str() + " s, " + mWindow->tf.str() + " s]");
-        mWindow.reset();
-    }
+    trace::end(mSession.name(), "aborted: " + reason);
+    fail(reason);
+    return false;
+}
+
+void BootstrapClient::fail(const std::string& reason)
+{
+    mWindow.reset();
     mPendingKdg.clear();
     mSession.clearActiveKeys();
-    return false;
+    if (mOnFailed) {
+        mOnFailed(reason);
+    }
 }
 
 void BootstrapClient::correctClock(simtime_t t1, simtime_t t2, simtime_t t3, simtime_t t4)

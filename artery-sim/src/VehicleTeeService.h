@@ -48,6 +48,7 @@ class VehicleTeeService : public artery::ItsG5Service
         BackhaulBroker* mBroker = nullptr;
         CtraPredictor mPredictor;
         omnetpp::cMessage* mStartTimer = nullptr;
+        omnetpp::cMessage* mBootstrapTimeoutTimer = nullptr;
         omnetpp::cMessage* mDataTimer = nullptr;
         bool mEnableCtra = true;
         double mPredictionHorizon = 8.0;

@@ -28,6 +28,7 @@ struct BootstrapResult
 };
 
 using BootstrapCallback = std::function<void(const BootstrapResult&)>;
+using BootstrapFailureCallback = std::function<void(const std::string& reason)>;
 
 class BootstrapClient
 {
@@ -42,6 +43,7 @@ class BootstrapClient
 
         void trigger();
         void start(BootstrapCallback onCompleted = nullptr);
+        void setFailureCallback(BootstrapFailureCallback onFailed) { mOnFailed = std::move(onFailed); }
         void handleMessage(const ProtocolMsg& msg);
 
     private:
@@ -53,6 +55,7 @@ class BootstrapClient
         void active01(const ProtocolMsg& received);
 
         bool withinWindow();
+        void fail(const std::string& reason);
         void correctClock(simtime_t t1, simtime_t t2, simtime_t t3, simtime_t t4);
 
         void printStep(const char* step, const ProtocolMsg* received = nullptr) const;
@@ -69,6 +72,7 @@ class BootstrapClient
         VehicleSession& mSession;
         Config mConfig;
         BootstrapCallback mOnCompleted;
+        BootstrapFailureCallback mOnFailed;
         bool mStarted = false;
 
         std::optional<ActivationWindow> mWindow;

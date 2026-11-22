@@ -37,6 +37,7 @@ class VehicleTeeService : public artery::ItsG5Service
         void discoverRsus();
         void updateKinematics();
         void startBootstrap();
+        void launchOtBootstrap();
         void sendSecureData();
         void checkPrediction();     // CTRA trajectory prediction -> single-RSU Handover_Predict pre-fetch
         void checkHandover();       // executes pre-fetched Forwarding_Request once inside target RSU zone
@@ -48,6 +49,7 @@ class VehicleTeeService : public artery::ItsG5Service
         BackhaulBroker* mBroker = nullptr;
         CtraPredictor mPredictor;
         omnetpp::cMessage* mStartTimer = nullptr;
+        omnetpp::cMessage* mBootstrapLaunchTimer = nullptr;
         omnetpp::cMessage* mBootstrapTimeoutTimer = nullptr;
         omnetpp::cMessage* mDataTimer = nullptr;
         bool mEnableCtra = true;

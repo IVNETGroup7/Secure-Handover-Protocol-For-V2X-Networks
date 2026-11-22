@@ -4,9 +4,9 @@
 // Per-session Trusted Application state and command handlers inside the Arm TrustZone OP-TEE TA.
 // Each RSU opens its own TEEC_Session, which allocates an isolated GatewayTaSession in Secure World memory.
 
-#include "MessageType.h"
 #include "Crypto.h"
 #include "Handover.h"
+#include "MessageType.h"
 #include "SmartData.h"
 #include "Traits.h"
 #include "codec.h"
@@ -32,10 +32,10 @@ class GatewayTaSession
         std::string takeLogs();
 
         // TA Command Handlers (corresponding 1-to-1 with TaGatewayCommand in gateway_ta.h)
-        int initGateway(const Bytes& gwCert, const Bytes& esaPubKey, const Bytes& groupKey);
+        int initIdentity(Bytes& outGatewayPubKey);
+        int initGateway(const Bytes& caPubKey, const Bytes& gwCertDer, const Bytes& esaCertDer, const Bytes& groupKey);
         int initCloudSession(const std::string& cloudCertPem, const std::string& host, const std::string& gateway);
-        int addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
-            const Bytes& authEg);
+        int addActivationToken(const Bytes& encryptedToken, uint64_t currentPtpTime);
         int handleBootstrap(int msgType, const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
             Bytes& outPkt, int& outType);
         int handleForwardingRequest(const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
@@ -58,10 +58,12 @@ class GatewayTaSession
         {
             Bytes kDg;
             Bytes yV;
+            std::string peerLabel;  // Unauthenticated OT sender hint (routing/logging only, never trusted)
         };
 
         struct ActiveSession
         {
+            std::string session;    // OT peer label bound on successful OTP match
             Bytes authD;
             Bytes authEg;
             uint64_t t0 = 0;
@@ -69,6 +71,7 @@ class GatewayTaSession
             Bytes kDg;
             Bytes yV;
             uint64_t authTime = 0;
+            bool confirmed = false; // true after Active_01 verified & relayed as Active_02
         };
 
         struct HandoverSession
@@ -104,14 +107,16 @@ class GatewayTaSession
 
         void saveState();
         bool loadState(bool keepGroupKey);
-        bool withinWindow(const std::string& session, uint64_t now);
+        void purgeExpiredActivations(uint64_t now);
+        bool isCompromisedAuthD(const Bytes& authD) const;
+        bool isActiveAuthD(const Bytes& authD) const;
         std::optional<VehicleKeys> findVehicleKeys(const Bytes& authD) const;
         void newCloudSession();
 
         // Protocol step handlers inside the TA
         Bytes ecdhResponse(const std::string& session, const Bytes& in);
         std::optional<Bytes> authGranted(const std::string& session, const Bytes& in, uint64_t now);
-        std::optional<Bytes> active02(const std::string& session, const Bytes& in);
+        std::optional<Bytes> active02(const std::string& session, const Bytes& in, uint64_t now);
         std::optional<Bytes> forwardingGranted(const std::string& session, const Bytes& in, uint64_t now);
         int marshal(const Bytes& otPacket, uint64_t now, Bytes& outItPkt);
 
@@ -122,12 +127,16 @@ class GatewayTaSession
 
         bool mReady = false;
         std::string mStorageId = "gateway.sealed";
-        Bytes mGatewayCert;
-        Bytes mEsaPublicKey;
-        Bytes mGroupKey;
-        std::map<std::string, PendingActivation> mPendingActivations;
-        std::map<std::string, PendingEcdh> mPendingEcdh;
-        std::map<std::string, ActiveSession> mActiveSessions;
+        ta_crypto::EcdhKeyPair mGatewayKey;         // X_gw / CY_g held strictly inside Secure World
+        Bytes mCaPublicKey;                         // Pinned Root CA public key (DER SPKI)
+        Bytes mGatewayCert;                         // Gateway's CA-signed X.509 certificate (DER)
+        Bytes mEsaPublicKey;                        // Verified CY_e from ESA's CA-signed certificate
+        Bytes mEsaSessionKey;                       // Mutually-authenticated K_esa (AES-256-GCM)
+        Bytes mGroupKey;                            // K_G (AES-128-GCM)
+        std::vector<PendingActivation> mPendingActivations; // Anonymous pending Activation_Tokens
+        std::vector<PendingEcdh> mPendingEcdh;              // Unauthenticated ECDH secrets pool
+        std::map<Bytes, ActiveSession> mActiveSessions;     // Auth_d -> active session
+        std::set<Bytes> mCompromisedAuthD;                  // Expired (unactivated past t_f) Auth_d blocklist
         std::map<std::string, HandoverSession> mHandovers;
         CloudState mCloud;
         std::set<size_t> mTracedSizes;
@@ -135,4 +144,3 @@ class GatewayTaSession
 };
 
 #endif /* TA_GATEWAY_SESSION_H_ */
-

@@ -58,7 +58,9 @@ class TeeRsuService : public artery::ItsG5Service
         std::unique_ptr<RawSocket> mHilBackhaul;
         Reassembler mHilBackhaulReassembler;
         omnetpp::cMessage* mHilPollMsg = nullptr;
-        Bytes mEsaPublicKey;
+        Bytes mCaPublicKey;
+        Bytes mGatewayCert;
+        Bytes mEsaCert;
         bool mHilCloudReady = false;
         omnetpp::simtime_t mLastCloudCertSent = -1;
         bool mHilClockSent = false;

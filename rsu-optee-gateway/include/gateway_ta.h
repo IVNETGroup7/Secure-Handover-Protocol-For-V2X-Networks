@@ -19,27 +19,29 @@ enum TaGatewayCommand
     // params[1] = VALUE_INPUT:       a = purge existing object if non-zero
     TA_GATEWAY_CMD_SET_STORAGE_ID           = 0,
 
-    // Initialize the RSU gateway inside the Secure World
-    // params[0] = MEMREF_TEMP_INPUT: packed { gw_cert, esa_pub_key, group_key }
+    // Initialize the RSU gateway inside the Secure World with CA-signed Gateway and ESA certificates:
+    // Pins Root CA public key, verifies gw_cert and esa_cert against CA, confirms gw_cert matches
+    // the TA's private identity key X_gw, extracts CY_e, and derives mutually-authenticated K_esa.
+    // params[0] = MEMREF_TEMP_INPUT: packed { ca_pub_key, gw_cert_der, esa_cert_der, group_key }
     // params[1] = VALUE_OUTPUT:      a = gateway status (GW_OK, ...)
     // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_INIT_GATEWAY             = 1,
 
-    // Pin the Cloud X.509 certificate (CY_e) and derive ephemeral K_eg = SHA256(ECDH(X_s, Y_e))
+    // Verify the Cloud CA-signed X.509 certificate against pinned Root CA and derive K_eg = SHA256(ECDH(X_s, Y_cloud))
     // params[0] = MEMREF_TEMP_INPUT: packed { cloud_cert_pem, host, gateway }
     // params[1] = VALUE_OUTPUT:      a = gateway status (GW_OK, ...)
     // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_INIT_CLOUD_SESSION       = 2,
 
-    // Register an ESA-authorized Activation_Token { t_0, t_f, Auth_d, Auth_eg }
-    // params[0] = MEMREF_TEMP_INPUT: packed { session, t0, tf, auth_d, auth_eg }
+    // Decrypt (under K_esa) and register an ESA-authorized Activation_Token { t_0, t_f, Auth_d, Auth_eg }
+    // params[0] = MEMREF_TEMP_INPUT: packed { current_ptp_time (8B), encrypted_token }
     // params[1] = VALUE_OUTPUT:      a = gateway status (GW_OK, ...)
     // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_ADD_ACTIVATION_TOKEN     = 3,
 
     // Handle a bootstrap message in Secure World (ECDH_Request, Auth_Request, Active_01)
     // params[0] = MEMREF_TEMP_INPUT:  packed { msg_type, current_ptp_time, session, in_pkt }
-    // params[1] = MEMREF_TEMP_OUTPUT: out_pkt
+    // params[1] = MEMREF_TEMP_OUTPUT: out_pkt (Active_02 is returned encrypted under K_esa!)
     // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...), b = out_type
     // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_HANDLE_BOOTSTRAP         = 4,
@@ -70,7 +72,14 @@ enum TaGatewayCommand
     // params[1] = MEMREF_TEMP_OUTPUT: out_pkt
     // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
     // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
-    TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST = 8
+    TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST = 8,
+
+    // Generate the Gateway's P-256 identity keypair (X_gw, Y_gw) strictly inside Secure World.
+    // Private key X_gw never leaves the TA; outputs Y_gw (91-byte DER SubjectPublicKeyInfo) for CA certification.
+    // params[0] = MEMREF_TEMP_OUTPUT: out_gw_pub_key (91B DER SPKI)
+    // params[1] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
+    // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
+    TA_GATEWAY_CMD_INIT_IDENTITY            = 9
 };
 
 // Gateway status codes returned in VALUE_OUTPUT.a

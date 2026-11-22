@@ -25,6 +25,7 @@ constexpr double kPi = 3.14159265358979323846;
 VehicleTeeService::~VehicleTeeService()
 {
     cancelAndDelete(mStartTimer);
+    cancelAndDelete(mBootstrapLaunchTimer);
     cancelAndDelete(mBootstrapTimeoutTimer);
     cancelAndDelete(mDataTimer);
 }
@@ -56,6 +57,7 @@ void VehicleTeeService::initialize()
     discoverRsus();
 
     mStartTimer = new omnetpp::cMessage("bootstrap");
+    mBootstrapLaunchTimer = new omnetpp::cMessage("bootstrapOtLaunch");
     mBootstrapTimeoutTimer = new omnetpp::cMessage("bootstrapTimeout");
     mDataTimer = new omnetpp::cMessage("Secure_Data");
     scheduleAt(omnetpp::simTime() + par("startDelay"), mStartTimer);
@@ -95,12 +97,13 @@ void VehicleTeeService::startBootstrap()
 {
     updateKinematics();
 
-    // CY_g of the RSU the operator chose (here: "firstRsu"), as it registered its certificate with the ESA
+    const std::string firstRsu = par("firstRsu").stdstringValue();
+
     VehicleAgent::Config config;
     config.name = mName;
+    config.targetRsu = firstRsu;
     config.autoStart = false;
     config.clockOffset = par("clockOffset").doubleValue();
-    config.gatewayPublicKey = mBroker->gatewayPublicKey(par("firstRsu").stdstringValue());
     config.deferHandover = true;    // Handover_Command pre-fetches keys; Forwarding_Request waits for checkHandover()
     config.seed = static_cast<unsigned>(intuniform(0, std::numeric_limits<int>::max()));
     mAgent = std::make_unique<VehicleAgent>(config);
@@ -130,6 +133,21 @@ void VehicleTeeService::startBootstrap()
         throw omnetpp::cRuntimeError("%s: bootstrap failed (%s)", mName.c_str(), reason.c_str());
     });
 
+    // Phase A (IT Domain): Human Operator out-of-band sends Activation_Request(CY_g, t_0, t_f, UUID_d, SHA256(fw_d))
+    // directly to the ESA -> encrypted Activation_Token delivered to firstRsu's TEE before OT bootstrap begins.
+    const simtime_t now = SimTime::now();
+    const VehicleTraits& traits = mAgent->session().traits();
+    mBroker->requestActivation(firstRsu, now, now + kActivationWindow, traits.uuid, traits.firmwareHash);
+
+    // Allow Phase A backhaul delivery (20 ms sim / HIL Ethernet) before Phase B starts over 802.11p
+    scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(100, omnetpp::SIMTIME_MS), mBootstrapLaunchTimer);
+}
+
+void VehicleTeeService::launchOtBootstrap()
+{
+    if (!mAgent) {
+        return;
+    }
     mStartedAt = omnetpp::simTime();
     mAgent->bootstrap().start([this](const BootstrapResult& result) {
         mReady = true;
@@ -260,6 +278,8 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
 {
     if (msg == mStartTimer) {
         startBootstrap();
+    } else if (msg == mBootstrapLaunchTimer) {
+        launchOtBootstrap();
     } else if (msg == mBootstrapTimeoutTimer) {
         if (!mReady) {
             throw omnetpp::cRuntimeError(
@@ -282,7 +302,7 @@ void VehicleTeeService::sendRadio(const ProtocolMsg& msg)
 {
     // DCC profile: initial pre-ECDH messages as TC0 / DP0 (< 1 s burst); once ECDH starts, Auth_Request
     // and all subsequent traffic use DP2 to avoid DP0's 10 s BurstBudget lockout on HIL/RPi3 latency.
-    const bool preEcdh = msg.getType() == Activation_Request
+    const bool preEcdh = msg.getType() == PTP
         || msg.getType() == PTP_Delay_Request
         || msg.getType() == ECDH_Request;
     const auto profile = preEcdh ? vanetza::dcc::Profile::DP0 : vanetza::dcc::Profile::DP2;

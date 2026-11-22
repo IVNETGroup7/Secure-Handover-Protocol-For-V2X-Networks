@@ -20,12 +20,12 @@ class VehicleAgent
     public:
         struct Config
         {
-            std::string name;               // e.g. "node[0]"
-            bool autoStart = true;          // false = wait for bootstrap().start()
-            double clockOffset = 0.0;       // s: initial clock skew before PTP correction
-            Bytes gatewayPublicKey;         // CY_g of initial target RSU
-            bool deferHandover = false;     // true = Handover_Command pre-fetches keys until requestForwarding()
-            unsigned seed = 0;              // PRNG seed for UUID & keys
+            std::string name;                   // e.g. "node[0]"
+            std::string targetRsu = "rsu[0]";   // Initial RSU link-layer address on OT radio
+            bool autoStart = true;              // false = wait for bootstrap().start()
+            double clockOffset = 0.0;           // s: initial clock skew before PTP correction
+            bool deferHandover = false;         // true = Handover_Command pre-fetches keys until requestForwarding()
+            unsigned seed = 0;                  // PRNG seed for UUID & keys
         };
 
         explicit VehicleAgent(const Config& config);

@@ -28,14 +28,15 @@ constexpr const char* kSessionKeyHeader = "X-Session-Key";  // Y_s (DER, base64)
 constexpr int kMessagesPerSession = 100;                    // then a new K_eg
 
 #ifndef __OPTEE_TA__
-// Cloud P-256 key pair and self-signed certificate; pinned by each RSU's OP-TEE TA via initCloudSession
+// Cloud P-256 key pair and CA-signed X.509 certificate; verified against pinned Root CA inside each RSU's OP-TEE TA
 struct CloudIdentity
 {
-    std::shared_ptr<EVP_PKEY> key;      // X_e (and Y_e)
-    Bytes certificateDer;               // CY_e: Y_e, self-signed X.509 DER
+    std::shared_ptr<EVP_PKEY> key;      // X_cloud (and Y_cloud)
+    Bytes certificateDer;               // CA-signed X.509 DER certificate for the Cloud
     std::string pem() const;            // certificate in PEM format
 };
-CloudIdentity newCloudIdentity(const std::string& commonName = "cloud");
+CloudIdentity newCloudIdentity(const CertificateAuthority& ca, const std::string& commonName = kCloudAddress);
+CloudIdentity newSelfSignedCloudIdentity(const std::string& commonName = kCloudAddress);
 #endif
 
 Bytes packSmartData(const SmartData&);

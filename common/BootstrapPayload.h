@@ -35,7 +35,7 @@ Bytes pack(const ActivationTokenPayload&);
 ActivationTokenPayload unpackActivationToken(const Bytes&);
 std::vector<std::string> describe(const ActivationTokenPayload&);
 
-// M = { PTP_Sync, t_1 } | { PTP_Delay_Request } | { PTP_Delay_Response, t_4 }
+// M = { PTP } | { PTP_Sync, t_1 } | { PTP_Delay_Request } | { PTP_Delay_Response, t_4 }
 struct PtpPayload
 {
     uint8_t type;
@@ -71,13 +71,14 @@ std::vector<std::string> describe(const AuthRequestPayload&);
 struct AuthGrantedPayload
 {
     uint8_t type;
-    Block otp;                  // OTP_dt: the one the RSU matched
+    Block otp;                  // OTP_dt: fresh Poly1305 MAC over { Auth_Granted, K_g, CY_e, Auth_eg }
     Bytes kG;                   // K_g: group key (AES-128-GCM, vehicle <-> vehicle)
     Bytes esaPublicKey;         // CY_e: ESA public key (DER SubjectPublicKeyInfo)
     Bytes authEg;               // Auth_eg = AES(Id_d, CY_e), from the Activation_Token
 };
 
 AuthGrantedPayload unpackAuthGranted(const Bytes&);
+Bytes authGrantedOtpData(const AuthGrantedPayload&);
 std::vector<std::string> describe(const AuthGrantedPayload&);
 
 // M = { Active_01, Auth_d, OTP_dt, Auth_de } | { Active_02, Auth_d, OTP_dt, Auth_de }
@@ -85,12 +86,13 @@ struct Active01Payload
 {
     uint8_t type;
     Bytes authD;                // Auth_d
-    Block otp;                  // OTP_dt: the one sent in Auth_Request
+    Block otp;                  // OTP_dt: fresh Poly1305 MAC over { Active_01, Auth_d, Auth_de } (binds K_de)
     Bytes authDe;               // Auth_de = AES(Id_d, SHA256(UUID + SHA256(f_w) + CY_e))
 };
 
 Bytes pack(const Active01Payload&);
 Active01Payload unpackActive01(const Bytes&);
+Bytes activeOtpData(const Bytes& authD, const Bytes& authDe);
 std::vector<std::string> describe(const Active01Payload&);
 
 // M = { Active_03, UUID, SHA256(f_w) }
@@ -102,6 +104,7 @@ struct Active03Payload
 };
 
 Bytes pack(const Active03Payload&);
+Active03Payload unpackActive03(const Bytes&);
 std::vector<std::string> describe(const Active03Payload&);
 
 #endif /* COMMON_BOOTSTRAPPAYLOAD_H_ */

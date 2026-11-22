@@ -26,18 +26,24 @@ class RawSocket
 
         int fd() const { return mFd; }
 
-        // broadcasts data in one frame; throws std::runtime_error (e.g. data larger than the frame)
+        // broadcasts data in one frame (or sends unicast once peerMac is pinned); throws std::runtime_error
         void send(const Bytes& data);
 
         // next frame received from the interface (non-blocking): nullopt when there is none left.
         // the copy of our own outgoing frames is skipped (the loopback copy still arrives, as on a radio)
         std::optional<Bytes> receive();
 
+        const std::array<uint8_t, 6>& lastSrcMac() const { return mLastSrcMac; }
+        const std::array<uint8_t, 6>& peerMac() const { return mDstMac; }
+        void setPeerMac(const std::array<uint8_t, 6>& mac);
+
     private:
         int mFd = -1;
         int mIfindex = 0;
         uint16_t mEtherType;
         std::array<uint8_t, 6> mMac{};
+        std::array<uint8_t, 6> mDstMac{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+        std::array<uint8_t, 6> mLastSrcMac{};
 };
 
 #endif /* NET_RAWSOCKET_H_ */

@@ -111,26 +111,19 @@ void PacketManager::onSmartData(const OtPacket& packet)
 
 void PacketManager::onRadio(const ProtocolMsg& msg)
 {
-    // radio: unicast is logical; "esa": the ESA has no radio, the RSU relays it
-    if (msg.getDestination() != mName && msg.getDestination() != "esa") {
+    // OT radio is strictly for Vehicle <-> RSU traffic (Activation_Request is strictly IT: Operator -> ESA)
+    if (msg.getDestination() != mName) {
         return;
-    }
-    if (!mGatewayPublicKey.empty() && msg.getType() == Activation_Request) {
-        try {
-            if (unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
-                return;
-            }
-        } catch (const std::exception&) {
-            return;
-        }
     }
 
     switch (msg.getType()) {
-        case Activation_Request: {
-            // HTTPSEstablishment: relayed unchanged over the HTTPS session; the ESA unpacks M
-            trace::step(mName, "HTTPSEstablishment", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
-            send(Activation_Request, "esa", msg.getSeqNum(), msg.getAckNum(), msg.getVehicle(), getPayload(msg),
-                Via::Https);
+        case PTP: {
+            // Vehicle initiated IEEE 1588 PTP clock synchronization: reply with PTP_Sync(t_1)
+            trace::step(mName, "PTPSync", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
+            PtpPayload m;
+            m.type = PTP_Sync;
+            m.timestamp = SimTime::fromNs(static_cast<int64_t>(now()));
+            send(PTP_Sync, msg.getSender(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m), Via::Radio);
             break;
         }
         case PTP_Delay_Request: {
@@ -174,7 +167,7 @@ void PacketManager::onHttps(const ProtocolMsg& msg)
         return;
     }
     switch (msg.getType()) {
-        case Activation_Token:  activationToken(msg); break;    // from the ESA
+        case Activation_Token:  activationToken(msg); break;    // from the ESA (encrypted under K_esa)
         case Forwarding_Notice: forwardingNotice(msg); break;   // from the source RSU (I am the target)
         case Handover_Command:
             // from the target RSU (I am the source): to the vehicle, still in my range (maybe not yet in the target's)
@@ -188,22 +181,17 @@ void PacketManager::onHttps(const ProtocolMsg& msg)
 
 void PacketManager::activationToken(const ProtocolMsg& msg)
 {
-    // PTP: the activation goes into the TA (pending until its OTP), then PTPSync starts the clock exchange
-    trace::step(mName, "PTP", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
-    const ActivationTokenPayload token = unpackActivationToken(getPayload(msg));
-    const int status = addActivationToken(msg.getVehicle(), static_cast<uint64_t>(token.t0.ns()),
-        static_cast<uint64_t>(token.tf.ns()), token.authD, token.authEg);
-    if (status != GW_OK) {
-        trace::check(mName, false, std::string("TA_GATEWAY_CMD_ADD_ACTIVATION_TOKEN: ") + statusName(status));
+    // Step 3: opaque E_K_esa(Activation_Token) passed straight into OP-TEE TA; Normal World cannot read Auth_d/Auth_eg
+    trace::step(mName, "ActivationToken (OP-TEE TA)", messageTypeName(msg.getType()), msg.getSender());
+    const int status = addActivationToken(getPayload(msg), now());
+    if (status == GW_IGNORED) {
+        ++mIgnored;
+        trace::detail(mName, "the TA refused the Activation_Token");
         return;
     }
-
-    // PTPSync: M = { PTP_Sync, t_1 }, t_1 taken as it goes out
-    trace::step(mName, "PTPSync", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
-    PtpPayload m;
-    m.type = PTP_Sync;
-    m.timestamp = SimTime::fromNs(static_cast<int64_t>(now()));
-    send(PTP_Sync, msg.getVehicle(), msg.getAckNum(), msg.getSeqNum() + 1, "", pack(m), Via::Radio);
+    if (status != GW_OK) {
+        trace::check(mName, false, std::string("TA_GATEWAY_CMD_ADD_ACTIVATION_TOKEN: ") + statusName(status));
+    }
 }
 
 bool PacketManager::startHandover(const std::string& session, const std::string& targetRsu)
@@ -267,9 +255,8 @@ void PacketManager::onBootstrapStep(const char* step, const ProtocolMsg& receive
     }
 
     if (reply.type == Active_02) {
-        // the same M to the ESA, over the HTTPS session; the protocol ends here for the RSU
-        send(Active_02, "esa", received.getAckNum(), received.getSeqNum() + 1, received.getVehicle(), reply.payload,
-            Via::Https);
+        // E_K_esa(Active_02) sealed inside the TA -> forwarded opaque over backhaul to ESA
+        send(Active_02, "esa", received.getAckNum(), received.getSeqNum() + 1, "", reply.payload, Via::Https);
         trace::end(mName, "RSU ready (" + received.getVehicle() + ")");
         return;
     }
@@ -319,9 +306,15 @@ void PacketManager::send(int type, const std::string& destination, int seqNum, i
     transport(msg);
 }
 
-int PacketManager::initGateway(const Bytes& gatewayCert, const Bytes& esaPublicKey, const Bytes& groupKey)
+int PacketManager::initIdentity(Bytes& outGatewayPubKey)
 {
-    return mTee.initGateway(gatewayCert, esaPublicKey, groupKey);
+    return mTee.initIdentity(outGatewayPubKey);
+}
+
+int PacketManager::initGateway(const Bytes& caPubKey, const Bytes& gatewayCert, const Bytes& esaCert,
+    const Bytes& groupKey)
+{
+    return mTee.initGateway(caPubKey, gatewayCert, esaCert, groupKey);
 }
 
 int PacketManager::initCloudSession(const std::string& certificatePem, const std::string& host)
@@ -329,10 +322,9 @@ int PacketManager::initCloudSession(const std::string& certificatePem, const std
     return mTee.initCloudSession(certificatePem, host, mName);
 }
 
-int PacketManager::addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
-    const Bytes& authEg)
+int PacketManager::addActivationToken(const Bytes& encryptedToken, uint64_t ptpTimeNs)
 {
-    return mTee.addActivationToken(session, t0, tf, authD, authEg);
+    return mTee.addActivationToken(encryptedToken, ptpTimeNs);
 }
 
 Reply PacketManager::handleBootstrap(int type, const std::string& session, const Bytes& payload, uint64_t ptpTimeNs)

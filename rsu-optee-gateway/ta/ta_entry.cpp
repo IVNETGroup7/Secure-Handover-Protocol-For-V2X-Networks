@@ -116,6 +116,28 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
                 return TEE_SUCCESS;
             }
 
+            case TA_GATEWAY_CMD_INIT_IDENTITY: {
+                if (t0 != TEE_PARAM_TYPE_MEMREF_OUTPUT || t1 != TEE_PARAM_TYPE_VALUE_OUTPUT) {
+                    return TEE_ERROR_BAD_PARAMETERS;
+                }
+                Bytes gwPubKey;
+                int status = sess->initIdentity(gwPubKey);
+                if (status == GW_OK) {
+                    if (gwPubKey.size() > params[0].memref.size) {
+                        status = GW_ERR_BUFFER;
+                        params[0].memref.size = 0;
+                    } else {
+                        std::memcpy(params[0].memref.buffer, gwPubKey.data(), gwPubKey.size());
+                        params[0].memref.size = static_cast<uint32_t>(gwPubKey.size());
+                    }
+                } else {
+                    params[0].memref.size = 0;
+                }
+                params[1].value.a = static_cast<uint32_t>(status);
+                copyLogsToParam(sess, t2, params[2]);
+                return TEE_SUCCESS;
+            }
+
             case TA_GATEWAY_CMD_INIT_GATEWAY: {
                 if (t0 != TEE_PARAM_TYPE_MEMREF_INPUT || t1 != TEE_PARAM_TYPE_VALUE_OUTPUT) {
                     return TEE_ERROR_BAD_PARAMETERS;
@@ -123,10 +145,11 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
                 const auto* buf = static_cast<const uint8_t*>(params[0].memref.buffer);
                 const Bytes in(buf, buf + params[0].memref.size);
                 wire::Reader r(in);
-                const Bytes gwCert = r.field();
-                const Bytes esaPubKey = r.field();
+                const Bytes caPubKey = r.field();
+                const Bytes gwCertDer = r.field();
+                const Bytes esaCertDer = r.field();
                 const Bytes groupKey = r.field();
-                const int status = sess->initGateway(gwCert, esaPubKey, groupKey);
+                const int status = sess->initGateway(caPubKey, gwCertDer, esaCertDer, groupKey);
                 params[1].value.a = static_cast<uint32_t>(status);
                 copyLogsToParam(sess, t2, params[2]);
                 return TEE_SUCCESS;
@@ -155,12 +178,9 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
                 const auto* buf = static_cast<const uint8_t*>(params[0].memref.buffer);
                 const Bytes in(buf, buf + params[0].memref.size);
                 wire::Reader r(in);
-                const std::string session = toStr(r.field());
-                const uint64_t tStart = r.uint(8);
-                const uint64_t tEnd = r.uint(8);
-                const Bytes authD = r.field();
-                const Bytes authEg = r.field();
-                const int status = sess->addActivationToken(session, tStart, tEnd, authD, authEg);
+                const uint64_t ptpTime = r.uint(8);
+                const Bytes encryptedToken = r.field();
+                const int status = sess->addActivationToken(encryptedToken, ptpTime);
                 params[1].value.a = static_cast<uint32_t>(status);
                 copyLogsToParam(sess, t2, params[2]);
                 return TEE_SUCCESS;

@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
@@ -52,12 +53,27 @@ RawSocket::RawSocket(const std::string& iface, uint16_t etherType) : mEtherType(
         close(mFd);
         throw error;
     }
+
+#ifdef PACKET_IGNORE_OUTGOING
+    // Avoid waking poll() on our own outgoing frames (Linux >= 4.20; best-effort)
+    const int ignoreOutgoing = 1;
+    setsockopt(mFd, SOL_PACKET, PACKET_IGNORE_OUTGOING, &ignoreOutgoing, sizeof(ignoreOutgoing));
+#endif
 }
 
 RawSocket::~RawSocket()
 {
     if (mFd >= 0) {
         close(mFd);
+    }
+}
+
+void RawSocket::setPeerMac(const std::array<uint8_t, 6>& mac)
+{
+    const bool allZero = std::all_of(mac.begin(), mac.end(), [](uint8_t b) { return b == 0; });
+    const bool multicast = (mac[0] & 0x01) != 0;
+    if (!allZero && !multicast && mac != mMac) {
+        mDstMac = mac;
     }
 }
 
@@ -68,7 +84,7 @@ void RawSocket::send(const Bytes& data)
     }
 
     Bytes frame(ETH_HLEN);
-    std::memset(frame.data(), 0xff, ETH_ALEN);                      // destination: broadcast
+    std::memcpy(frame.data(), mDstMac.data(), ETH_ALEN);              // destination: broadcast or pinned peer MAC
     std::memcpy(frame.data() + ETH_ALEN, mMac.data(), ETH_ALEN);    // source
     frame[12] = static_cast<uint8_t>(mEtherType >> 8);
     frame[13] = static_cast<uint8_t>(mEtherType);
@@ -81,7 +97,7 @@ void RawSocket::send(const Bytes& data)
     addr.sll_protocol = htons(mEtherType);
     addr.sll_ifindex = mIfindex;
     addr.sll_halen = ETH_ALEN;
-    std::memset(addr.sll_addr, 0xff, ETH_ALEN);
+    std::memcpy(addr.sll_addr, mDstMac.data(), ETH_ALEN);
 
     ssize_t n;
     do {
@@ -116,6 +132,7 @@ std::optional<Bytes> RawSocket::receive()
         if (ETH_HLEN + 2 + size > static_cast<size_t>(n)) {
             continue; // truncated
         }
+        std::memcpy(mLastSrcMac.data(), buffer + ETH_ALEN, ETH_ALEN);
         return Bytes(buffer + ETH_HLEN + 2, buffer + ETH_HLEN + 2 + size);
     }
 }

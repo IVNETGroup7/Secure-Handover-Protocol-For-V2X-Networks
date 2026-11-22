@@ -36,7 +36,7 @@ constexpr const char* kEcdhCurve = "P-256";
 
 // OTP_dt = Poly1305(K_dg, Auth_d xor t, m): m and the time step of t are public, known by vehicle and RSU
 constexpr const char* kOtpMessage = "secure-bootstrap OTP_dt";   // m
-constexpr double kOtpTimeStep = 0.1;                            // s: t = floor(PTP-synchronized clock / step)
+constexpr double kOtpTimeStep = 0.5;                            // s: t = floor(PTP-synchronized clock / step)
 constexpr int kOtpWindow = 1;   // RSU: tries t = its own slot +- kOtpWindow slots (delay and residual clock error)
 
 // K_g: group key the RSU hands to every vehicle it activates (Auth_Granted), for vehicle <-> vehicle messages

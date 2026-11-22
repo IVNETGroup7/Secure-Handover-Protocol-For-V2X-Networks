@@ -1,4 +1,5 @@
 #include "Link.h"
+#include "WireCodec.h"
 #include <poll.h>
 #include <algorithm>
 #include <random>
@@ -31,39 +32,91 @@ void waitFor(std::initializer_list<const RawSocket*> links, int timeoutMs)
     poll(fds.data(), fds.size(), timeoutMs);
 }
 
-GatewayCertificate newGatewayCertificate(const std::string& rsu)
+Bytes packSessionHello(const std::string& rsu, const Bytes& gatewayPublicKey)
 {
-    GatewayCertificate identity;
-    identity.key = newP256Key();
-    identity.certificate = selfSignedCertificate(identity.key.get(), rsu);
-    identity.publicKey = publicKeyDer(identity.key.get());
-    return identity;
+    Bytes out;
+    wire_codec::putString(out, rsu);
+    wire_codec::putBytes(out, gatewayPublicKey);
+    return out;
 }
 
-Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::string& sessionKey,
-    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop,
-    std::chrono::seconds timeout)
+std::optional<SessionHello> parseSessionHello(const Bytes& body)
 {
-    Bytes hello = toBytes(rsu + "\n" + sessionKey + "\n");
-    hello.insert(hello.end(), certificate.begin(), certificate.end());
+    try {
+        wire_codec::Reader r(body, "Session_Hello");
+        SessionHello hello;
+        hello.rsu = r.str();
+        hello.gatewayPublicKey = r.field();
+        if (hello.rsu.empty() || hello.gatewayPublicKey.empty()) {
+            return std::nullopt;
+        }
+        // Validate that gatewayPublicKey parses as a valid public key
+        publicKeyFromDer(hello.gatewayPublicKey);
+        return hello;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+Bytes packSessionAck(const std::string& rsu, const Bytes& caPublicKey, const Bytes& gatewayCert, const Bytes& esaCert)
+{
+    Bytes out;
+    wire_codec::putString(out, rsu);
+    wire_codec::putBytes(out, caPublicKey);
+    wire_codec::putBytes(out, gatewayCert);
+    wire_codec::putBytes(out, esaCert);
+    return out;
+}
+
+std::optional<SessionAck> parseSessionAck(const Bytes& body)
+{
+    try {
+        wire_codec::Reader r(body, "Session_Ack");
+        SessionAck ack;
+        ack.rsu = r.str();
+        ack.caPublicKey = r.field();
+        ack.gatewayCert = r.field();
+        ack.esaCert = r.field();
+        if (ack.rsu.empty() || ack.caPublicKey.empty() || ack.gatewayCert.empty() || ack.esaCert.empty()) {
+            return std::nullopt;
+        }
+        return ack;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+SessionAck openHttpsSession(RawSocket& backhaul, const std::string& rsu, const Bytes& gatewayPublicKey,
+    const std::string& iface, const std::function<bool()>& stop, std::chrono::seconds timeout)
+{
+    const Bytes hello = packSessionHello(rsu, gatewayPublicKey);
     const auto giveUp = std::chrono::steady_clock::now() + timeout;
-    const Bytes name = toBytes(rsu + "\n");
-    Bytes esaPublicKey;
-    while (esaPublicKey.empty()) {
-        if (std::chrono::steady_clock::now() >= giveUp || (stop && stop())) {
+    auto lastSent = std::chrono::steady_clock::time_point::min();
+    std::optional<SessionAck> result;
+    while (!result) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= giveUp || (stop && stop())) {
             throw std::runtime_error("no Session_Ack from the ESA (is it running on " + iface + "?)");
         }
-        sendFrame(backhaul, FrameKind::Session_Hello, hello);
-        waitFor({ &backhaul }, std::chrono::duration_cast<std::chrono::milliseconds>(kSessionRetry).count());
+        if (lastSent == std::chrono::steady_clock::time_point::min() || now - lastSent >= kSessionRetry) {
+            sendFrame(backhaul, FrameKind::Session_Hello, hello);
+            lastSent = now;
+        }
+        const auto nextSend = lastSent + kSessionRetry;
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(nextSend - now).count();
+        const int waitMs = static_cast<int>(std::clamp<long long>(remaining, 1,
+            std::chrono::duration_cast<std::chrono::milliseconds>(kSessionRetry).count()));
+        waitFor({ &backhaul }, waitMs);
         drain(backhaul, [&](FrameKind kind, const Bytes& body) {
-            // "rsu name\n" CY_e
-            if (kind == FrameKind::Session_Ack && body.size() > name.size()
-                && std::equal(name.begin(), name.end(), body.begin())) {
-                esaPublicKey.assign(body.begin() + name.size(), body.end());
+            if (!result && kind == FrameKind::Session_Ack) {
+                if (auto ack = parseSessionAck(body); ack && ack->rsu == rsu) {
+                    backhaul.setPeerMac(backhaul.lastSrcMac());
+                    result = std::move(*ack);
+                }
             }
         });
     }
-    return esaPublicKey;
+    return *result;
 }
 
 Bytes packHandoverTrigger(const std::string& rsu, const std::string& session, const std::string& targetRsu)
@@ -114,21 +167,6 @@ std::optional<std::string> parseRsuTag(const Bytes& body)
         return std::nullopt;
     }
     return std::string(body.begin(), end);
-}
-
-std::optional<SessionHello> parseSessionHello(const Bytes& body)
-{
-    // "rsu name\nsession key\n" certificate
-    const auto first = std::find(body.begin(), body.end(), '\n');
-    const auto second = first == body.end() ? body.end() : std::find(first + 1, body.end(), '\n');
-    if (second == body.end()) {
-        return std::nullopt;
-    }
-    const auto key = verifiedCertificateKey(Bytes(second + 1, body.end()));
-    if (!key) {
-        return std::nullopt;
-    }
-    return SessionHello{ std::string(body.begin(), first), std::string(first + 1, second), *key };
 }
 
 namespace

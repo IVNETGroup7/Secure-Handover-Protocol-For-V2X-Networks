@@ -8,9 +8,9 @@
 # Targets:
 #   make              build ./app (and the .ta when TA_DEV_KIT_DIR is present)
 #   make run          build and run the self-test (bootstrap, tamper checks, Secure Marshaling, Secrecy Forwarding)
-#   make hil-dual     run concurrent rsu[0] + rsu[1] OP-TEE daemons over raw Ethernet (for Artery HIL_RPi3_DualRsu)
+#   make hil-quad     run concurrent rsu[0]..rsu[3] OP-TEE daemons over raw Ethernet (for Artery HIL_RPi3_QuadRsu)
 #   make rpi3         cross-compile ./app and .ta for Raspberry Pi 3 (-mcpu=cortex-a53) via build-rpi3.sh
-#   make vm           delegate build/run (or VM_ARGS=hil-dual) to the ARM64 OP-TEE QEMU VM via ./vm-make.sh
+#   make vm           delegate build/run (or VM_ARGS=hil-quad) to the ARM64 OP-TEE QEMU VM via ./vm-make.sh
 #   make clean        remove build artifacts and sealed state files
 
 TA_UUID := 9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718
@@ -68,7 +68,7 @@ Host_Objects := $(patsubst host/%.cpp,$(BUILD)/host/%.o,$(Host_Cpp_Files)) \
                 $(patsubst ta/%.cpp,$(BUILD)/ta_sim/%.o,$(Extra_Ta_Files)) \
                 $(patsubst ../%.cpp,$(BUILD)/common/%.o,$(Host_Protocol_Files))
 
-.PHONY: all ta run caps hil-dual hil-quad rpi3 vm clean
+.PHONY: all ta run caps hil-quad rpi3 vm clean
 
 rpi3:
 	@./build-rpi3.sh $(PI_IP)
@@ -106,13 +106,13 @@ caps: app
 
 # Launch all 4 isolated RSU gateway processes (rsu[0]..rsu[3]) sharing one Ethernet NIC,
 # matching the 4-RSU Manhattan Grid Raspberry Pi 3 HIL so the VM (over virbr0) or local NIC pairs directly with Artery.
-hil-dual hil-quad: caps
+hil-quad: caps
 	@iface="$(IFACE)"; \
 	if [ -z "$$iface" ]; then \
 		iface=$$(ip -o -4 route show to default 2>/dev/null | awk '{print $$5; exit}'); \
 	fi; \
 	if [ -z "$$iface" ]; then \
-		echo "error: set IFACE=<nic> for hil-dual" >&2; exit 2; \
+		echo "error: set IFACE=<nic> for hil-quad" >&2; exit 2; \
 	fi; \
 	timeout="$(or $(SESSION_TIMEOUT),120)"; \
 	echo "[hil-4rsu] starting rsu[0] + rsu[1] + rsu[2] + rsu[3] (4 OP-TEE TA sessions) on $$iface (Ctrl+C to stop)..."; \
@@ -123,7 +123,7 @@ hil-dual hil-quad: caps
 	./app rsu --name rsu[3] --iface "$$iface" --sealed rsu3.sealed --fresh --session-timeout "$$timeout" & p3=$$!; \
 	wait $$p0 $$p1 $$p2 $$p3
 
-# Delegate build/run to the ARM64 QEMU OP-TEE VM (VM_ARGS=hil-dual runs dual-RSU over virbr0)
+# Delegate build/run to the ARM64 QEMU OP-TEE VM (VM_ARGS=hil-quad runs quad-RSU over virbr0)
 vm:
 	@$(CURDIR)/vm-make.sh $(or $(VM_ARGS),run)
 

@@ -322,13 +322,13 @@ step "done"
 build="$ARTERY_DIR/build"
 cat <<EOF
 Artery:   $ARTERY_DIR (build: $build)
-Scenario: $HERE/scenario (omnetpp.ini: HIL_RPi3_DualRsu, D250m_80211p [ITS-G5 802.11p]; results in scenario/results/)
+Scenario: $HERE/scenario (omnetpp.ini: HIL_RPi3_QuadRsu, D250m_80211p [ITS-G5 802.11p]; results in scenario/results/)
 
 Run it:
-  # Hardware-in-the-Loop with BOTH RSUs on one physical Raspberry Pi 3:
-  #   Terminal 1: ../rsu-dual-ssh.sh --pi-ip <PI_IP>
-  #   Terminal 2: ./run-hil-dual.sh --iface <HOST_NIC> [--gui]
-  HIL_IFACE=<HOST_NIC> cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_DualRsu_GUI --scheduler-class=omnetpp::cRealTimeScheduler" $build
+  # Hardware-in-the-Loop with all 4 RSUs on one physical Raspberry Pi 3:
+  #   Terminal 1: ../rsu-quad-ssh.sh --pi-ip <PI_IP>
+  #   Terminal 2: ./run-hil-quad.sh --iface <HOST_NIC> [--gui]
+  HIL_IFACE=<HOST_NIC> cmake -DRUN_FLAGS="-u Cmdenv -c HIL_RPi3_QuadRsu_GUI --scheduler-class=omnetpp::cRealTimeScheduler" $build
   HIL_IFACE=<HOST_NIC> cmake --build $build --target run_tee_v2x_handover
 
   # Pure simulation (headless, both RSUs use in-process HOST_SIM TA sessions):

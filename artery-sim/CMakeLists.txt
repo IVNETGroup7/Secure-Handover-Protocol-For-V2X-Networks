@@ -14,7 +14,7 @@ set(TEE_V2X_GATEWAY ${TEE_V2X_REPO}/rsu-optee-gateway)
 
 find_package(OpenSSL 3 REQUIRED)
 
-file(GLOB _tee_v2x_sources ${TEE_V2X_REPO}/common/*.cpp ${TEE_V2X_REPO}/protocol/*.cpp ${TEE_V2X_REPO}/net/*.cpp)
+file(GLOB _tee_v2x_sources CONFIGURE_DEPENDS ${TEE_V2X_REPO}/common/*.cpp ${TEE_V2X_REPO}/protocol/*.cpp ${TEE_V2X_REPO}/net/*.cpp)
 add_library(tee_v2x_protocol STATIC ${_tee_v2x_sources}
     ${TEE_V2X_GATEWAY}/host/packet_manager.cpp
     ${TEE_V2X_GATEWAY}/host/tee_session.cpp

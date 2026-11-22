@@ -1,4 +1,5 @@
 #include "codec.h"
+#include "MessageType.h"
 #include "SmartData.h"
 #include <algorithm>
 #include <stdexcept>
@@ -85,6 +86,37 @@ Bytes pack(const Active& m)
     out.insert(out.end(), m.otp.begin(), m.otp.end());
     putField(out, m.authDe);
     return out;
+}
+
+Bytes authGrantedOtpData(const AuthGranted& m)
+{
+    Bytes out;
+    putUint(out, Auth_Granted, 1);
+    putField(out, m.kG);
+    putField(out, m.esaPublicKey);
+    putField(out, m.authEg);
+    return out;
+}
+
+Bytes activeOtpData(const Bytes& authD, const Bytes& authDe)
+{
+    Bytes out;
+    putUint(out, Active_01, 1);
+    putField(out, authD);
+    putField(out, authDe);
+    return out;
+}
+
+ActivationToken unpackActivationToken(const Bytes& in)
+{
+    Reader reader(in);
+    ActivationToken m;
+    m.type = static_cast<uint8_t>(reader.uint(1));
+    m.t0 = reader.uint(8);
+    m.tf = reader.uint(8);
+    m.authD = reader.field();
+    m.authEg = reader.field();
+    return m;
 }
 
 Ecdh unpackEcdh(const Bytes& in)

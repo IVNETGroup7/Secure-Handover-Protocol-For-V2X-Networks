@@ -8,7 +8,6 @@
 #include <csignal>
 #include <cstdio>
 #include <exception>
-#include <random>
 #include <stdexcept>
 
 namespace
@@ -19,16 +18,6 @@ volatile std::sig_atomic_t gStop = 0;
 void onStopSignal(int)
 {
     gStop = 1;
-}
-
-std::string sessionKey()
-{
-    std::random_device random;
-    char key[65];
-    for (int i = 0; i < 32; ++i) {
-        std::snprintf(key + 2 * i, 3, "%02x", static_cast<unsigned>(random() & 0xff));
-    }
-    return key;
 }
 
 } // namespace
@@ -58,13 +47,19 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
         return static_cast<uint64_t>(t > 0 ? t : 0);
     });
 
-    // HTTPS session with the ESA first: Session_Hello with my certificate (CY_g); its Session_Ack carries CY_e,
-    // which goes into the OP-TEE TA with the certificate
-    const GatewayCertificate certificate = newGatewayCertificate(options.name);
-    gateway.setGatewayPublicKey(certificate.publicKey);
-    const Bytes esaPublicKey = openHttpsSession(backhaul, options.name, sessionKey(), certificate.certificate,
+    // Step 2 (Gateway Bootstrapping):
+    //   1. Generate Gateway identity keypair (X_gw, Y_gw) strictly inside the OP-TEE TA
+    //   2. Exchange Session_Hello(Y_gw) / Session_Ack(CA_pub, gwCert, esaCert) over backhaul
+    //   3. Pin Root CA, verify CA-signed Gateway & ESA certificates, and derive K_esa inside the TA
+    Bytes gwPublicKey;
+    const int idStatus = gateway.initIdentity(gwPublicKey);
+    if (idStatus != GW_OK) {
+        throw std::runtime_error(std::string("TA_GATEWAY_CMD_INIT_IDENTITY: ") + statusName(idStatus));
+    }
+    const SessionAck ack = openHttpsSession(backhaul, options.name, gwPublicKey,
         options.iface, [] { return gStop != 0; }, std::chrono::seconds(options.sessionTimeoutSeconds));
-    const int init = gateway.initGateway(certificate.certificate, esaPublicKey);
+    radio.setPeerMac(backhaul.peerMac());
+    const int init = gateway.initGateway(ack.caPublicKey, ack.gatewayCert, ack.esaCert);
     if (init != GW_OK) {
         throw std::runtime_error(std::string("TA_GATEWAY_CMD_INIT_GATEWAY: ") + statusName(init));
     }
@@ -120,20 +115,24 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
                     if (const auto trig = parseHandoverTrigger(body); trig && trig->rsu == options.name) {
                         gateway.startHandover(trig->session, trig->targetRsu);
                     }
-                } else if (kind == FrameKind::Data_Fragment && !hilCloudReady) {
+                } else if (kind == FrameKind::Data_Fragment) {
                     if (auto packet = backhaulReassembler.add(body);
                         packet && packet->from == "cloud" && packet->to == options.name) {
-                        const std::string pem(packet->bytes.begin(), packet->bytes.end());
-                        const int session = gateway.initCloudSession(pem, kCloudAddress);
-                        if (session == GW_OK) {
-                            hilCloudReady = true;
+                        if (hilCloudReady) {
                             sendFrame(backhaul, FrameKind::Cloud_Ready, toBytes(options.name + "\n"));
-                            std::printf("[%s] Cloud session pinned in OP-TEE TA (HIL backhaul bridge)\n",
-                                options.name.c_str());
-                            std::fflush(stdout);
                         } else {
-                            std::fprintf(stderr, "[%s] TA_GATEWAY_CMD_INIT_CLOUD_SESSION: %s\n",
-                                options.name.c_str(), statusName(session));
+                            const std::string pem(packet->bytes.begin(), packet->bytes.end());
+                            const int session = gateway.initCloudSession(pem, kCloudAddress);
+                            if (session == GW_OK) {
+                                hilCloudReady = true;
+                                sendFrame(backhaul, FrameKind::Cloud_Ready, toBytes(options.name + "\n"));
+                                std::printf("[%s] Cloud session pinned in OP-TEE TA (HIL backhaul bridge)\n",
+                                    options.name.c_str());
+                                std::fflush(stdout);
+                            } else {
+                                std::fprintf(stderr, "[%s] TA_GATEWAY_CMD_INIT_CLOUD_SESSION: %s\n",
+                                    options.name.c_str(), statusName(session));
+                            }
                         }
                     }
                 }

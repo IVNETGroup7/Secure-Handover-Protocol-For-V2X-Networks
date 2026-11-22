@@ -1,6 +1,8 @@
 #include "Crypto.h"
+#include <openssl/bio.h>
 #include <openssl/bn.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
 #include <stdexcept>
@@ -142,6 +144,112 @@ std::optional<Bytes> verifiedCertificateKey(const Bytes& certificateDer)
         return std::nullopt;
     }
     return publicKeyDer(key);
+}
+
+Bytes issueCertificate(EVP_PKEY* caKey, const std::string& caCommonName,
+    const Bytes& subjectPublicKeyDer, const std::string& subjectCommonName, bool isCa)
+{
+    (void)isCa;
+    const auto subjectKey = publicKeyFromDer(subjectPublicKeyDer);
+    std::unique_ptr<X509, decltype(&X509_free)> cert(X509_new(), X509_free);
+    check(cert != nullptr, "X509_new");
+    X509_set_version(cert.get(), 2);
+    const Bytes serial = randomBytes(8);
+    std::unique_ptr<BIGNUM, decltype(&BN_free)> number(BN_bin2bn(serial.data(), static_cast<int>(serial.size()), nullptr),
+        BN_free);
+    check(number && BN_to_ASN1_INTEGER(number.get(), X509_get_serialNumber(cert.get())), "certificate serial");
+    ASN1_TIME_set(X509_getm_notBefore(cert.get()), 0);
+    X509_gmtime_adj(X509_getm_notAfter(cert.get()), 365L * 24 * 3600);
+    check(X509_set_pubkey(cert.get(), subjectKey.get()) == 1, "X509_set_pubkey");
+
+    X509_NAME* subject = X509_get_subject_name(cert.get());
+    X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>(subjectCommonName.c_str()), -1, -1, 0);
+
+    std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> issuer(X509_NAME_new(), X509_NAME_free);
+    check(issuer != nullptr, "X509_NAME_new");
+    X509_NAME_add_entry_by_txt(issuer.get(), "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>(caCommonName.c_str()), -1, -1, 0);
+    check(X509_set_issuer_name(cert.get(), issuer.get()) == 1, "X509_set_issuer_name");
+    check(X509_sign(cert.get(), caKey, EVP_sha256()) > 0, "X509_sign");
+
+    const int size = i2d_X509(cert.get(), nullptr);
+    check(size > 0, "i2d_X509");
+    Bytes der(static_cast<size_t>(size));
+    unsigned char* out = der.data();
+    check(i2d_X509(cert.get(), &out) == size, "i2d_X509");
+    return der;
+}
+
+std::optional<Bytes> verifyCertificateSignedByCa(const Bytes& certificateDer, const Bytes& caPublicKeyDer)
+{
+    if (certificateDer.empty() || caPublicKeyDer.empty()) {
+        return std::nullopt;
+    }
+    const unsigned char* in = certificateDer.data();
+    std::unique_ptr<X509, decltype(&X509_free)> cert(
+        d2i_X509(nullptr, &in, static_cast<long>(certificateDer.size())), X509_free);
+    if (!cert) {
+        ERR_clear_error();
+        return std::nullopt;
+    }
+    std::shared_ptr<EVP_PKEY> caKey;
+    try {
+        caKey = publicKeyFromDer(caPublicKeyDer);
+    } catch (const std::exception&) {
+        ERR_clear_error();
+        return std::nullopt;
+    }
+    EVP_PKEY* subjectKey = X509_get0_pubkey(cert.get());
+    if (!subjectKey || X509_verify(cert.get(), caKey.get()) != 1) {
+        ERR_clear_error();
+        return std::nullopt;
+    }
+    return publicKeyDer(subjectKey);
+}
+
+std::string certificateDerToPem(const Bytes& certificateDer)
+{
+    const unsigned char* in = certificateDer.data();
+    std::unique_ptr<X509, decltype(&X509_free)> cert(
+        d2i_X509(nullptr, &in, static_cast<long>(certificateDer.size())), X509_free);
+    check(cert != nullptr, "d2i_X509");
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
+    check(bio && PEM_write_bio_X509(bio.get(), cert.get()) == 1, "PEM_write_bio_X509");
+    char* data = nullptr;
+    const long size = BIO_get_mem_data(bio.get(), &data);
+    return std::string(data, static_cast<size_t>(size));
+}
+
+Bytes CertificateAuthority::issue(const Bytes& subjectPublicKeyDer, const std::string& subjectCommonName) const
+{
+    return issueCertificate(key.get(), commonName, subjectPublicKeyDer, subjectCommonName, false);
+}
+
+std::optional<Bytes> CertificateAuthority::verify(const Bytes& certDer) const
+{
+    return verifyCertificateSignedByCa(certDer, publicKeyDer);
+}
+
+CertificateAuthority newCertificateAuthority(const std::string& commonName)
+{
+    CertificateAuthority ca;
+    ca.key = newP256Key();
+    ca.commonName = commonName;
+    ca.publicKeyDer = publicKeyDer(ca.key.get());
+    ca.certificateDer = selfSignedCertificate(ca.key.get(), commonName);
+    return ca;
+}
+
+Bytes deriveEsaSessionKey(const Bytes& sharedSecret, const Bytes& gatewayPublicKey, const Bytes& esaPublicKey)
+{
+    Bytes material;
+    material.reserve(sharedSecret.size() + gatewayPublicKey.size() + esaPublicKey.size());
+    material.insert(material.end(), sharedSecret.begin(), sharedSecret.end());
+    material.insert(material.end(), gatewayPublicKey.begin(), gatewayPublicKey.end());
+    material.insert(material.end(), esaPublicKey.begin(), esaPublicKey.end());
+    const Sha256 digest = sha256(material);
+    return Bytes(digest.begin(), digest.end());
 }
 
 std::string base64Encode(const Bytes& data)

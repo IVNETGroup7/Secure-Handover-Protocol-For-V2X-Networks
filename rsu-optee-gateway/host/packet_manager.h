@@ -34,14 +34,13 @@ class PacketManager
 
         PacketManager(TeeSession& tee, std::string name) : mTee(tee), mName(std::move(name)) {}
         void setTransport(Transport transport) { mTransport = std::move(transport); }
-        void setGatewayPublicKey(const Bytes& key) { mGatewayPublicKey = key; }
         void setClock(std::function<uint64_t()> clock) { mClock = std::move(clock); }
         const std::string& name() const { return mName; }
 
         // a packet of the OT queue: protocol message or SmartData, by its kind
         void onOtPacket(const OtPacket&);
         // incoming protocol messages: over the radio (filtered by destination) or over HTTPS (from the ESA:
-        // Activation_Token; from another RSU: Forwarding_Notice, Handover_Command)
+        // encrypted Activation_Token; from another RSU: Forwarding_Notice, Handover_Command)
         void onRadio(const ProtocolMsg&);
         void onHttps(const ProtocolMsg&);
 
@@ -50,11 +49,12 @@ class PacketManager
         bool startHandover(const std::string& session, const std::string& targetRsu);
 
         // the TA commands (gateway_ta.h)
-        int initGateway(const Bytes& gatewayCert, const Bytes& esaPublicKey, const Bytes& groupKey = {});
-        // the HTTPS Session of the Secure Marshaling: the cloud's certificate (PEM) into the TA
+        int initIdentity(Bytes& outGatewayPubKey);
+        int initGateway(const Bytes& caPubKey, const Bytes& gatewayCert, const Bytes& esaCert,
+            const Bytes& groupKey = {});
+        // the HTTPS Session of the Secure Marshaling: CA-signed cloud certificate (PEM) verified inside TA
         int initCloudSession(const std::string& certificatePem, const std::string& host);
-        int addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
-            const Bytes& authEg);
+        int addActivationToken(const Bytes& encryptedToken, uint64_t ptpTimeNs);
         Reply handleBootstrap(int type, const std::string& session, const Bytes& payload, uint64_t ptpTimeNs);
         Reply handleForwardingRequest(const std::string& session, const Bytes& payload, uint64_t ptpTimeNs);
         Reply marshal(const Bytes& otPacket, uint64_t ptpTimeNs);
@@ -81,7 +81,6 @@ class PacketManager
         TeeSession& mTee;
         std::string mName;
         Transport mTransport;
-        Bytes mGatewayPublicKey;
         std::function<uint64_t()> mClock;
         int mIgnored = 0;
         Benchmark mBenchmark;

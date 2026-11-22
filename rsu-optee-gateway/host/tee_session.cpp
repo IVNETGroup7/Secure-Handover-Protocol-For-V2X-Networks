@@ -134,12 +134,46 @@ int TeeSession::setStorageId(const std::string& storageId, bool deleteExisting)
 #endif
 }
 
-int TeeSession::initGateway(const Bytes& gwCert, const Bytes& esaPubKey, const Bytes& groupKey)
+int TeeSession::initIdentity(Bytes& outGatewayPubKey)
+{
+#ifdef USE_OPTEE
+    outGatewayPubKey.resize(kMaxFieldSize);
+    std::string logBuf(kLogBufferSize, '\0');
+
+    TEEC_Operation op{};
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_OUTPUT, TEEC_VALUE_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE);
+    op.params[0].tmpref.buffer = outGatewayPubKey.data();
+    op.params[0].tmpref.size = outGatewayPubKey.size();
+    op.params[2].tmpref.buffer = logBuf.data();
+    op.params[2].tmpref.size = logBuf.size();
+
+    uint32_t origin = 0;
+    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_INIT_IDENTITY, &op, &origin),
+        origin, "TA_GATEWAY_CMD_INIT_IDENTITY");
+    logBuf.resize(op.params[2].tmpref.size);
+    emitTaLogs(logBuf);
+    const int status = static_cast<int>(op.params[1].value.a);
+    if (status == GW_OK) {
+        outGatewayPubKey.resize(op.params[0].tmpref.size);
+    } else {
+        outGatewayPubKey.clear();
+    }
+    return status;
+#else
+    const int status = mImpl->ta.initIdentity(outGatewayPubKey);
+    emitTaLogs(mImpl->ta.takeLogs());
+    return status;
+#endif
+}
+
+int TeeSession::initGateway(const Bytes& caPubKey, const Bytes& gwCertDer, const Bytes& esaCertDer,
+    const Bytes& groupKey)
 {
 #ifdef USE_OPTEE
     Bytes in;
-    wire::putField(in, gwCert);
-    wire::putField(in, esaPubKey);
+    wire::putField(in, caPubKey);
+    wire::putField(in, gwCertDer);
+    wire::putField(in, esaCertDer);
     wire::putField(in, groupKey);
     std::string logBuf(kLogBufferSize, '\0');
 
@@ -157,7 +191,7 @@ int TeeSession::initGateway(const Bytes& gwCert, const Bytes& esaPubKey, const B
     emitTaLogs(logBuf);
     return static_cast<int>(op.params[1].value.a);
 #else
-    const int status = mImpl->ta.initGateway(gwCert, esaPubKey, groupKey);
+    const int status = mImpl->ta.initGateway(caPubKey, gwCertDer, esaCertDer, groupKey);
     emitTaLogs(mImpl->ta.takeLogs());
     return status;
 #endif
@@ -192,16 +226,12 @@ int TeeSession::initCloudSession(const std::string& cloudCertPem, const std::str
 #endif
 }
 
-int TeeSession::addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
-    const Bytes& authEg)
+int TeeSession::addActivationToken(const Bytes& encryptedToken, uint64_t currentPtpTime)
 {
 #ifdef USE_OPTEE
     Bytes in;
-    wire::putField(in, strBytes(session));
-    wire::putUint(in, t0, 8);
-    wire::putUint(in, tf, 8);
-    wire::putField(in, authD);
-    wire::putField(in, authEg);
+    wire::putUint(in, currentPtpTime, 8);
+    wire::putField(in, encryptedToken);
     std::string logBuf(kLogBufferSize, '\0');
 
     TEEC_Operation op{};
@@ -218,7 +248,7 @@ int TeeSession::addActivationToken(const std::string& session, uint64_t t0, uint
     emitTaLogs(logBuf);
     return static_cast<int>(op.params[1].value.a);
 #else
-    const int status = mImpl->ta.addActivationToken(session, t0, tf, authD, authEg);
+    const int status = mImpl->ta.addActivationToken(encryptedToken, currentPtpTime);
     emitTaLogs(mImpl->ta.takeLogs());
     return status;
 #endif

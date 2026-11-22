@@ -38,6 +38,15 @@ class Reader
         size_t mPos = 0;
 };
 
+struct ActivationToken
+{
+    uint8_t type;
+    uint64_t t0 = 0;
+    uint64_t tf = 0;
+    Bytes authD;
+    Bytes authEg;
+};
+
 struct Ecdh
 {
     uint8_t type;
@@ -95,6 +104,9 @@ Bytes pack(const Ecdh&);
 Bytes pack(const AuthGranted&);
 Bytes pack(const Active&);
 Bytes pack(const ForwardingGranted&);
+Bytes authGrantedOtpData(const AuthGranted&);
+Bytes activeOtpData(const Bytes& authD, const Bytes& authDe);
+ActivationToken unpackActivationToken(const Bytes&);
 Ecdh unpackEcdh(const Bytes&);
 AuthRequest unpackAuthRequest(const Bytes&);
 Active unpackActive(const Bytes&);

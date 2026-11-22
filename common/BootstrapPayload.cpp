@@ -86,7 +86,7 @@ Bytes pack(const PtpPayload& m)
 {
     Bytes out;
     wire_codec::putUint(out, m.type, 1);
-    if (m.type != PTP_Delay_Request) {
+    if (m.type != PTP && m.type != PTP_Delay_Request) {
         wire_codec::putUint(out, m.timestamp.ns(), 8);
     }
     return out;
@@ -97,7 +97,7 @@ PtpPayload unpackPtp(const Bytes& in)
     wire_codec::Reader reader(in, "bootstrap payload");
     PtpPayload m;
     m.type = static_cast<uint8_t>(reader.uint(1));
-    if (m.type != PTP_Delay_Request) {
+    if (m.type != PTP && m.type != PTP_Delay_Request) {
         m.timestamp = SimTime::fromNs(static_cast<int64_t>(reader.uint(8)));
     }
     return m;
@@ -106,7 +106,7 @@ PtpPayload unpackPtp(const Bytes& in)
 std::vector<std::string> describe(const PtpPayload& m)
 {
     const std::string type = messageTypeName(m.type);
-    if (m.type == PTP_Delay_Request) {
+    if (m.type == PTP || m.type == PTP_Delay_Request) {
         return { "M = { " + type + " }" };
     }
     const std::string t = m.type == PTP_Sync ? "t_1" : "t_4";
@@ -170,6 +170,16 @@ AuthGrantedPayload unpackAuthGranted(const Bytes& in)
     return m;
 }
 
+Bytes authGrantedOtpData(const AuthGrantedPayload& m)
+{
+    Bytes out;
+    wire_codec::putUint(out, Auth_Granted, 1);
+    wire_codec::putBytes(out, m.kG);
+    wire_codec::putBytes(out, m.esaPublicKey);
+    wire_codec::putBytes(out, m.authEg);
+    return out;
+}
+
 std::vector<std::string> describe(const AuthGrantedPayload& m)
 {
     return {
@@ -202,6 +212,15 @@ Active01Payload unpackActive01(const Bytes& in)
     return m;
 }
 
+Bytes activeOtpData(const Bytes& authD, const Bytes& authDe)
+{
+    Bytes out;
+    wire_codec::putUint(out, Active_01, 1);
+    wire_codec::putBytes(out, authD);
+    wire_codec::putBytes(out, authDe);
+    return out;
+}
+
 std::vector<std::string> describe(const Active01Payload& m)
 {
     return {
@@ -219,6 +238,16 @@ Bytes pack(const Active03Payload& m)
     out.insert(out.end(), m.uuid.begin(), m.uuid.end());
     out.insert(out.end(), m.firmwareHash.begin(), m.firmwareHash.end());
     return out;
+}
+
+Active03Payload unpackActive03(const Bytes& in)
+{
+    wire_codec::Reader reader(in, "bootstrap payload");
+    Active03Payload m;
+    m.type = static_cast<uint8_t>(reader.uint(1));
+    m.uuid = reader.array<16>();
+    m.firmwareHash = reader.array<32>();
+    return m;
 }
 
 std::vector<std::string> describe(const Active03Payload& m)

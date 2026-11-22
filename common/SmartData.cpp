@@ -181,7 +181,15 @@ std::string CloudIdentity::pem() const
     return std::string(data, static_cast<size_t>(size));
 }
 
-CloudIdentity newCloudIdentity(const std::string& commonName)
+CloudIdentity newCloudIdentity(const CertificateAuthority& ca, const std::string& commonName)
+{
+    CloudIdentity identity;
+    identity.key = newP256Key();
+    identity.certificateDer = ca.issue(publicKeyDer(identity.key.get()), commonName);
+    return identity;
+}
+
+CloudIdentity newSelfSignedCloudIdentity(const std::string& commonName)
 {
     CloudIdentity identity;
     identity.key = newP256Key();

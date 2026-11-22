@@ -1,16 +1,17 @@
 #ifndef TEE_V2X_BACKHAULBROKER_H_
 #define TEE_V2X_BACKHAULBROKER_H_
 
-// The wired side of the scenario, one module: the pre-established HTTPS sessions of the RSUs with the ESA and with
-// each other (Secrecy Forwarding), each message delivered after "latency". It also plays the ESA (the repository's
-// protocol/ExternalSecurityAgent, as an object) and the cloud the RSUs' OP-TEE TAs marshal SmartData for (Fig. 5 of
-// the paper: it opens each IT packet with its K_eg).
-// Messages go by destination: "esa" to the ESA, an RSU's name (e.g. "rsu[1]") to the callback it registered.
-// The ESA and the cloud are made on first use: the RSUs register in their own initialize(), which may run first.
+// The IT/wired domain of the scenario: hosts the Root CA, Human Operator, External Security Agent (ESA),
+// Cloud sink, and pre-established mutually-authenticated HTTPS backhaul sessions between RSUs, ESA, and peers.
+// Each backhaul message is delivered after "latency".
 
-#include "ProtocolMsg.h"
+#include "Crypto.h"
 #include "ExternalSecurityAgent.h"
+#include "HumanOperator.h"
+#include "ProtocolMsg.h"
+#include "SimTime.h"
 #include "SmartData.h"
+#include "Traits.h"
 #include <omnetpp/csimplemodule.h>
 #include <functional>
 #include <map>
@@ -22,22 +23,35 @@ class BackhaulBroker : public omnetpp::cSimpleModule
     public:
         using RsuCallback = std::function<void(const ProtocolMsg&)>;
 
+        struct RsuRegistration
+        {
+            Bytes caPublicKey;      // Root CA public key (DER SPKI) pinned in each RSU's TA
+            Bytes gatewayCert;      // CA-signed X.509 certificate for this RSU's TEE-generated CY_g
+            Bytes esaCert;          // CA-signed X.509 certificate for ESA's CY_e
+        };
+
         BackhaulBroker();
         ~BackhaulBroker() override;
 
-        // an RSU's HTTPS session with the ESA (registerRsu of ExternalSecurityAgent): its certificate key CY_g and
-        // "onMessage", which gets what reaches it over the backhaul; returns CY_e (the ESA's Session_Ack)
-        Bytes registerRsu(const std::string& rsuName, const std::string& sessionKey, const Bytes& gatewayPublicKey,
+        // Step 2: CA issues X.509 certificate for RSU's TEE-generated CY_g, ESA verifies it against CA
+        // and derives K_esa, and RSU receives { caPublicKey, gatewayCert, esaCert }.
+        RsuRegistration registerRsu(const std::string& rsuName, const Bytes& gatewayPublicKey,
             RsuCallback onMessage);
-        // CY_g of a registered RSU: what the operator names in a vehicle's Activation_Request (throws if unknown)
+
+        // Step 1 (IT Domain): Human Operator sends Activation_Request(CY_g, t_0, t_f, UUID_d, SHA256(fw_d))
+        // directly to ESA over IT/HTTPS (NEVER over OT radio!).
+        void requestActivation(const std::string& rsuName, simtime_t t0, simtime_t tf,
+            const Uuid& uuid, const Sha256& firmwareHash);
+
+        // CY_g of a registered RSU (throws if unknown)
         const Bytes& gatewayPublicKey(const std::string& rsuName) const;
 
-        // over the backhaul, to msg.getDestination(), "latency" later
+        // Over the backhaul, to msg.getDestination(), "latency" later
         void sendBackhaul(const ProtocolMsg& msg);
 
-        // the cloud: its certificate (PEM), pinned by the OP-TEE TAs (TA_GATEWAY_CMD_INIT_CLOUD_SESSION)
+        // Cloud CA-signed certificate (PEM), verified against Root CA inside each RSU's OP-TEE TA
         std::string cloudCertificate();
-        // an IT packet (HTTPS Header | AES(K_eg, JSON)) the OP-TEE TA of "rsuName" made: opened with the cloud's key
+        // IT packet (HTTPS Header | AES(K_eg, JSON)) from an RSU's OP-TEE TA: opened with Cloud's key
         bool postToCloud(const std::string& rsuName, const Bytes& itPacket);
 
     protected:
@@ -45,18 +59,22 @@ class BackhaulBroker : public omnetpp::cSimpleModule
         void finish() override;
 
     private:
+        CertificateAuthority& ca();
         ExternalSecurityAgent& esa();
+        HumanOperator& humanOperator();
         CloudIdentity& cloud();
         void deliver(const ProtocolMsg& msg);
 
+        std::unique_ptr<CertificateAuthority> mCa;
         std::unique_ptr<ExternalSecurityAgent> mEsa;
+        std::unique_ptr<HumanOperator> mOperator;
         std::unique_ptr<CloudIdentity> mCloud;
         std::map<std::string, RsuCallback> mRsus;           // RSU -> what reaches it
         std::map<std::string, Bytes> mGatewayKeys;          // RSU -> CY_g
 
         // statistics (results/*.sca)
         long mDelivered = 0;
-        long mUndeliverable = 0;    // no such destination (e.g. Active_03: to the vehicle's user, not modeled)
+        long mUndeliverable = 0;
         long mCloudStored = 0;      // IT packets the cloud opened with its K_eg
         long mCloudRefused = 0;     // IT packets it could not open
         omnetpp::simsignal_t mCloudJsonSignal;

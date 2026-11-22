@@ -11,6 +11,7 @@ extern "C" {
 }
 #else
 #include <openssl/crypto.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
@@ -26,7 +27,7 @@ namespace
 constexpr size_t kGcmNonceSize = 12;
 constexpr size_t kGcmTagSize   = 16;
 
-// Fixed 26-byte ASN.1 DER SubjectPublicKeyInfo prefix for an uncompressed P-256 point (0x04 || X(32) || Y(32)):
+// Fixed 27-byte ASN.1 DER SubjectPublicKeyInfo prefix for an uncompressed P-256 point (0x04 || X(32) || Y(32)):
 // SEQUENCE (89 B) {
 //   SEQUENCE (19 B) { OID ecPublicKey (1.2.840.10045.2.1), OID prime256v1 (1.2.840.10045.3.1.7) }
 //   BIT STRING (66 B) { 0x00 unused bits, 0x04 (uncompressed), X (32 B), Y (32 B) }
@@ -267,6 +268,45 @@ bool derEcdsaSigToRaw64(const uint8_t* der, size_t derLen, uint8_t rawSig[64])
     return sPos == seqLen;
 }
 
+Bytes deriveWithHandle(TEE_ObjectHandle keyPair, const Bytes& peerPublicKeyDer)
+{
+    if (peerPublicKeyDer.size() != kP256SpkiLen
+        || std::memcmp(peerPublicKeyDer.data(), kP256SpkiPrefix, sizeof(kP256SpkiPrefix)) != 0) {
+        throw std::runtime_error("ECDH: peer public key is not P-256 SubjectPublicKeyInfo DER");
+    }
+    const uint8_t* peerX = peerPublicKeyDer.data() + sizeof(kP256SpkiPrefix);
+    const uint8_t* peerY = peerX + 32;
+
+    TEE_OperationHandle op = TEE_HANDLE_NULL;
+    TEE_ObjectHandle secretObj = TEE_HANDLE_NULL;
+    if (TEE_AllocateOperation(&op, TEE_ALG_ECDH_P256, TEE_MODE_DERIVE, 256) != TEE_SUCCESS
+        || TEE_SetOperationKey(op, keyPair) != TEE_SUCCESS
+        || TEE_AllocateTransientObject(TEE_TYPE_GENERIC_SECRET, 256, &secretObj) != TEE_SUCCESS) {
+        if (secretObj != TEE_HANDLE_NULL) TEE_FreeTransientObject(secretObj);
+        if (op != TEE_HANDLE_NULL) TEE_FreeOperation(op);
+        throw std::runtime_error("TEE_AllocateOperation(ECDH_P256) failed");
+    }
+
+    TEE_Attribute peerAttrs[2]{};
+    TEE_InitRefAttribute(&peerAttrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, peerX, 32);
+    TEE_InitRefAttribute(&peerAttrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y, peerY, 32);
+    TEE_DeriveKey(op, peerAttrs, 2, secretObj);
+
+    Bytes shared(32, 0);
+    size_t sharedLen = 32;
+    uint8_t rawSecret[32]{};
+    const TEE_Result res = TEE_GetObjectBufferAttribute(secretObj, TEE_ATTR_SECRET_VALUE, rawSecret, &sharedLen);
+    TEE_FreeTransientObject(secretObj);
+    TEE_FreeOperation(op);
+    if (res != TEE_SUCCESS || sharedLen == 0 || sharedLen > 32) {
+        cleanse(rawSecret, sizeof(rawSecret));
+        throw std::runtime_error("TEE_DeriveKey(P256) failed");
+    }
+    std::memcpy(shared.data() + (32 - sharedLen), rawSecret, sharedLen);
+    cleanse(rawSecret, sizeof(rawSecret));
+    return shared;
+}
+
 #endif // __OPTEE_TA__
 
 } // namespace
@@ -463,17 +503,69 @@ std::string verifySubjectPublicKeyInfo(const Bytes& der)
 #endif
 }
 
-EcdhDerived generateAndDeriveEcdh(const Bytes& peerPublicKeyDer)
+// -----------------------------------------------------------------------------
+// Long-lived Gateway P-256 identity keypair inside Secure World (EcdhKeyPair)
+// -----------------------------------------------------------------------------
+
+EcdhKeyPair::~EcdhKeyPair()
+{
+    reset();
+}
+
+EcdhKeyPair::EcdhKeyPair(EcdhKeyPair&& other) noexcept :
+    mPublicKeyDer(std::move(other.mPublicKeyDer)),
+#ifdef __OPTEE_TA__
+    mHandle(other.mHandle)
+{
+    other.mHandle = nullptr;
+}
+#else
+    mKey(std::move(other.mKey))
+{
+}
+#endif
+
+EcdhKeyPair& EcdhKeyPair::operator=(EcdhKeyPair&& other) noexcept
+{
+    if (this != &other) {
+        reset();
+        mPublicKeyDer = std::move(other.mPublicKeyDer);
+#ifdef __OPTEE_TA__
+        mHandle = other.mHandle;
+        other.mHandle = nullptr;
+#else
+        mKey = std::move(other.mKey);
+#endif
+    }
+    return *this;
+}
+
+void EcdhKeyPair::reset()
 {
 #ifdef __OPTEE_TA__
-    if (peerPublicKeyDer.size() != kP256SpkiLen
-        || std::memcmp(peerPublicKeyDer.data(), kP256SpkiPrefix, sizeof(kP256SpkiPrefix)) != 0) {
-        throw std::runtime_error("ECDH: peer public key is not P-256 SubjectPublicKeyInfo DER");
+    if (mHandle) {
+        TEE_FreeTransientObject(static_cast<TEE_ObjectHandle>(mHandle));
+        mHandle = nullptr;
     }
-    const uint8_t* peerX = peerPublicKeyDer.data() + sizeof(kP256SpkiPrefix);
-    const uint8_t* peerY = peerX + 32;
+#else
+    mKey.reset();
+#endif
+    mPublicKeyDer.clear();
+}
 
-    // 1. Generate ephemeral P-256 keypair inside OP-TEE
+bool EcdhKeyPair::valid() const
+{
+#ifdef __OPTEE_TA__
+    return mHandle != nullptr && !mPublicKeyDer.empty();
+#else
+    return mKey != nullptr && !mPublicKeyDer.empty();
+#endif
+}
+
+EcdhKeyPair EcdhKeyPair::generate()
+{
+    EcdhKeyPair out;
+#ifdef __OPTEE_TA__
     TEE_ObjectHandle keyPair = TEE_HANDLE_NULL;
     if (TEE_AllocateTransientObject(TEE_TYPE_ECDH_KEYPAIR, 256, &keyPair) != TEE_SUCCESS) {
         throw std::runtime_error("TEE_AllocateTransientObject(ECDH_KEYPAIR) failed");
@@ -484,8 +576,6 @@ EcdhDerived generateAndDeriveEcdh(const Bytes& peerPublicKeyDer)
         TEE_FreeTransientObject(keyPair);
         throw std::runtime_error("TEE_GenerateKey(P256) failed");
     }
-
-    // 2. Extract our uncompressed public point (X, Y) and wrap into 91-byte SPKI DER
     uint8_t myX[32]{}, myY[32]{};
     size_t xLen = 32, yLen = 32;
     if (TEE_GetObjectBufferAttribute(keyPair, TEE_ATTR_ECC_PUBLIC_VALUE_X, myX, &xLen) != TEE_SUCCESS
@@ -493,72 +583,61 @@ EcdhDerived generateAndDeriveEcdh(const Bytes& peerPublicKeyDer)
         TEE_FreeTransientObject(keyPair);
         throw std::runtime_error("TEE_GetObjectBufferAttribute(ECC_PUBLIC) failed");
     }
-    Bytes mySpki(kP256SpkiLen, 0);
-    std::memcpy(mySpki.data(), kP256SpkiPrefix, sizeof(kP256SpkiPrefix));
-    std::memcpy(mySpki.data() + sizeof(kP256SpkiPrefix) + (32 - xLen), myX, xLen);
-    std::memcpy(mySpki.data() + sizeof(kP256SpkiPrefix) + 32 + (32 - yLen), myY, yLen);
-
-    // 3. Derive shared secret Z = ECDH(myKeyPair, peerPubKey)
-    TEE_OperationHandle op = TEE_HANDLE_NULL;
-    TEE_ObjectHandle secretObj = TEE_HANDLE_NULL;
-    if (TEE_AllocateOperation(&op, TEE_ALG_ECDH_P256, TEE_MODE_DERIVE, 256) != TEE_SUCCESS
-        || TEE_SetOperationKey(op, keyPair) != TEE_SUCCESS
-        || TEE_AllocateTransientObject(TEE_TYPE_GENERIC_SECRET, 256, &secretObj) != TEE_SUCCESS) {
-        if (secretObj != TEE_HANDLE_NULL) TEE_FreeTransientObject(secretObj);
-        if (op != TEE_HANDLE_NULL) TEE_FreeOperation(op);
-        TEE_FreeTransientObject(keyPair);
-        throw std::runtime_error("TEE_AllocateOperation(ECDH_P256) failed");
-    }
-
-    TEE_Attribute peerAttrs[2]{};
-    TEE_InitRefAttribute(&peerAttrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, peerX, 32);
-    TEE_InitRefAttribute(&peerAttrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y, peerY, 32);
-    TEE_DeriveKey(op, peerAttrs, 2, secretObj);
-
-    Bytes shared(32, 0);
-    size_t sharedLen = 32;
-    uint8_t rawSecret[32]{};
-    const TEE_Result res = TEE_GetObjectBufferAttribute(secretObj, TEE_ATTR_SECRET_VALUE, rawSecret, &sharedLen);
-    TEE_FreeTransientObject(secretObj);
-    TEE_FreeOperation(op);
-    TEE_FreeTransientObject(keyPair); // Ephemeral private key X is destroyed immediately
-    if (res != TEE_SUCCESS || sharedLen == 0 || sharedLen > 32) {
-        cleanse(rawSecret, sizeof(rawSecret));
-        throw std::runtime_error("TEE_AsymmetricDeriveKey(P256) failed");
-    }
-    std::memcpy(shared.data() + (32 - sharedLen), rawSecret, sharedLen);
-    cleanse(rawSecret, sizeof(rawSecret));
-    return EcdhDerived{ std::move(mySpki), std::move(shared) };
+    out.mPublicKeyDer.assign(kP256SpkiLen, 0);
+    std::memcpy(out.mPublicKeyDer.data(), kP256SpkiPrefix, sizeof(kP256SpkiPrefix));
+    std::memcpy(out.mPublicKeyDer.data() + sizeof(kP256SpkiPrefix) + (32 - xLen), myX, xLen);
+    std::memcpy(out.mPublicKeyDer.data() + sizeof(kP256SpkiPrefix) + 32 + (32 - yLen), myY, yLen);
+    out.mHandle = keyPair;
 #else
-    const auto keyPair = ::newEcKey(kEcdhCurve);
+    out.mKey = ::newEcKey(kEcdhCurve);
+    out.mPublicKeyDer = ::publicKeyDer(out.mKey.get());
+#endif
+    return out;
+}
+
+Bytes EcdhKeyPair::deriveSharedSecret(const Bytes& peerPublicKeyDer) const
+{
+    if (!valid()) {
+        throw std::runtime_error("ECDH: identity keypair not generated");
+    }
+#ifdef __OPTEE_TA__
+    return deriveWithHandle(static_cast<TEE_ObjectHandle>(mHandle), peerPublicKeyDer);
+#else
     const auto peerKey = ::publicKeyFromDer(peerPublicKeyDer);
-    return EcdhDerived{ ::publicKeyDer(keyPair.get()), ::ecdh(keyPair.get(), peerKey.get()) };
+    return ::ecdh(mKey.get(), peerKey.get());
 #endif
 }
 
-std::optional<PinnedCertificate> verifySelfSignedP256CertPem(const std::string& pem, std::string& errorReason)
+EcdhDerived generateAndDeriveEcdh(const Bytes& peerPublicKeyDer)
 {
+    EcdhKeyPair ephemeral = EcdhKeyPair::generate();
+    Bytes pubDer = ephemeral.publicKeyDer();
+    Bytes shared = ephemeral.deriveSharedSecret(peerPublicKeyDer);
+    return EcdhDerived{ std::move(pubDer), std::move(shared) }; // ephemeral private key destroyed on return
+}
+
+std::optional<PinnedCertificate> verifyCertDerSignedByCa(const Bytes& certDer, const Bytes& caPublicKeyDer,
+    std::string& errorReason)
+{
+    if (certDer.empty() || caPublicKeyDer.empty()) {
+        errorReason = "certificate or CA public key is empty";
+        return std::nullopt;
+    }
 #ifdef __OPTEE_TA__
-    const std::string beginMarker = "-----BEGIN CERTIFICATE-----";
-    const std::string endMarker   = "-----END CERTIFICATE-----";
-    const size_t bPos = pem.find(beginMarker);
-    const size_t ePos = pem.find(endMarker);
-    if (bPos == std::string::npos || ePos == std::string::npos || ePos <= bPos + beginMarker.size()) {
-        errorReason = "HTTPS session: the cloud's certificate is not a PEM certificate";
+    if (caPublicKeyDer.size() != kP256SpkiLen
+        || std::memcmp(caPublicKeyDer.data(), kP256SpkiPrefix, sizeof(kP256SpkiPrefix)) != 0) {
+        errorReason = "CA public key is not P-256 SubjectPublicKeyInfo DER";
         return std::nullopt;
     }
-    const auto certDer = base64DecodeLocal(pem.substr(bPos + beginMarker.size(), ePos - (bPos + beginMarker.size())));
-    if (!certDer || certDer->empty()) {
-        errorReason = "HTTPS session: the cloud's certificate is not a PEM certificate";
-        return std::nullopt;
-    }
+    const uint8_t* caX = caPublicKeyDer.data() + sizeof(kP256SpkiPrefix);
+    const uint8_t* caY = caX + 32;
 
     // Parse X.509 Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
     size_t pos = 0, certLen = 0, start = 0, total = 0;
     uint8_t tag = 0;
     const uint8_t* certVal = nullptr;
-    if (!readDerTlv(certDer->data(), certDer->size(), pos, tag, certVal, certLen, start, total) || tag != 0x30) {
-        errorReason = "HTTPS session: the cloud's certificate is not a PEM certificate";
+    if (!readDerTlv(certDer.data(), certDer.size(), pos, tag, certVal, certLen, start, total) || tag != 0x30) {
+        errorReason = "malformed DER X.509 certificate";
         return std::nullopt;
     }
 
@@ -566,7 +645,7 @@ std::optional<PinnedCertificate> verifySelfSignedP256CertPem(const std::string& 
     const uint8_t* tbsVal = nullptr;
     size_t tbsLen = 0, tbsStart = 0, tbsTotal = 0;
     if (!readDerTlv(certVal, certLen, cPos, tag, tbsVal, tbsLen, tbsStart, tbsTotal) || tag != 0x30) {
-        errorReason = "HTTPS session: malformed tbsCertificate";
+        errorReason = "malformed tbsCertificate";
         return std::nullopt;
     }
     const Bytes tbsBytes(certVal + tbsStart, certVal + tbsStart + tbsTotal);
@@ -574,7 +653,7 @@ std::optional<PinnedCertificate> verifySelfSignedP256CertPem(const std::string& 
     const uint8_t* sigAlgVal = nullptr;
     size_t sigAlgLen = 0, dummyStart = 0, dummyTotal = 0;
     if (!readDerTlv(certVal, certLen, cPos, tag, sigAlgVal, sigAlgLen, dummyStart, dummyTotal) || tag != 0x30) {
-        errorReason = "HTTPS session: malformed signatureAlgorithm";
+        errorReason = "malformed signatureAlgorithm";
         return std::nullopt;
     }
 
@@ -582,26 +661,24 @@ std::optional<PinnedCertificate> verifySelfSignedP256CertPem(const std::string& 
     size_t sigBitLen = 0;
     if (!readDerTlv(certVal, certLen, cPos, tag, sigBitStr, sigBitLen, dummyStart, dummyTotal)
         || tag != 0x03 || sigBitLen < 2 || sigBitStr[0] != 0x00) {
-        errorReason = "HTTPS session: malformed signatureValue";
+        errorReason = "malformed signatureValue";
         return std::nullopt;
     }
 
-    // Locate the 91-byte P-256 SubjectPublicKeyInfo inside tbsCertificate
+    // Locate the subject's 91-byte P-256 SubjectPublicKeyInfo inside tbsCertificate
     auto spkiIt = std::search(tbsBytes.begin(), tbsBytes.end(),
         std::begin(kP256SpkiPrefix), std::end(kP256SpkiPrefix));
     if (spkiIt == tbsBytes.end()
         || static_cast<size_t>(std::distance(spkiIt, tbsBytes.end())) < kP256SpkiLen) {
-        errorReason = "HTTPS session: the cloud's key is not P-256 (?)";
+        errorReason = "certificate subject key is not P-256";
         return std::nullopt;
     }
     const Bytes spki(spkiIt, spkiIt + kP256SpkiLen);
-    const uint8_t* pubX = spki.data() + sizeof(kP256SpkiPrefix);
-    const uint8_t* pubY = pubX + 32;
 
-    // Extract CN from subject if present (OID 2.5.4.3 = 55 04 03)
-    std::string subject = "/CN=cloud";
+    // Extract subject CN (last CN OID 2.5.4.3 in tbsCertificate, since issuer precedes subject)
+    std::string subject = "/CN=unknown";
     const uint8_t cnOid[3] = { 0x55, 0x04, 0x03 };
-    auto cnIt = std::search(tbsBytes.begin(), tbsBytes.end(), std::begin(cnOid), std::end(cnOid));
+    auto cnIt = std::find_end(tbsBytes.begin(), tbsBytes.end(), std::begin(cnOid), std::end(cnOid));
     if (cnIt != tbsBytes.end() && std::distance(cnIt, tbsBytes.end()) > 5) {
         const size_t cnLen = static_cast<uint8_t>(*(cnIt + 4));
         if (static_cast<size_t>(std::distance(cnIt + 5, tbsBytes.end())) >= cnLen) {
@@ -609,65 +686,115 @@ std::optional<PinnedCertificate> verifySelfSignedP256CertPem(const std::string& 
         }
     }
 
-    // Verify self-signature over SHA256(tbsCertificate) using OP-TEE TEE_ALG_ECDSA_P256
+    // Verify CA ECDSA-SHA256 signature over tbsCertificate using pinned CA public key
     uint8_t rawSig[64]{};
     if (!derEcdsaSigToRaw64(sigBitStr + 1, sigBitLen - 1, rawSig)) {
-        errorReason = "HTTPS session: the cloud's certificate is not signed by its own key";
+        errorReason = "certificate signature is malformed or not signed by trusted CA";
         return std::nullopt;
     }
     const Sha256 tbsHash = sha256(tbsBytes);
 
-    TEE_ObjectHandle pubKeyObj = TEE_HANDLE_NULL;
+    TEE_ObjectHandle caKeyObj = TEE_HANDLE_NULL;
     TEE_OperationHandle verifyOp = TEE_HANDLE_NULL;
-    if (TEE_AllocateTransientObject(TEE_TYPE_ECDSA_PUBLIC_KEY, 256, &pubKeyObj) != TEE_SUCCESS) {
+    if (TEE_AllocateTransientObject(TEE_TYPE_ECDSA_PUBLIC_KEY, 256, &caKeyObj) != TEE_SUCCESS) {
         errorReason = "TEE_AllocateTransientObject(ECDSA_PUBLIC_KEY) failed";
         return std::nullopt;
     }
     TEE_Attribute attrs[3]{};
-    TEE_InitRefAttribute(&attrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, pubX, 32);
-    TEE_InitRefAttribute(&attrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y, pubY, 32);
+    TEE_InitRefAttribute(&attrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, caX, 32);
+    TEE_InitRefAttribute(&attrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y, caY, 32);
     TEE_InitValueAttribute(&attrs[2], TEE_ATTR_ECC_CURVE, TEE_ECC_CURVE_NIST_P256, 0);
-    if (TEE_PopulateTransientObject(pubKeyObj, attrs, 3) != TEE_SUCCESS
+    if (TEE_PopulateTransientObject(caKeyObj, attrs, 3) != TEE_SUCCESS
         || TEE_AllocateOperation(&verifyOp, TEE_ALG_ECDSA_P256, TEE_MODE_VERIFY, 256) != TEE_SUCCESS
-        || TEE_SetOperationKey(verifyOp, pubKeyObj) != TEE_SUCCESS) {
+        || TEE_SetOperationKey(verifyOp, caKeyObj) != TEE_SUCCESS) {
         if (verifyOp != TEE_HANDLE_NULL) TEE_FreeOperation(verifyOp);
-        TEE_FreeTransientObject(pubKeyObj);
+        TEE_FreeTransientObject(caKeyObj);
         errorReason = "TEE_SetOperationKey(ECDSA_P256) failed";
         return std::nullopt;
     }
     const TEE_Result vRes = TEE_AsymmetricVerifyDigest(verifyOp, nullptr, 0,
         tbsHash.data(), tbsHash.size(), rawSig, sizeof(rawSig));
     TEE_FreeOperation(verifyOp);
-    TEE_FreeTransientObject(pubKeyObj);
+    TEE_FreeTransientObject(caKeyObj);
     if (vRes != TEE_SUCCESS) {
-        errorReason = "HTTPS session: the cloud's certificate is not signed by its own key";
+        errorReason = "certificate is NOT signed by trusted CA";
         return std::nullopt;
     }
 
     return PinnedCertificate{ spki, subject, "prime256v1" };
+#else
+    const unsigned char* in = certDer.data();
+    std::unique_ptr<X509, decltype(&X509_free)> cert(
+        d2i_X509(nullptr, &in, static_cast<long>(certDer.size())), X509_free);
+    if (!cert) {
+        ERR_clear_error();
+        errorReason = "malformed DER X.509 certificate";
+        return std::nullopt;
+    }
+    EVP_PKEY* subjectKey = X509_get0_pubkey(cert.get());
+    char curve[64] = "?";
+    if (!subjectKey || EVP_PKEY_get_group_name(subjectKey, curve, sizeof(curve), nullptr) != 1
+        || std::strcmp(curve, "prime256v1") != 0) {
+        errorReason = std::string("certificate subject key is not P-256 (") + curve + ")";
+        return std::nullopt;
+    }
+    std::shared_ptr<EVP_PKEY> caKey;
+    try {
+        caKey = ::publicKeyFromDer(caPublicKeyDer);
+    } catch (const std::exception&) {
+        ERR_clear_error();
+        errorReason = "CA public key is invalid";
+        return std::nullopt;
+    }
+    if (X509_verify(cert.get(), caKey.get()) != 1) {
+        ERR_clear_error();
+        errorReason = "certificate is NOT signed by trusted CA";
+        return std::nullopt;
+    }
+    char subject[128] = "?";
+    X509_NAME_oneline(X509_get_subject_name(cert.get()), subject, sizeof(subject));
+    return PinnedCertificate{ ::publicKeyDer(subjectKey), subject, curve };
+#endif
+}
+
+std::optional<PinnedCertificate> verifyCertPemSignedByCa(const std::string& pem, const Bytes& caPublicKeyDer,
+    std::string& errorReason)
+{
+#ifdef __OPTEE_TA__
+    const std::string beginMarker = "-----BEGIN CERTIFICATE-----";
+    const std::string endMarker   = "-----END CERTIFICATE-----";
+    const size_t bPos = pem.find(beginMarker);
+    const size_t ePos = pem.find(endMarker);
+    if (bPos == std::string::npos || ePos == std::string::npos || ePos <= bPos + beginMarker.size()) {
+        errorReason = "certificate is not a PEM certificate";
+        return std::nullopt;
+    }
+    const auto certDer = base64DecodeLocal(pem.substr(bPos + beginMarker.size(), ePos - (bPos + beginMarker.size())));
+    if (!certDer || certDer->empty()) {
+        errorReason = "certificate is not a PEM certificate";
+        return std::nullopt;
+    }
+    return verifyCertDerSignedByCa(*certDer, caPublicKeyDer, errorReason);
 #else
     std::unique_ptr<BIO, decltype(&BIO_free)> bio(
         BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
     std::unique_ptr<X509, decltype(&X509_free)> cert(
         bio ? PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr) : nullptr, X509_free);
     if (!cert) {
-        errorReason = "HTTPS session: the cloud's certificate is not a PEM certificate";
+        ERR_clear_error();
+        errorReason = "certificate is not a PEM certificate";
         return std::nullopt;
     }
-    EVP_PKEY* key = X509_get0_pubkey(cert.get());
-    char curve[64] = "?";
-    if (!key || EVP_PKEY_get_group_name(key, curve, sizeof(curve), nullptr) != 1
-        || std::strcmp(curve, "prime256v1") != 0) {
-        errorReason = std::string("HTTPS session: the cloud's key is not P-256 (") + curve + ")";
+    const int size = i2d_X509(cert.get(), nullptr);
+    if (size <= 0) {
+        ERR_clear_error();
+        errorReason = "failed to encode certificate DER";
         return std::nullopt;
     }
-    if (X509_verify(cert.get(), key) != 1) {
-        errorReason = "HTTPS session: the cloud's certificate is not signed by its own key";
-        return std::nullopt;
-    }
-    char subject[128] = "?";
-    X509_NAME_oneline(X509_get_subject_name(cert.get()), subject, sizeof(subject));
-    return PinnedCertificate{ ::publicKeyDer(key), subject, curve };
+    Bytes der(static_cast<size_t>(size));
+    unsigned char* out = der.data();
+    i2d_X509(cert.get(), &out);
+    return verifyCertDerSignedByCa(der, caPublicKeyDer, errorReason);
 #endif
 }
 
@@ -687,6 +814,17 @@ std::string base64Encode(const Bytes& data)
         out.push_back((i + 2 < data.size()) ? kTable[triple & 0x3f] : '=');
     }
     return out;
+}
+
+uint64_t monotonicTimeMs()
+{
+#ifdef __OPTEE_TA__
+    TEE_Time t{};
+    TEE_GetSystemTime(&t);
+    return static_cast<uint64_t>(t.seconds) * 1000ULL + t.millis;
+#else
+    return 0;
+#endif
 }
 
 #ifndef __OPTEE_TA__

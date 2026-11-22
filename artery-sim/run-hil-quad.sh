@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Host-PC launcher for the dual-RSU Raspberry Pi 3 Hardware-in-the-Loop test.
+# Host-PC launcher for the quad-RSU (4-RSU) Raspberry Pi 3 Hardware-in-the-Loop test.
 #
-# Both rsu[0] and rsu[1] run physically on the Raspberry Pi 3 (via rsu-dual-ssh.sh),
-# while Artery on this host runs ESA, the vehicle, Cloud backhaul, SUMO, and radio PHY/MAC.
+# All 4 RSUs (rsu[0]..rsu[3]) run physically on the Raspberry Pi 3 (via rsu-quad-ssh.sh),
+# while Artery on this host runs Root CA, Human Operator, ESA, the vehicle, Cloud backhaul, SUMO, and radio PHY/MAC.
 # Requires opp_run_release to hold cap_net_raw+ep (configured by setup_artery.sh).
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,7 @@ Usage: $(basename "$0") --iface <nic> [options] [-- <extra opp_run flags>]
 Options:
   --iface <nic>   Host Ethernet interface connected to the Raspberry Pi 3
                   (or export HIL_IFACE=<nic>)
-  --gui           Run HIL_RPi3_DualRsu_GUI (launches sumo-gui) instead of headless
+  --gui           Run HIL_RPi3_QuadRsu_GUI (launches sumo-gui) instead of headless
   --rebuild       Rebuild the tee_v2x shared library before running
   -h, --help      Show this help message
 EOF
@@ -72,13 +72,13 @@ if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
 fi
 
 if [ "$REBUILD" -eq 1 ]; then
-    echo "[run-hil-dual] rebuilding tee_v2x..."
+    echo "[run-hil-quad] rebuilding tee_v2x..."
     cmake --build "$BUILD_DIR" --target tee_v2x -j"$(nproc)"
 fi
 
-CONFIG="HIL_RPi3_DualRsu"
+CONFIG="HIL_RPi3_QuadRsu"
 if [ "$USE_GUI" -eq 1 ]; then
-    CONFIG="HIL_RPi3_DualRsu_GUI"
+    CONFIG="HIL_RPi3_QuadRsu_GUI"
 fi
 
 RUN_FLAGS="-u Cmdenv -c $CONFIG --scheduler-class=omnetpp::cRealTimeScheduler"
@@ -87,7 +87,7 @@ if [ ${#EXTRA_FLAGS[@]} -gt 0 ]; then
 fi
 
 export HIL_IFACE="$IFACE"
-echo "[run-hil-dual] HIL_IFACE=$HIL_IFACE config=$CONFIG"
+echo "[run-hil-quad] HIL_IFACE=$HIL_IFACE config=$CONFIG"
 
 cmake -DRUN_FLAGS="$RUN_FLAGS" "$BUILD_DIR"
 exec cmake --build "$BUILD_DIR" --target run_tee_v2x_handover

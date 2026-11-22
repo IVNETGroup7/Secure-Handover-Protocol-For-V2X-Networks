@@ -6,8 +6,8 @@
 #include <chrono>
 #include <functional>
 #include <initializer_list>
-#include <memory>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -24,7 +24,7 @@ enum class FrameKind : uint8_t {
 };
 
 constexpr auto kSessionTimeout = std::chrono::seconds(5);         // RSU: waiting for the ESA's Session_Ack
-constexpr auto kSessionRetry = std::chrono::milliseconds(100);    // RSU: Session_Hello period
+constexpr auto kSessionRetry = std::chrono::milliseconds(500);    // RSU: Session_Hello period
 constexpr int kPollPeriodMs = 100;                                // loops check their stop flag at least this often
 
 void sendFrame(RawSocket& link, FrameKind kind, const Bytes& body);
@@ -57,29 +57,34 @@ void drain(RawSocket& link, OnFrame onFrame)
 // waits until one of the links has a frame (or timeoutMs passes, or a signal arrives)
 void waitFor(std::initializer_list<const RawSocket*> links, int timeoutMs = kPollPeriodMs);
 
-// the RSU's certificate: presented to the ESA in Session_Hello (the paper's arrow 2); its key is CY_g
-struct GatewayCertificate
-{
-    std::shared_ptr<EVP_PKEY> key;  // the RSU's key pair (P-256)
-    Bytes certificate;              // self-signed X.509, DER
-    Bytes publicKey;                // CY_g: DER SubjectPublicKeyInfo
-};
-GatewayCertificate newGatewayCertificate(const std::string& rsu);
-
-// RSU side of the HTTPS session with the ESA: Session_Hello (with "certificate") until its Session_Ack;
-// returns CY_e. Throws std::runtime_error after timeout, or as soon as stop() is true
-Bytes openHttpsSession(RawSocket& backhaul, const std::string& rsu, const std::string& sessionKey,
-    const Bytes& certificate, const std::string& iface, const std::function<bool()>& stop,
-    std::chrono::seconds timeout = kSessionTimeout);
-
-// ESA side: a Session_Hello; nullopt when it is not one (or its certificate does not verify)
+// Backhaul CA-authenticated session handshake frames (Step 2 in HIL mode):
+//   RSU -> Backhaul: Session_Hello { rsuName, gatewayPublicKey (Y_gw generated inside TEE) }
+//   Backhaul -> RSU: Session_Ack   { rsuName, caPublicKey, gatewayCert (CA-signed), esaCert (CA-signed) }
 struct SessionHello
 {
     std::string rsu;
-    std::string sessionKey;
-    Bytes gatewayPublicKey;         // CY_g, from the RSU's certificate (self-signature verified)
+    Bytes gatewayPublicKey;         // Y_gw (91-byte P-256 DER SPKI generated inside RSU TA)
 };
+
+struct SessionAck
+{
+    std::string rsu;
+    Bytes caPublicKey;              // Root CA public key (DER SPKI)
+    Bytes gatewayCert;              // CA-signed Gateway X.509 certificate (DER)
+    Bytes esaCert;                  // CA-signed ESA X.509 certificate (DER)
+};
+
+Bytes packSessionHello(const std::string& rsu, const Bytes& gatewayPublicKey);
 std::optional<SessionHello> parseSessionHello(const Bytes& body);
+Bytes packSessionAck(const std::string& rsu, const Bytes& caPublicKey, const Bytes& gatewayCert, const Bytes& esaCert);
+std::optional<SessionAck> parseSessionAck(const Bytes& body);
+
+// RSU side of the CA-authenticated HTTPS session setup with the ESA:
+// Sends Session_Hello (carrying TEE-generated Y_gw) until receiving matching Session_Ack.
+// Throws std::runtime_error after timeout or when stop() is true.
+SessionAck openHttpsSession(RawSocket& backhaul, const std::string& rsu, const Bytes& gatewayPublicKey,
+    const std::string& iface, const std::function<bool()>& stop,
+    std::chrono::seconds timeout = kSessionTimeout);
 
 // "packet" from "from" to "to" in Data_Fragment frames (as many as it takes; returns how many);
 // throws std::runtime_error

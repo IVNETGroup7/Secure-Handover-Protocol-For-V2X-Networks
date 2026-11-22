@@ -150,12 +150,18 @@ void TeeRsuService::initHil()
             if (!hello || hello->rsu != mName) {
                 return;
             }
+            const auto piMac = mHilBackhaul->lastSrcMac();
+            mHilBackhaul->setPeerMac(piMac);
+            mHilRadio->setPeerMac(piMac);
             mGatewayPublicKey = hello->gatewayPublicKey;
-            mEsaPublicKey = mBroker->registerRsu(mName, hello->sessionKey, mGatewayPublicKey,
+            const auto reg = mBroker->registerRsu(mName, mGatewayPublicKey,
                 [this](const ProtocolMsg& msg) { onBackhaul(msg); });
+            mCaPublicKey = reg.caPublicKey;
+            mGatewayCert = reg.gatewayCert;
+            mEsaCert = reg.esaCert;
             sendHilSessionAck();
             registered = true;
-            std::printf("[HIL] %s registered physical RSU CY_g (%zu B) with ESA -> Session_Ack sent\n",
+            std::printf("[HIL] %s registered physical RSU TEE CY_g (%zu B) with CA/ESA -> Session_Ack sent\n",
                 mName.c_str(), mGatewayPublicKey.size());
             std::fflush(stdout);
         });
@@ -221,16 +227,16 @@ void TeeRsuService::initLocalTee()
     mTee = std::make_unique<TeeSession>(sealed, par("freshState").boolValue());
     mGateway = std::make_unique<PacketManager>(*mTee, mName);
 
-    char sessionKey[65];
-    for (int i = 0; i < 32; ++i) {
-        std::snprintf(sessionKey + 2 * i, 3, "%02x", static_cast<unsigned>(intuniform(0, 255)));
+    // Step 2: generate Gateway identity (X_gw, CY_g) inside TA, certify via CA, verify ESA cert & derive K_esa
+    const int idStatus = mGateway->initIdentity(mGatewayPublicKey);
+    if (idStatus != GW_OK) {
+        throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_INIT_IDENTITY: %s", mName.c_str(), statusName(idStatus));
     }
-    const GatewayCertificate certificate = newGatewayCertificate(mName);
-    mGatewayPublicKey = certificate.publicKey;
-    const Bytes esaPublicKey = mBroker->registerRsu(mName, sessionKey, certificate.publicKey,
+    const auto reg = mBroker->registerRsu(mName, mGatewayPublicKey,
         [this](const ProtocolMsg& msg) { onBackhaul(msg); });
 
-    const int init = mGateway->initGateway(certificate.certificate, esaPublicKey, hexKey(par("groupKey").stdstringValue()));
+    const int init = mGateway->initGateway(reg.caPublicKey, reg.gatewayCert, reg.esaCert,
+        hexKey(par("groupKey").stdstringValue()));
     if (init != GW_OK) {
         throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_INIT_GATEWAY: %s", mName.c_str(), statusName(init));
     }
@@ -248,16 +254,11 @@ void TeeRsuService::initLocalTee()
 
 void TeeRsuService::onRadioRx(const ProtocolMsg& msg)
 {
-    // the operator chose the RSU of CY_g: the other RSUs in range leave its Activation_Request alone
-    if (msg.getType() == Activation_Request
-        && unpackActivationRequest(getPayload(msg)).gatewayPublicKey != mGatewayPublicKey) {
-        return;
-    }
     if (msg.getType() == Handover_Predict && msg.getDestination() == mName) {
         ++mHandoversTriggered;
     }
     if (mEnableHil) {
-        if (!mHilRadio || (msg.getDestination() != mName && msg.getDestination() != "esa")) {
+        if (!mHilRadio || msg.getDestination() != mName) {
             return;
         }
         sendMsg(*mHilRadio, msg);
@@ -389,9 +390,8 @@ void TeeRsuService::sendHilSessionAck()
     if (!mHilBackhaul) {
         return;
     }
-    Bytes ack = toBytes(mName + "\n");
-    ack.insert(ack.end(), mEsaPublicKey.begin(), mEsaPublicKey.end());
-    sendFrame(*mHilBackhaul, FrameKind::Session_Ack, ack);
+    sendFrame(*mHilBackhaul, FrameKind::Session_Ack,
+        packSessionAck(mName, mCaPublicKey, mGatewayCert, mEsaCert));
 }
 
 void TeeRsuService::sendHilClockAnchor()

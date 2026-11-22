@@ -9,8 +9,8 @@
 //     - TEE_ALG_SHA256 (TEE_AllocateOperation, TEE_DigestDoFinal)
 //     - TEE_ALG_AES_GCM (TEE_AEInit, TEE_AEEncryptFinal, TEE_AEDecryptFinal)
 //     - TEE_ALG_AES_ECB_NOPAD + RFC 8439 Poly1305 for Poly1305-AES OTPs
-//     - TEE_ALG_ECDH_P256 / TEE_TYPE_ECDH_KEYPAIR (TEE_GenerateKey, TEE_AsymmetricDeriveKey)
-//     - TEE_ALG_ECDSA_P256 / TEE_TYPE_ECDSA_PUBLIC_KEY (TEE_AsymmetricVerify for X.509 certificate pinning)
+//     - TEE_ALG_ECDH_P256 / TEE_TYPE_ECDH_KEYPAIR (TEE_GenerateKey, TEE_DeriveKey)
+//     - TEE_ALG_ECDSA_P256 / TEE_TYPE_ECDSA_PUBLIC_KEY (TEE_AsymmetricVerifyDigest for CA-signed X.509 certs)
 //     - TEE_CreatePersistentObject / TEE_OpenPersistentObject (TEE_STORAGE_PRIVATE) for sealing state
 //
 // When compiled in Host Simulation mode (for x86_64 host self-test and Artery simulation):
@@ -47,7 +47,37 @@ Block poly1305Aes(const Bytes& key, const Block& nonce, const Bytes& message);
 // P-256 SubjectPublicKeyInfo DER validation (returns curve name "prime256v1" if valid, empty if invalid)
 std::string verifySubjectPublicKeyInfo(const Bytes& der);
 
-// Fresh P-256 ECDH key generation + shared secret derivation:
+// Long-lived Gateway P-256 ECDH identity keypair held strictly inside the TEE.
+// Private key never leaves Secure World (opaque TEE_ObjectHandle in OP-TEE mode).
+class EcdhKeyPair
+{
+    public:
+        EcdhKeyPair() = default;
+        ~EcdhKeyPair();
+
+        EcdhKeyPair(const EcdhKeyPair&) = delete;
+        EcdhKeyPair& operator=(const EcdhKeyPair&) = delete;
+        EcdhKeyPair(EcdhKeyPair&& other) noexcept;
+        EcdhKeyPair& operator=(EcdhKeyPair&& other) noexcept;
+
+        static EcdhKeyPair generate();
+
+        bool valid() const;
+        const Bytes& publicKeyDer() const { return mPublicKeyDer; }
+        Bytes deriveSharedSecret(const Bytes& peerPublicKeyDer) const;
+
+    private:
+        void reset();
+
+        Bytes mPublicKeyDer;
+#ifdef __OPTEE_TA__
+        void* mHandle = nullptr;
+#else
+        std::shared_ptr<EVP_PKEY> mKey;
+#endif
+};
+
+// Fresh ephemeral P-256 ECDH key generation + shared secret derivation:
 // Generates ephemeral P-256 keypair (X, Y), derives shared secret Z = ECDH(X, peerPubKeyDer),
 // immediately destroys private key X, and returns { Y in 91-byte SPKI DER, 32-byte shared secret Z }.
 struct EcdhDerived
@@ -57,19 +87,27 @@ struct EcdhDerived
 };
 EcdhDerived generateAndDeriveEcdh(const Bytes& peerPublicKeyDer);
 
-// X.509 self-signed P-256 certificate verification (for pinning Cloud certificate CY_e):
-// Parses PEM certificate, verifies curve is prime256v1, verifies ECDSA-SHA256 self-signature,
-// and outputs the 91-byte SubjectPublicKeyInfo DER and human-readable subject name.
+// Verified X.509 P-256 certificate metadata extracted after CA signature verification
 struct PinnedCertificate
 {
-    Bytes publicKeyDer;
+    Bytes publicKeyDer;     // 91-byte SubjectPublicKeyInfo DER of the certified subject
     std::string subject;
     std::string curve;
 };
-std::optional<PinnedCertificate> verifySelfSignedP256CertPem(const std::string& pem, std::string& errorReason);
+
+// Verify a DER-encoded X.509 certificate was signed by the pinned Root CA public key (DER SPKI)
+std::optional<PinnedCertificate> verifyCertDerSignedByCa(const Bytes& certDer, const Bytes& caPublicKeyDer,
+    std::string& errorReason);
+
+// Verify a PEM-encoded X.509 certificate was signed by the pinned Root CA public key (DER SPKI)
+std::optional<PinnedCertificate> verifyCertPemSignedByCa(const std::string& pem, const Bytes& caPublicKeyDer,
+    std::string& errorReason);
 
 // Base64 encoding (for X-Session-Key header and JSON Value field)
 std::string base64Encode(const Bytes& data);
+
+// Monotonic hardware time in milliseconds inside the TEE (0 in host discrete-time simulation)
+uint64_t monotonicTimeMs();
 
 // Secure Storage persistence (OP-TEE TEE_STORAGE_PRIVATE persistent object or host-sealed file)
 bool savePersistentState(const std::string& storageId, const Bytes& plainState);
@@ -79,4 +117,3 @@ void deletePersistentState(const std::string& storageId);
 } // namespace ta_crypto
 
 #endif /* TA_CRYPTO_TEE_H_ */
-

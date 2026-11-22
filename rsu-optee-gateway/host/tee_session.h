@@ -32,10 +32,10 @@ class TeeSession
 
         // TA Commands (TA_GATEWAY_CMD_*)
         int setStorageId(const std::string& storageId, bool deleteExisting = false);
-        int initGateway(const Bytes& gwCert, const Bytes& esaPubKey, const Bytes& groupKey);
+        int initIdentity(Bytes& outGatewayPubKey);
+        int initGateway(const Bytes& caPubKey, const Bytes& gwCertDer, const Bytes& esaCertDer, const Bytes& groupKey);
         int initCloudSession(const std::string& cloudCertPem, const std::string& host, const std::string& gateway);
-        int addActivationToken(const std::string& session, uint64_t t0, uint64_t tf, const Bytes& authD,
-            const Bytes& authEg);
+        int addActivationToken(const Bytes& encryptedToken, uint64_t currentPtpTime);
         int handleBootstrap(int msgType, const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
             Bytes& outPkt, int& outType);
         int handleForwardingRequest(const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,

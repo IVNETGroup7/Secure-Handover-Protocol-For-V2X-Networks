@@ -6,7 +6,7 @@ The physical testbed uses a **Raspberry Pi 3 Model B** running **OP-TEE OS** for
 
 For development without physical RPi3 hardware, a complementary **libvirt/KVM VM (`optee-arm64-vm`)** workflow (`setup-vm.sh`, `make vm`, `make vm-hil`) provides the same 4-RSU `./app` environment over the host `virbr0` bridge.
 
-Once bootstrapped with `rsu[0]`, the vehicle's **CTRA (Constant Turn Rate and Acceleration)** trajectory predictor (`CtraPredictor`) selects the single most likely next RSU and triggers selective **Secrecy Forwarding** token pre-fetching (`Handover_Predict` → `Forwarding_Notice` → `Handover_Command`) exclusively with that target RSU, completing handovers (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`) without contacting the ESA or performing a new bootstrap ([`common/Handover.h`](common/Handover.h)). For a deep reference covering every test, C++ class, cryptographic equation, wire frame, and expected output, see [TESTS.md](TESTS.md).
+Once bootstrapped with `rsu[0]`, the vehicle's **CTRA (Constant Turn Rate and Acceleration)** trajectory predictor (`CtraPredictor`, in Normal World on the vehicle) selects the single most likely next RSU and triggers selective **Secrecy Forwarding** token pre-fetching (`Handover_Predict` → `Forwarding_Notice`) exclusively with that target RSU, completing handovers (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`) without contacting the ESA or performing a new bootstrap ([`common/Handover.h`](common/Handover.h)). For a deep reference covering every test, C++ class, cryptographic equation, wire frame, and expected output, see [TESTS.md](TESTS.md).
 
 ---
 
@@ -68,7 +68,7 @@ make vm-hil                    # launch 4-RSU daemon inside VM (pair with: make 
 
 The gateway separates untrusted OS networking from cryptographic state and keys:
 
-- **Normal World (`host/`)**: `./app` manages raw Ethernet sockets (`0x88b5` radio, `0x88b6` backhaul), message fragmentation/reassembly, OT/IT queues (`PacketManager`), PTP clock synchronization, and `TeeSession` invocations. It never sees plaintext `Activation_Token` (`Auth_d`/`Auth_eg`), `Active_02` (`OTP_dt`), `K_g`, `K_dg`, `K_esa`, `K_eg`, or `SmartData` JSON.
+- **Normal World (`host/`)**: `./app` manages raw Ethernet sockets (`0x88b5` radio, `0x88b6` backhaul), message fragmentation/reassembly, OT/IT queues (`PacketManager`), PTP clock synchronization, and `TeeSession` invocations. It never sees plaintext `Activation_Token` (`Auth_d`/`Auth_eg`), `Active_02` (`OTP_dt`), `Handover_Predict`, `Forwarding_Notice` (`E_{K_rsu}`), `Forwarding_Granted` (`E_{KT_i}`), `K_g`, `K_dg`, `K_rsu`, `K_esa`, `K_eg`, or `SmartData` JSON.
 - **Secure World (`ta/`)**: `9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta` uses the GlobalPlatform TEE Internal Core API to generate the Gateway's P-256 identity keypair (`X_gw`/`CY_g`) strictly inside TrustZone, pin the Root CA public key and verify CA-signed Gateway/ESA/Cloud X.509 certificates, derive the mutually-authenticated Gateway ↔ ESA AES-256-GCM key (`K_esa`), decrypt `Activation_Token` anonymously, verify fresh per-step RFC 8439 Poly1305-AES `OTP_dt`s (Theorem 2), enforce `[t_0, t_f]` / compromised-`Auth_d` exclusion / active-session reboot protection, perform OT→IT Secure Marshaling (`K_eg`), handle Secrecy Forwarding handovers, and seal state in OP-TEE Secure Storage (`TEE_STORAGE_PRIVATE`).
 
 ### Build modes & CLI
@@ -92,7 +92,7 @@ results:
   4. handover rsu[0] -> rsu[1]           Secure Marshaling (4a-4g): ok, Secrecy Forwarding (4h-4m): ok   ok
   5. CY_g of no gateway                  vehicle: no   operator Active_03: no   ignored: 1   ok
   6. before t_0 (TA enforced)            vehicle: no   operator Active_03: no   ignored: 1   ok
-  7. security & HIL checks (7a-7d)       Reboot/DoS, CA PKI, Operator-only & HIL helpers   ok
+  7. security & HIL checks (7a-7e)       Reboot/DoS, CA PKI, Operator, HIL & SecFwd   ok
 gateway OK
 ```
 
@@ -141,15 +141,14 @@ Artery drives SUMO mobility around the **400 m × 400 m Manhattan Grid** (`20 m/
 
 ## 4. CTRA Pre-Fetch & Secrecy Forwarding (`common/Handover.h`, `artery-sim/src/CtraPredictor.h`)
 
-A vehicle bootstrapped with source RSU $G_{i+1}$ (`rsu[0]`) predicts its trajectory using the **Constant Turn Rate and Acceleration (CTRA)** model ($X = [x, y, v, \psi, a, \omega]^T$ over an `8.0 s` lookahead horizon) and transitions to the single predicted target RSU $G_{i+2}$ without contacting the ESA or running a new bootstrap:
+At startup, neighboring RSUs exchange CA-signed certificates inside their TrustZone TAs (`TA_GATEWAY_CMD_REGISTER_PEER_RSU`), deriving pairwise authenticated keys $K_{rsu}$. During bootstrap (`Auth_Granted`) and each handover (`Forwarding_Granted`), the vehicle receives the CA-verified neighbor list `nextRsus` ($\{G, Y_G\}$). Outside the Secure World (Normal World on the vehicle), the **Constant Turn Rate and Acceleration (CTRA)** predictor ($X = [x, y, v, \psi, a, \omega]^T$ over an `8.0 s` lookahead horizon) selects only the single most likely target RSU $G_{i+2}$ (`minDistance <= 80 m`) and pre-computes $\tau_{i+2}$, $K_{dh_i} = \text{ECDH}(X_V, Y_{G_{i+2}})$, $KT_i$, and $\text{auth}_{i+2}$ locally without a `Handover_Command` round-trip:
 
 | # | Message | Direction | Transport | What it does |
 |---|---|---|---|---|
-| 0 | `Handover_Predict` (`21`) | $\text{Vehicle} \to G_{i+1}$ | Radio (`0x88b5`) | CTRA predictor identifies the single most likely target RSU $G_{i+2}$ (`minDistance <= 80 m`) and notifies only $G_{i+1}$ |
-| 1 | `Forwarding_Notice` (`16`) | $G_{i+1} \to G_{i+2}$ | Backhaul (`0x88b6`) | $G_{i+1}$ pre-fetches exclusively with $G_{i+2}$: sends $Y_V$, $\text{Auth}_d$, $\tau_{i+2} = \text{Poly1305}(K_{dg}, t_i, m)$ (`TA_GATEWAY_CMD_TRIGGER_HANDOVER`) |
-| 2 | `Handover_Command` (`17`) | $G_{i+2} \to G_{i+1} \to \text{Vehicle}$ | Backhaul / Radio | Carries $Y_{G_{i+2}}$; $G_{i+2}$ TA pre-computes $K_{dh_i}$, $KT_i$, $\text{auth}_{i+2}$ (`TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE`); vehicle caches keys until entering handover zone |
-| 3 | `Forwarding_Request` (`18`) | $\text{Vehicle} \to G_{i+2}$ | Radio (`0x88b5`) | Sent when entering `handoverRadius = 160 m`; carries $\text{auth}_{i+2} = \text{SHA256}(\tau_{i+2})$ and $\text{OTP} = \text{Poly1305}(KT_i^{32}, \text{auth}_{i+2} \oplus t_c, m)$ (`TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST`) |
-| 4 | `Forwarding_Granted` (`19`) | $G_{i+2} \to \text{Vehicle}$ | Radio (`0x88b5`) | Sends $E_{KT_i}(\{Y_{G_{i+3}}, \text{auth}'_{i+2}, K_{G_{i+2}}, \text{OTP}\})$; vehicle switches to target key $K_{G_{i+2}}$ |
+| 0 | `Handover_Predict` (`21`) | $\text{Vehicle} \to G_{i+1}$ | Radio (`0x88b5`) | Vehicle sends $E_{K_{dg}}(\{\text{Auth}_d, G_{i+2}, \text{OTP}_{dt}\})$ identifying only $G_{i+2}$; verified inside TA (`TA_GATEWAY_CMD_HANDLE_HANDOVER_PREDICT`) |
+| 1 | `Forwarding_Notice` (`16`) | $G_{i+1} \to G_{i+2}$ | Backhaul (`0x88b6`) | $G_{i+1}$ TA seals $E_{K_{rsu}}(\{\text{Forwarding\_Notice}, Y_V, \tau_{i+2}, \text{Auth}_d\})$ (`TA_GATEWAY_CMD_TRIGGER_HANDOVER`); $G_{i+2}$ TA pre-computes $K_{dh_i}$, $KT_i$, $\text{auth}_{i+2}$ (`TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE`) |
+| 2 | `Forwarding_Request` (`18`) | $\text{Vehicle} \to G_{i+2}$ | Radio (`0x88b5`) | Sent when entering `handoverRadius = 160 m`; carries $\text{auth}_{i+2} = \text{SHA256}(\tau_{i+2})$ and $\text{OTP} = \text{Poly1305}(KT_i^{32}, \text{auth}_{i+2} \oplus t_c, \text{type} \parallel \text{auth}_{i+2})$ (`TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST`) |
+| 3 | `Forwarding_Granted` (`19`) | $G_{i+2} \to \text{Vehicle}$ | Radio (`0x88b5`) | Sends $E_{KT_i}(\{\text{nextRsus}, \text{auth}'_{i+2}, K_{G_{i+2}}, \text{OTP}'\})$ with $\text{auth}'_{i+2} = \text{SHA256}(KT_i \parallel \text{auth}_{i+2})$ and fresh $\text{OTP}'$; vehicle switches to target key $K_{G_{i+2}}$ |
 | – | `Secure_Data` (`20`) | $\text{Vehicle} \to \text{RSU}$ | Radio (`0x88b5`) | SmartData OT packet marshaled in TA (`TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT`) → IT Cloud backhaul (`0x88b6`) |
 
 ---

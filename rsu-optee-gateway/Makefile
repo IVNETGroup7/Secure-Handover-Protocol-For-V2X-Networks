@@ -129,6 +129,7 @@ vm:
 
 clean:
 	rm -rf build_* app ta/*.o ta/*.d ta/*.ta ta/*.elf ta/*.dmp ta/*.map \
+		../common/*.o ../common/.*.cmd ../common/*.d \
 		gateway.sealed* rsu*.sealed*
 
 -include $(Host_Objects:.o=.d)

@@ -51,7 +51,7 @@ CloudIdentity& BackhaulBroker::cloud()
 }
 
 BackhaulBroker::RsuRegistration BackhaulBroker::registerRsu(const std::string& rsuName,
-    const Bytes& gatewayPublicKey, RsuCallback onMessage)
+    const Bytes& gatewayPublicKey, RsuCallback onMessage, PeerCertCallback onPeerCert)
 {
     Enter_Method_Silent();
     const Bytes gwCert = ca().issue(gatewayPublicKey, rsuName);
@@ -60,6 +60,20 @@ BackhaulBroker::RsuRegistration BackhaulBroker::registerRsu(const std::string& r
     }
     mRsus[rsuName] = std::move(onMessage);
     mGatewayKeys[rsuName] = gatewayPublicKey;
+    mGatewayCerts[rsuName] = gwCert;
+    mPeerCertCallbacks[rsuName] = std::move(onPeerCert);
+
+    for (const auto& [otherName, otherCert] : mGatewayCerts) {
+        if (otherName == rsuName) {
+            continue;
+        }
+        if (const auto& otherCb = mPeerCertCallbacks[otherName]) {
+            otherCb(rsuName, gwCert);
+        }
+        if (const auto& myCb = mPeerCertCallbacks[rsuName]) {
+            myCb(otherName, otherCert);
+        }
+    }
     return RsuRegistration{ ca().publicKeyDer, gwCert, esa().certificate() };
 }
 

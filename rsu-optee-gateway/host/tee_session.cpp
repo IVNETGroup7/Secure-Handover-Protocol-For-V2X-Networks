@@ -374,13 +374,114 @@ int TeeSession::secureMarshalOtToIt(const Bytes& otPkt, uint64_t currentPtpTime,
 #endif
 }
 
-int TeeSession::triggerHandover(const std::string& session, uint64_t ti, Block& outTau, Bytes& outYv, Bytes& outAuthD)
+int TeeSession::triggerHandover(const std::string& session, const std::string& targetRsu, uint64_t ti,
+    Bytes& outSealedNotice)
 {
 #ifdef USE_OPTEE
     Bytes in;
     wire::putUint(in, ti, 8);
     wire::putField(in, strBytes(session));
-    Bytes outBuf(kMaxFieldSize);
+    wire::putField(in, strBytes(targetRsu));
+    outSealedNotice.resize(kMaxFieldSize);
+    std::string logBuf(kLogBufferSize, '\0');
+
+    TEEC_Operation op{};
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_OUTPUT,
+        TEEC_VALUE_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT);
+    op.params[0].tmpref.buffer = in.data();
+    op.params[0].tmpref.size = in.size();
+    op.params[1].tmpref.buffer = outSealedNotice.data();
+    op.params[1].tmpref.size = outSealedNotice.size();
+    op.params[3].tmpref.buffer = logBuf.data();
+    op.params[3].tmpref.size = logBuf.size();
+
+    uint32_t origin = 0;
+    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_TRIGGER_HANDOVER, &op, &origin),
+        origin, "TA_GATEWAY_CMD_TRIGGER_HANDOVER");
+    logBuf.resize(op.params[3].tmpref.size);
+    emitTaLogs(logBuf);
+    const int status = static_cast<int>(op.params[2].value.a);
+    if (status == GW_OK) {
+        outSealedNotice.resize(op.params[1].tmpref.size);
+    } else {
+        outSealedNotice.clear();
+    }
+    return status;
+#else
+    const int status = mImpl->ta.triggerHandover(session, targetRsu, ti, outSealedNotice);
+    emitTaLogs(mImpl->ta.takeLogs());
+    return status;
+#endif
+}
+
+int TeeSession::receiveForwardingNotice(const std::string& senderRsu, const Bytes& sealedNotice,
+    uint64_t currentPtpTime)
+{
+#ifdef USE_OPTEE
+    Bytes in;
+    wire::putUint(in, currentPtpTime, 8);
+    wire::putField(in, strBytes(senderRsu));
+    wire::putField(in, sealedNotice);
+    std::string logBuf(kLogBufferSize, '\0');
+
+    TEEC_Operation op{};
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE);
+    op.params[0].tmpref.buffer = in.data();
+    op.params[0].tmpref.size = in.size();
+    op.params[2].tmpref.buffer = logBuf.data();
+    op.params[2].tmpref.size = logBuf.size();
+
+    uint32_t origin = 0;
+    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE, &op, &origin),
+        origin, "TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE");
+    logBuf.resize(op.params[2].tmpref.size);
+    emitTaLogs(logBuf);
+    return static_cast<int>(op.params[1].value.a);
+#else
+    const int status = mImpl->ta.receiveForwardingNotice(senderRsu, sealedNotice, currentPtpTime);
+    emitTaLogs(mImpl->ta.takeLogs());
+    return status;
+#endif
+}
+
+int TeeSession::registerPeerRsu(const std::string& peerName, const Bytes& peerCertDer)
+{
+#ifdef USE_OPTEE
+    Bytes in;
+    wire::putField(in, strBytes(peerName));
+    wire::putField(in, peerCertDer);
+    std::string logBuf(kLogBufferSize, '\0');
+
+    TEEC_Operation op{};
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE);
+    op.params[0].tmpref.buffer = in.data();
+    op.params[0].tmpref.size = in.size();
+    op.params[2].tmpref.buffer = logBuf.data();
+    op.params[2].tmpref.size = logBuf.size();
+
+    uint32_t origin = 0;
+    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_REGISTER_PEER_RSU, &op, &origin),
+        origin, "TA_GATEWAY_CMD_REGISTER_PEER_RSU");
+    logBuf.resize(op.params[2].tmpref.size);
+    emitTaLogs(logBuf);
+    return static_cast<int>(op.params[1].value.a);
+#else
+    const int status = mImpl->ta.registerPeerRsu(peerName, peerCertDer);
+    emitTaLogs(mImpl->ta.takeLogs());
+    return status;
+#endif
+}
+
+int TeeSession::handleHandoverPredict(const Bytes& inPkt, uint64_t currentPtpTime, std::string& outTargetRsu,
+    Bytes& outSealedNotice)
+{
+    outTargetRsu.clear();
+    outSealedNotice.clear();
+#ifdef USE_OPTEE
+    Bytes in;
+    wire::putUint(in, currentPtpTime, 8);
+    wire::putField(in, inPkt);
+    Bytes outBuf(kMaxReplySize);
     std::string logBuf(kLogBufferSize, '\0');
 
     TEEC_Operation op{};
@@ -394,62 +495,20 @@ int TeeSession::triggerHandover(const std::string& session, uint64_t ti, Block& 
     op.params[3].tmpref.size = logBuf.size();
 
     uint32_t origin = 0;
-    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_TRIGGER_HANDOVER, &op, &origin),
-        origin, "TA_GATEWAY_CMD_TRIGGER_HANDOVER");
+    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_HANDLE_HANDOVER_PREDICT, &op, &origin),
+        origin, "TA_GATEWAY_CMD_HANDLE_HANDOVER_PREDICT");
     logBuf.resize(op.params[3].tmpref.size);
     emitTaLogs(logBuf);
     const int status = static_cast<int>(op.params[2].value.a);
     if (status == GW_OK) {
         outBuf.resize(op.params[1].tmpref.size);
         wire::Reader r(outBuf);
-        outTau = r.block();
-        outYv = r.field();
-        outAuthD = r.field();
+        outTargetRsu = r.str();
+        outSealedNotice = r.field();
     }
     return status;
 #else
-    const int status = mImpl->ta.triggerHandover(session, ti, outTau, outYv, outAuthD);
-    emitTaLogs(mImpl->ta.takeLogs());
-    return status;
-#endif
-}
-
-int TeeSession::receiveForwardingNotice(const std::string& session, const Bytes& yv, const Block& tau,
-    const Bytes& authD, Bytes& outYg)
-{
-#ifdef USE_OPTEE
-    Bytes in;
-    wire::putField(in, strBytes(session));
-    in.insert(in.end(), tau.begin(), tau.end());
-    wire::putField(in, yv);
-    wire::putField(in, authD);
-    outYg.resize(kMaxFieldSize);
-    std::string logBuf(kLogBufferSize, '\0');
-
-    TEEC_Operation op{};
-    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_OUTPUT,
-        TEEC_VALUE_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT);
-    op.params[0].tmpref.buffer = in.data();
-    op.params[0].tmpref.size = in.size();
-    op.params[1].tmpref.buffer = outYg.data();
-    op.params[1].tmpref.size = outYg.size();
-    op.params[3].tmpref.buffer = logBuf.data();
-    op.params[3].tmpref.size = logBuf.size();
-
-    uint32_t origin = 0;
-    checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE, &op, &origin),
-        origin, "TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE");
-    logBuf.resize(op.params[3].tmpref.size);
-    emitTaLogs(logBuf);
-    const int status = static_cast<int>(op.params[2].value.a);
-    if (status == GW_OK) {
-        outYg.resize(op.params[1].tmpref.size);
-    } else {
-        outYg.clear();
-    }
-    return status;
-#else
-    const int status = mImpl->ta.receiveForwardingNotice(session, yv, tau, authD, outYg);
+    const int status = mImpl->ta.handleHandoverPredict(inPkt, currentPtpTime, outTargetRsu, outSealedNotice);
     emitTaLogs(mImpl->ta.takeLogs());
     return status;
 #endif

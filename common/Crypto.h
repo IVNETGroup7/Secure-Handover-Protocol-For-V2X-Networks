@@ -15,6 +15,14 @@ using Bytes = std::vector<uint8_t>;
 using Sha256 = std::array<uint8_t, 32>;
 using Block = std::array<uint8_t, 16>;
 
+// CA-verified neighbor RSU identity key carried in Auth_Granted and Forwarding_Granted
+struct NeighborRsuKey
+{
+    std::string name;
+    Bytes publicKeyDer;
+};
+constexpr size_t kMaxNeighborRsus = 4;
+
 void check(bool ok, const char* what);
 
 Sha256 sha256(const Bytes& data);
@@ -79,8 +87,5 @@ CertificateAuthority newCertificateAuthority(const std::string& commonName = "ii
 //   K_esa = SHA256(ECDH_shared || CY_g || CY_e)
 Bytes deriveEsaSessionKey(const Bytes& sharedSecret, const Bytes& gatewayPublicKey, const Bytes& esaPublicKey);
 #endif
-// a self-signed certificate (DER) whose signature verifies with its own key: that key, DER SubjectPublicKeyInfo;
-// nullopt when it does not parse or does not verify
-std::optional<Bytes> verifiedCertificateKey(const Bytes& certificateDer);
 
 #endif /* COMMON_CRYPTO_H_ */

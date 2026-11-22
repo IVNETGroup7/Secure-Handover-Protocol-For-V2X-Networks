@@ -3,7 +3,7 @@
 
 // Vehicle-side RSU-to-RSU Secrecy Forwarding handover & selective CTRA pre-fetch client.
 // Completely independent of the initial bootstrap / ESA flow:
-//   Handover_Predict -> Handover_Command (pre-fetch) -> Forwarding_Request -> Forwarding_Granted.
+//   pre-loaded Y_G_{i+2} -> encrypted Handover_Predict -> Forwarding_Request -> Forwarding_Granted.
 
 #include "Crypto.h"
 #include "Handover.h"
@@ -30,15 +30,16 @@ using PrefetchCallback = std::function<void(const std::string& targetRsu)>;
 class HandoverClient
 {
     public:
-        explicit HandoverClient(VehicleSession& session, bool deferHandover = false);
+        explicit HandoverClient(VehicleSession& session);
 
-        void setDeferHandover(bool defer) { mDeferHandover = defer; }
         void setPrefetchCallback(PrefetchCallback onPrefetch) { mOnPrefetchReady = std::move(onPrefetch); }
         void setHandoverCallback(HandoverCallback onHandover) { mOnHandoverCompleted = std::move(onHandover); }
 
-        // CTRA predictor: notify current RSU to pre-fetch tokens exclusively from targetRsu (G_{i+2})
+        // CTRA predictor: pre-compute keys with targetRsu's pre-loaded Y_G and notify current RSU
         void requestPrediction(const std::string& targetRsu);
-        // Send Forwarding_Request to the pre-fetched target RSU (called immediately or after deferral)
+        // Re-send encrypted Handover_Predict if an OT/backhaul frame may have been lost
+        void resendPrediction();
+        // Send Forwarding_Request to the pre-computed target RSU
         void requestForwarding();
 
         void handleMessage(const ProtocolMsg& msg);
@@ -48,7 +49,7 @@ class HandoverClient
         const std::string& targetRsu() const;
 
     private:
-        void onHandoverCommand(const ProtocolMsg& received);
+        void sendEncryptedPredict(const std::string& targetRsu);
         void onForwardingGranted(const ProtocolMsg& received);
 
         void printStep(const char* step, const ProtocolMsg* received = nullptr) const;
@@ -65,7 +66,6 @@ class HandoverClient
         };
 
         VehicleSession& mSession;
-        bool mDeferHandover = false;
         PrefetchCallback mOnPrefetchReady;
         HandoverCallback mOnHandoverCompleted;
         std::optional<PendingHandover> mPending;

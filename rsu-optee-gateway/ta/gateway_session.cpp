@@ -11,6 +11,11 @@ namespace
 
 constexpr uint8_t kSealedStateVersion = 3; // 3: Auth_d-keyed active sessions + confirmed flag
 constexpr size_t kMaxPendingEcdh = 64;     // Bound unauthenticated ECDH pool against memory exhaustion
+constexpr size_t kMaxPendingHandovers = 64;
+constexpr uint64_t kHandoverPendingTtlNs = 30ULL * 1000000000ULL;
+constexpr uint32_t kMaxForwardingNoticesPerVehicle = 4;
+constexpr uint32_t kMaxForwardingReqsPerSec = 5;
+constexpr uint64_t kForwardingRateWindowNs = 1000000000ULL;
 
 std::string seconds(uint64_t ns)
 {
@@ -88,6 +93,47 @@ Bytes deriveEsaKey(const Bytes& sharedSecret, const Bytes& gwPubKey, const Bytes
     return Bytes(digest.begin(), digest.end());
 }
 
+Bytes deriveRsuPeerKey(const Bytes& sharedSecret, const Bytes& pubA, const Bytes& pubB)
+{
+    const bool aFirst = std::lexicographical_compare(pubA.begin(), pubA.end(), pubB.begin(), pubB.end());
+    const Bytes& first = aFirst ? pubA : pubB;
+    const Bytes& second = aFirst ? pubB : pubA;
+    static constexpr char kLabel[] = "rsu-peer";
+    Bytes material;
+    material.reserve(sizeof(kLabel) - 1 + sharedSecret.size() + first.size() + second.size());
+    material.insert(material.end(), kLabel, kLabel + sizeof(kLabel) - 1);
+    material.insert(material.end(), sharedSecret.begin(), sharedSecret.end());
+    material.insert(material.end(), first.begin(), first.end());
+    material.insert(material.end(), second.begin(), second.end());
+    const Sha256 digest = ta_crypto::sha256(material);
+    ta_crypto::cleanse(material.data(), material.size());
+    return Bytes(digest.begin(), digest.end());
+}
+
+template<typename ActiveMap>
+auto findActiveSessionByCipher(ActiveMap& sessions, const std::string& hint, const Bytes& sealed,
+    std::optional<Bytes>& outPlain) -> decltype(&sessions.begin()->second)
+{
+    for (auto& [_, active] : sessions) {
+        if (!active.kDg.empty() && active.session == hint) {
+            if (auto p = ta_crypto::aesGcmDecrypt(active.kDg, sealed)) {
+                outPlain = std::move(p);
+                return &active;
+            }
+        }
+    }
+    for (auto& [_, active] : sessions) {
+        if (active.kDg.empty() || active.session == hint) {
+            continue;
+        }
+        if (auto p = ta_crypto::aesGcmDecrypt(active.kDg, sealed)) {
+            outPlain = std::move(p);
+            return &active;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 GatewayTaSession::~GatewayTaSession()
@@ -95,11 +141,19 @@ GatewayTaSession::~GatewayTaSession()
     ta_crypto::cleanse(mGroupKey.data(), mGroupKey.size());
     ta_crypto::cleanse(mEsaSessionKey.data(), mEsaSessionKey.size());
     ta_crypto::cleanse(mCloud.kEg.data(), mCloud.kEg.size());
+    for (auto& [_, peer] : mPeerRsus) {
+        ta_crypto::cleanse(peer.kRsu.data(), peer.kRsu.size());
+    }
     for (auto& ecdh : mPendingEcdh) {
         ta_crypto::cleanse(ecdh.kDg.data(), ecdh.kDg.size());
     }
     for (auto& [_, sess] : mActiveSessions) {
         ta_crypto::cleanse(sess.kDg.data(), sess.kDg.size());
+    }
+    for (auto& [_, handover] : mHandovers) {
+        ta_crypto::cleanse(handover.keys.kDh.data(), handover.keys.kDh.size());
+        ta_crypto::cleanse(handover.keys.kt.data(), handover.keys.kt.size());
+        ta_crypto::cleanse(handover.keys.kt32.data(), handover.keys.kt32.size());
     }
 }
 
@@ -155,8 +209,13 @@ HandoverKeys GatewayTaSession::computeHandoverKeys(const Bytes& kDh, const Block
     material.insert(material.end(), kDh.begin(), kDh.end());
     const Sha256 kt32 = ta_crypto::sha256(material);
     keys.kt32.assign(kt32.begin(), kt32.end());
+    ta_crypto::cleanse(material.data(), material.size());
 
     keys.auth = ta_crypto::sha256(Bytes(tau.begin(), tau.end()));
+    Bytes primeMaterial(keys.kt.begin(), keys.kt.end());
+    primeMaterial.insert(primeMaterial.end(), keys.auth.begin(), keys.auth.end());
+    keys.authPrime = ta_crypto::sha256(primeMaterial);
+    ta_crypto::cleanse(primeMaterial.data(), primeMaterial.size());
     return keys;
 }
 
@@ -167,7 +226,18 @@ Block GatewayTaSession::computeForwardingOtp(const HandoverKeys& keys, uint64_t 
     for (int i = 0; i < 8; ++i) {
         nonce[static_cast<size_t>(15 - i)] ^= static_cast<uint8_t>(slot >> (8 * i));
     }
-    return ta_crypto::poly1305Aes(keys.kt32, nonce, otpMessage());
+    return ta_crypto::poly1305Aes(keys.kt32, nonce, wire::forwardingRequestOtpData(keys.auth));
+}
+
+Block GatewayTaSession::computeForwardingGrantedOtp(const HandoverKeys& keys, uint64_t slot,
+    const wire::ForwardingGranted& m)
+{
+    Block nonce{};
+    std::copy_n(keys.authPrime.begin(), nonce.size(), nonce.begin());
+    for (int i = 0; i < 8; ++i) {
+        nonce[static_cast<size_t>(15 - i)] ^= static_cast<uint8_t>(slot >> (8 * i));
+    }
+    return ta_crypto::poly1305Aes(keys.kt32, nonce, wire::forwardingGrantedOtpData(m));
 }
 
 void GatewayTaSession::saveState()
@@ -185,7 +255,7 @@ void GatewayTaSession::saveState()
         wire::putUint(plain, active.t0, 8);
         wire::putUint(plain, active.tf, 8);
         wire::putField(plain, active.yV);
-        wire::putUint(plain, active.authTime, 8);
+        wire::putUint(plain, 0, 8); // Conjecture 5: t_i stays volatile in TA RAM only
         wire::putUint(plain, active.confirmed ? 1 : 0, 1);
     }
 
@@ -254,6 +324,33 @@ void GatewayTaSession::purgeExpiredActivations(uint64_t now)
             ++it;
         }
     }
+}
+
+void GatewayTaSession::purgeExpiredHandovers(uint64_t now)
+{
+    for (auto it = mHandovers.begin(); it != mHandovers.end();) {
+        if (now > it->second.createdAt && (now - it->second.createdAt) > kHandoverPendingTtlNs) {
+            ta_crypto::cleanse(it->second.keys.kDh.data(), it->second.keys.kDh.size());
+            ta_crypto::cleanse(it->second.keys.kt.data(), it->second.keys.kt.size());
+            ta_crypto::cleanse(it->second.keys.kt32.data(), it->second.keys.kt32.size());
+            it = mHandovers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+std::vector<NeighborRsuKey> GatewayTaSession::neighborRsuList() const
+{
+    std::vector<NeighborRsuKey> out;
+    out.reserve(std::min(mPeerRsus.size(), kMaxNeighborRsus));
+    for (const auto& [_, peer] : mPeerRsus) {
+        if (out.size() >= kMaxNeighborRsus) {
+            break;
+        }
+        out.push_back(NeighborRsuKey{ peer.name, peer.publicKeyDer });
+    }
+    return out;
 }
 
 bool GatewayTaSession::isCompromisedAuthD(const Bytes& authD) const
@@ -439,10 +536,12 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
     m.kG = mGroupKey;
     m.esaPublicKey = mEsaPublicKey;
     m.authEg = active.authEg;
+    m.nextRsus = neighborRsuList();
     m.otp = ta_crypto::poly1305Aes(active.kDg, otpNonce(active.authD, tReply), wire::authGrantedOtpData(m));
 
     Bytes sealed = ta_crypto::aesGcmEncrypt(active.kDg, wire::pack(m));
-    print(session + ": Auth_Granted = E_K_dg(M with fresh OTP_dt), " + std::to_string(sealed.size()) + " bytes");
+    print(session + ": Auth_Granted = E_K_dg(M with fresh OTP_dt + " + std::to_string(m.nextRsus.size())
+        + " neighbor key(s)), " + std::to_string(sealed.size()) + " bytes");
     return sealed;
 }
 
@@ -450,30 +549,8 @@ std::optional<Bytes> GatewayTaSession::active02(const std::string& session, cons
 {
     // Locate the active session whose K_dg authenticates & decrypts Active_01 (AES-256-GCM).
     // Never modifies or erases mActiveSessions on decryption/validation failure!
-    ActiveSession* matched = nullptr;
     std::optional<Bytes> plain;
-
-    for (auto& [_, active] : mActiveSessions) {
-        if (!active.kDg.empty() && active.session == session) {
-            if (auto p = ta_crypto::aesGcmDecrypt(active.kDg, in)) {
-                matched = &active;
-                plain = std::move(p);
-                break;
-            }
-        }
-    }
-    if (!matched) {
-        for (auto& [_, active] : mActiveSessions) {
-            if (active.kDg.empty() || active.session == session) {
-                continue;
-            }
-            if (auto p = ta_crypto::aesGcmDecrypt(active.kDg, in)) {
-                matched = &active;
-                plain = std::move(p);
-                break;
-            }
-        }
-    }
+    ActiveSession* matched = findActiveSessionByCipher(mActiveSessions, session, in, plain);
     if (!matched || !plain) {
         check(false, session + ": Active_01 does not decrypt with any active K_dg: ignored");
         return std::nullopt;
@@ -531,11 +608,35 @@ std::optional<Bytes> GatewayTaSession::active02(const std::string& session, cons
 
 std::optional<Bytes> GatewayTaSession::forwardingGranted(const std::string& session, const Bytes& in, uint64_t now)
 {
+    const uint64_t taStartMs = ta_crypto::monotonicTimeMs();
+
+    // Conjecture 4 (DoS mitigation): rate-limit Forwarding_Request per sender per 1 s window
+    if (mForwardingRate.size() > 128) {
+        for (auto it = mForwardingRate.begin(); it != mForwardingRate.end();) {
+            if (now >= it->second.windowStartNs + kForwardingRateWindowNs) {
+                it = mForwardingRate.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    RateBucket& bucket = mForwardingRate[session];
+    if (bucket.windowStartNs == 0 || now < bucket.windowStartNs
+        || (now - bucket.windowStartNs) >= kForwardingRateWindowNs) {
+        bucket.windowStartNs = now;
+        bucket.count = 0;
+    }
+    if (++bucket.count > kMaxForwardingReqsPerSec) {
+        check(false, session + ": Forwarding_Request rate limit exceeded: ignored");
+        return std::nullopt;
+    }
+
     const wire::ForwardingRequest request = wire::unpackForwardingRequest(in);
+    purgeExpiredHandovers(now);
 
     auto match = mHandovers.end();
     for (auto handover = mHandovers.begin(); handover != mHandovers.end(); ++handover) {
-        const Sha256& expected = handover->second.keys.auth;
+        const Sha256& expected = handover->first;
         if (ta_crypto::constTimeCmp(expected.data(), request.auth.data(), expected.size()) == 0) {
             match = handover;
         }
@@ -566,28 +667,34 @@ std::optional<Bytes> GatewayTaSession::forwardingGranted(const std::string& sess
         return std::nullopt;
     }
     const long long slotOffset = static_cast<long long>(tMatch) - static_cast<long long>(tNow);
-    check(true, session + ": OTP = Poly1305(KT_i, auth_{i+2} xor t_c, m) with t_c = " + std::to_string(tMatch)
-        + " (my slot " + (slotOffset >= 0 ? "+" : "") + std::to_string(slotOffset) + ")");
+    check(true, session + ": OTP = Poly1305(KT_i^32, auth_{i+2} xor t_c, Forwarding_Request) with t_c = "
+        + std::to_string(tMatch) + " (my slot " + (slotOffset >= 0 ? "+" : "") + std::to_string(slotOffset) + ")");
 
     const std::string vehicle = handover.session;
     mActiveSessions[handover.authD] = ActiveSession{
-        vehicle, handover.authD, Bytes(), now, now, handover.keys.kDh, handover.yv, tMatch, true
+        vehicle, handover.authD, Bytes(), now, now, handover.keys.kDh, handover.yv, tMatch, true, 0
     };
     saveState();
 
+    const uint64_t taEndMs = ta_crypto::monotonicTimeMs();
+    const uint64_t elapsedNs = taEndMs >= taStartMs ? (taEndMs - taStartMs) * 1000000ULL : 0ULL;
+    const uint64_t tReply = otpSlot(now + elapsedNs);
+
     wire::ForwardingGranted m;
     m.type = Forwarding_Granted;
-    m.nextRsuPublicKey = {};
-    m.authPrime = ta_crypto::sha256(Bytes(request.auth.begin(), request.auth.end()));
+    m.nextRsus = neighborRsuList();
+    m.authPrime = handover.keys.authPrime;
     m.kG = mGroupKey;
-    m.otp = request.otp;
+    m.otp = computeForwardingGrantedOtp(handover.keys, tReply, m);
     Bytes kt(handover.keys.kt.begin(), handover.keys.kt.end());
     Bytes sealed = ta_crypto::aesGcmEncrypt(kt, wire::pack(m));
     ta_crypto::cleanse(kt.data(), kt.size());
+    ta_crypto::cleanse(handover.keys.kDh.data(), handover.keys.kDh.size());
     ta_crypto::cleanse(handover.keys.kt.data(), handover.keys.kt.size());
     ta_crypto::cleanse(handover.keys.kt32.data(), handover.keys.kt32.size());
     mHandovers.erase(match);
-    print(vehicle + ": Forwarding_Granted = E_KT_i(M), " + std::to_string(sealed.size()) + " bytes; " + vehicle
+    print(vehicle + ": Forwarding_Granted = E_KT_i(M with fresh OTP' + " + std::to_string(m.nextRsus.size())
+        + " neighbor key(s)), " + std::to_string(sealed.size()) + " bytes; " + vehicle
         + " active here (K_dh_i as its K_dg)");
     return sealed;
 }
@@ -968,21 +1075,150 @@ int GatewayTaSession::secureMarshalOtToIt(const Bytes& otPkt, uint64_t currentPt
     }
 }
 
-int GatewayTaSession::triggerHandover(const std::string& session, uint64_t ti, Block& outTau, Bytes& outYv,
-    Bytes& outAuthD)
+int GatewayTaSession::registerPeerRsu(const std::string& peerName, const Bytes& peerCertDer)
 {
-    outYv.clear();
-    outAuthD.clear();
+    if (!mReady || !mGatewayKey.valid() || mCaPublicKey.empty()) {
+        check(false, "register_peer_rsu: gateway not initialized with Root CA");
+        return GW_ERR_STATE;
+    }
+    if (peerName.empty() || peerCertDer.empty()) {
+        return GW_ERR_ARGS;
+    }
+
+    std::string err;
+    const auto peerPinned = ta_crypto::verifyCertDerSignedByCa(peerCertDer, mCaPublicKey, err);
+    if (!peerPinned) {
+        check(false, "register_peer_rsu: certificate for " + peerName + " rejected (" + err + ")");
+        return GW_ERR_CRYPTO;
+    }
+    if (peerPinned->publicKeyDer == mGatewayKey.publicKeyDer()) {
+        return GW_OK;
+    }
+
+    try {
+        Bytes shared = mGatewayKey.deriveSharedSecret(peerPinned->publicKeyDer);
+        Bytes kRsu = deriveRsuPeerKey(shared, mGatewayKey.publicKeyDer(), peerPinned->publicKeyDer);
+        ta_crypto::cleanse(shared.data(), shared.size());
+        if (auto it = mPeerRsus.find(peerName); it != mPeerRsus.end()) {
+            ta_crypto::cleanse(it->second.kRsu.data(), it->second.kRsu.size());
+        }
+        mPeerRsus[peerName] = PeerRsu{ peerName, peerPinned->publicKeyDer, std::move(kRsu) };
+        check(true, "register_peer_rsu: " + peerName + " (" + peerPinned->subject + ") CA-verified; K_rsu derived inside TA");
+        return GW_OK;
+    } catch (const std::exception& e) {
+        check(false, std::string("register_peer_rsu: ") + e.what());
+        return GW_ERR_CRYPTO;
+    }
+}
+
+int GatewayTaSession::sealForwardingNoticeForPeer(ActiveSession& active, const std::string& targetRsu, uint64_t slot,
+    Bytes& outSealedNotice)
+{
+    outSealedNotice.clear();
+    const auto peer = mPeerRsus.find(targetRsu);
+    if (peer == mPeerRsus.end()) {
+        check(false, active.session + ": no CA-verified K_rsu for peer RSU '" + targetRsu + "': ignored");
+        return GW_IGNORED;
+    }
+    if (active.forwardingNoticesSent >= kMaxForwardingNoticesPerVehicle) {
+        check(false, active.session + ": Forwarding_Notice fan-out cap ("
+            + std::to_string(kMaxForwardingNoticesPerVehicle) + ") reached: ignored");
+        return GW_IGNORED;
+    }
+
+    const Block tau = computeForwardingToken(active.kDg, slot);
+    wire::ForwardingNotice notice;
+    notice.type = Forwarding_Notice;
+    notice.vehiclePublicKey = active.yV;
+    notice.tau = tau;
+    notice.authD = active.authD;
+    notice.vehicleLabel = active.session;
+
+    Bytes plain = wire::pack(notice);
+    outSealedNotice = ta_crypto::aesGcmEncrypt(peer->second.kRsu, plain);
+    ta_crypto::cleanse(plain.data(), plain.size());
+    ++active.forwardingNoticesSent;
+
+    print(active.session + ": Secrecy Forwarding: E_K_rsu(Forwarding_Notice) (" + std::to_string(outSealedNotice.size())
+        + " B, t_i = " + std::to_string(slot) + ") sealed inside TA -> " + targetRsu + " (K_dg stays here)");
+    return GW_OK;
+}
+
+int GatewayTaSession::handleHandoverPredict(const Bytes& inPkt, uint64_t currentPtpTime, std::string& outTargetRsu,
+    Bytes& outSealedNotice)
+{
+    outTargetRsu.clear();
+    outSealedNotice.clear();
     if (!mReady) {
         return GW_ERR_STATE;
     }
-    if (session.empty()) {
+    if (inPkt.empty()) {
         return GW_ERR_ARGS;
     }
 
     try {
-        const ActiveSession* active = nullptr;
-        for (const auto& [_, candidate] : mActiveSessions) {
+        std::optional<Bytes> plain;
+        ActiveSession* matched = findActiveSessionByCipher(mActiveSessions, "", inPkt, plain);
+        if (!matched || !plain) {
+            check(false, "Handover_Predict: does not decrypt with any active K_dg: ignored");
+            return GW_IGNORED;
+        }
+        const wire::HandoverPredict m = wire::unpackHandoverPredict(*plain);
+        ta_crypto::cleanse(plain->data(), plain->size());
+
+        if (m.type != Handover_Predict || m.targetRsu.empty()
+            || m.authD.size() != matched->authD.size()
+            || ta_crypto::constTimeCmp(m.authD.data(), matched->authD.data(), m.authD.size()) != 0) {
+            check(false, matched->session + ": Handover_Predict has invalid inner fields: ignored");
+            return GW_IGNORED;
+        }
+
+        const uint64_t tNow = otpSlot(currentPtpTime);
+        uint64_t tMin = 0, tMax = 0;
+        slotWindow(tNow, tMin, tMax);
+        const Bytes otpInput = wire::handoverPredictOtpData(m.targetRsu);
+        bool otpValid = false;
+        for (uint64_t t = tMin; t <= tMax; ++t) {
+            const Block expected = ta_crypto::poly1305Aes(matched->kDg, otpNonce(matched->authD, t), otpInput);
+            if (ta_crypto::constTimeCmp(expected.data(), m.otp.data(), expected.size()) == 0) {
+                otpValid = true;
+                break;
+            }
+        }
+        if (!otpValid) {
+            check(false, matched->session + ": Handover_Predict OTP_dt invalid in t +- 1: ignored");
+            return GW_IGNORED;
+        }
+        if (matched->authTime == 0 || matched->kDg.empty() || matched->yV.empty()) {
+            check(false, matched->session + ": Handover_Predict without volatile t_i in TA RAM: ignored");
+            return GW_IGNORED;
+        }
+
+        const int status = sealForwardingNoticeForPeer(*matched, m.targetRsu, matched->authTime, outSealedNotice);
+        if (status == GW_OK) {
+            outTargetRsu = m.targetRsu;
+        }
+        return status;
+    } catch (const std::exception& e) {
+        print(std::string("Handover_Predict error: ") + e.what());
+        return GW_IGNORED;
+    }
+}
+
+int GatewayTaSession::triggerHandover(const std::string& session, const std::string& targetRsu, uint64_t ti,
+    Bytes& outSealedNotice)
+{
+    outSealedNotice.clear();
+    if (!mReady) {
+        return GW_ERR_STATE;
+    }
+    if (session.empty() || targetRsu.empty()) {
+        return GW_ERR_ARGS;
+    }
+
+    try {
+        ActiveSession* active = nullptr;
+        for (auto& [_, candidate] : mActiveSessions) {
             if (candidate.session == session && (!active || candidate.authTime >= active->authTime)) {
                 active = &candidate;
             }
@@ -996,46 +1232,79 @@ int GatewayTaSession::triggerHandover(const std::string& session, uint64_t ti, B
             return GW_IGNORED;
         }
         const uint64_t slot = ti != 0 ? ti : active->authTime;
-        outTau = computeForwardingToken(active->kDg, slot);
-        outYv = active->yV;
-        outAuthD = active->authD;
-        print(session + ": Secrecy Forwarding: tau_{i+2} = Poly1305(K_dg, t_i = " + std::to_string(slot)
-            + ", m), with Y_V and Auth_d for the Forwarding_Notice (K_dg stays here)");
-        return GW_OK;
+        return sealForwardingNoticeForPeer(*active, targetRsu, slot, outSealedNotice);
     } catch (const std::exception& e) {
         print(session + ": error: " + e.what());
         return GW_ERR_CRYPTO;
     }
 }
 
-int GatewayTaSession::receiveForwardingNotice(const std::string& session, const Bytes& yv, const Block& tau,
-    const Bytes& authD, Bytes& outYg)
+int GatewayTaSession::receiveForwardingNotice(const std::string& senderRsu, const Bytes& sealedNotice,
+    uint64_t currentPtpTime)
 {
-    outYg.clear();
-    if (!mReady) {
+    if (!mReady || !mGatewayKey.valid()) {
         return GW_ERR_STATE;
     }
-    if (session.empty() || yv.empty() || authD.empty()) {
+    if (senderRsu.empty() || sealedNotice.empty()) {
         return GW_ERR_ARGS;
     }
 
+    const auto peer = mPeerRsus.find(senderRsu);
+    if (peer == mPeerRsus.end()) {
+        check(false, "Forwarding_Notice from untrusted/unregistered RSU '" + senderRsu + "': ignored");
+        return GW_IGNORED;
+    }
+
     try {
+        auto plain = ta_crypto::aesGcmDecrypt(peer->second.kRsu, sealedNotice);
+        if (!plain) {
+            check(false, "Forwarding_Notice from " + senderRsu + " failed K_rsu GCM authentication: ignored");
+            return GW_IGNORED;
+        }
+        const wire::ForwardingNotice notice = wire::unpackForwardingNotice(*plain);
+        ta_crypto::cleanse(plain->data(), plain->size());
+
+        if (notice.type != Forwarding_Notice || notice.vehiclePublicKey.empty()
+            || notice.authD.empty() || notice.vehicleLabel.empty()) {
+            check(false, "Forwarding_Notice from " + senderRsu + " has invalid fields: ignored");
+            return GW_IGNORED;
+        }
+
+        purgeExpiredHandovers(currentPtpTime);
+
+        // Compute K_dh_i = ECDH(X_gw, Y_V) directly with this gateway's CA-certified keypair (no slow keygen!)
+        const Bytes kDh = mGatewayKey.deriveSharedSecret(notice.vehiclePublicKey);
+        HandoverKeys keys = computeHandoverKeys(kDh, notice.tau);
+
+        if (mHandovers.find(keys.auth) == mHandovers.end() && mHandovers.size() >= kMaxPendingHandovers) {
+            auto oldest = mHandovers.begin();
+            for (auto it = mHandovers.begin(); it != mHandovers.end(); ++it) {
+                if (it->second.createdAt < oldest->second.createdAt) {
+                    oldest = it;
+                }
+            }
+            ta_crypto::cleanse(oldest->second.keys.kDh.data(), oldest->second.keys.kDh.size());
+            ta_crypto::cleanse(oldest->second.keys.kt.data(), oldest->second.keys.kt.size());
+            ta_crypto::cleanse(oldest->second.keys.kt32.data(), oldest->second.keys.kt32.size());
+            mHandovers.erase(oldest);
+        }
+
         HandoverSession handover;
-        handover.session = session;
-        handover.yv = yv;
-        handover.tau = tau;
-        handover.authD = authD;
+        handover.session = notice.vehicleLabel;
+        handover.yv = notice.vehiclePublicKey;
+        handover.tau = notice.tau;
+        handover.keys = std::move(keys);
+        handover.authD = notice.authD;
+        handover.createdAt = currentPtpTime;
+        const Sha256 key = handover.keys.auth;
+        mHandovers[key] = std::move(handover);
 
-        const auto derived = ta_crypto::generateAndDeriveEcdh(handover.yv);
-        handover.keys = computeHandoverKeys(derived.sharedSecret, handover.tau);
-        mHandovers[handover.session] = handover;
-        outYg = derived.publicKeyDer;
-
-        print(handover.session + ": Forwarding_Notice: K_dh_i = ECDH(X_G, Y_V), KT_i and auth_{i+2} kept in the "
-            "TA until the Forwarding_Request (" + std::to_string(mHandovers.size()) + " pending)");
+        print(notice.vehicleLabel + ": Forwarding_Notice decrypted under K_rsu (" + senderRsu
+            + "): K_dh_i = ECDH(X_gw, Y_V), KT_i, auth_{i+2}, auth'_{i+2} kept in TA ("
+            + std::to_string(mHandovers.size()) + " pending)");
         return GW_OK;
     } catch (const std::exception& e) {
-        print(session + ": error: " + e.what());
-        return GW_ERR_CRYPTO;
+        print(senderRsu + ": Forwarding_Notice error: " + e.what());
+        return GW_IGNORED;
     }
 }

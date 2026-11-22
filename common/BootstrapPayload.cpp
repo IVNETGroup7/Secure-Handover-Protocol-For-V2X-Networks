@@ -167,6 +167,14 @@ AuthGrantedPayload unpackAuthGranted(const Bytes& in)
     m.kG = reader.field();
     m.esaPublicKey = reader.field();
     m.authEg = reader.field();
+    const size_t n = static_cast<size_t>(reader.uint(1));
+    m.nextRsus.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        NeighborRsuKey nb;
+        nb.name = reader.str();
+        nb.publicKeyDer = reader.field();
+        m.nextRsus.push_back(std::move(nb));
+    }
     return m;
 }
 
@@ -177,17 +185,28 @@ Bytes authGrantedOtpData(const AuthGrantedPayload& m)
     wire_codec::putBytes(out, m.kG);
     wire_codec::putBytes(out, m.esaPublicKey);
     wire_codec::putBytes(out, m.authEg);
+    wire_codec::putUint(out, m.nextRsus.size(), 1);
+    for (const NeighborRsuKey& nb : m.nextRsus) {
+        wire_codec::putString(out, nb.name);
+        wire_codec::putBytes(out, nb.publicKeyDer);
+    }
     return out;
 }
 
 std::vector<std::string> describe(const AuthGrantedPayload& m)
 {
+    std::string names;
+    for (size_t i = 0; i < m.nextRsus.size(); ++i) {
+        if (i > 0) names += ", ";
+        names += m.nextRsus[i].name;
+    }
     return {
-        "M = { " + std::string(messageTypeName(m.type)) + ", OTP_dt, K_g, CY_e, Auth_eg }",
-        "OTP_dt  = " + toHex(m.otp.data(), m.otp.size()),
-        "K_g     = " + toHex(m.kG.data(), m.kG.size()),
-        "CY_e    = " + toHex(m.esaPublicKey.data(), m.esaPublicKey.size()),
-        "Auth_eg = " + toHex(m.authEg.data(), m.authEg.size()),
+        "M = { " + std::string(messageTypeName(m.type)) + ", OTP_dt, K_g, CY_e, Auth_eg, nextRsus }",
+        "OTP_dt   = " + toHex(m.otp.data(), m.otp.size()),
+        "K_g      = " + toHex(m.kG.data(), m.kG.size()),
+        "CY_e     = " + toHex(m.esaPublicKey.data(), m.esaPublicKey.size()),
+        "Auth_eg  = " + toHex(m.authEg.data(), m.authEg.size()),
+        "nextRsus = " + std::to_string(m.nextRsus.size()) + (names.empty() ? std::string("") : " [" + names + "]"),
     };
 }
 

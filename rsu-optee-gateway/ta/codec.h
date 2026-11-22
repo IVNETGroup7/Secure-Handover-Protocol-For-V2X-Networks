@@ -10,8 +10,9 @@ namespace wire
 
 // Big-endian integer of "size" bytes (1, 2, 4, or 8)
 void putUint(Bytes& out, uint64_t value, int size);
-// 2-byte big-endian length prefix followed by the field bytes
+// 2-byte big-endian length prefix followed by the field bytes / string
 void putField(Bytes& out, const Bytes& field);
+void putString(Bytes& out, const std::string& text);
 
 class Reader
 {
@@ -20,6 +21,7 @@ class Reader
         uint64_t uint(int size);
         Block block();
         Bytes field();
+        std::string str();
 
         template<size_t N>
         std::array<uint8_t, N> array()
@@ -66,6 +68,7 @@ struct AuthGranted
     Bytes kG;
     Bytes esaPublicKey;
     Bytes authEg;
+    std::vector<NeighborRsuKey> nextRsus;
 };
 
 struct Active
@@ -74,6 +77,23 @@ struct Active
     Bytes authD;
     Block otp;
     Bytes authDe;
+};
+
+struct HandoverPredict
+{
+    uint8_t type;
+    Bytes authD;
+    std::string targetRsu;
+    Block otp{};
+};
+
+struct ForwardingNotice
+{
+    uint8_t type;
+    Bytes vehiclePublicKey;
+    Block tau{};
+    Bytes authD;
+    std::string vehicleLabel;
 };
 
 struct ForwardingRequest
@@ -86,7 +106,7 @@ struct ForwardingRequest
 struct ForwardingGranted
 {
     uint8_t type;
-    Bytes nextRsuPublicKey;
+    std::vector<NeighborRsuKey> nextRsus;
     Sha256 authPrime{};
     Bytes kG;
     Block otp{};
@@ -103,13 +123,19 @@ struct SecureData
 Bytes pack(const Ecdh&);
 Bytes pack(const AuthGranted&);
 Bytes pack(const Active&);
+Bytes pack(const ForwardingNotice&);
 Bytes pack(const ForwardingGranted&);
 Bytes authGrantedOtpData(const AuthGranted&);
 Bytes activeOtpData(const Bytes& authD, const Bytes& authDe);
+Bytes handoverPredictOtpData(const std::string& targetRsu);
+Bytes forwardingRequestOtpData(const Sha256& auth);
+Bytes forwardingGrantedOtpData(const ForwardingGranted&);
 ActivationToken unpackActivationToken(const Bytes&);
 Ecdh unpackEcdh(const Bytes&);
 AuthRequest unpackAuthRequest(const Bytes&);
 Active unpackActive(const Bytes&);
+HandoverPredict unpackHandoverPredict(const Bytes&);
+ForwardingNotice unpackForwardingNotice(const Bytes&);
 ForwardingRequest unpackForwardingRequest(const Bytes&);
 SecureData unpackSecureData(const Bytes&);
 

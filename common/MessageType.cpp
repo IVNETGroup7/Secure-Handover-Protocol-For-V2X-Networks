@@ -2,30 +2,26 @@
 
 const char* messageTypeName(int type)
 {
-    static const char* names[] = {
-        "Activation_Request",
-        "HTTPS_Session",
-        "Activation_Token",
-        "PTP",
-        "ECDH_Request",
-        "ECDH_Response",
-        "Auth_Request",
-        "Save_RSU",
-        "Auth_Granted",
-        "Save_Vehicle",
-        "Active_01",
-        "Active_02",
-        "Active_03",
-        "PTP_Sync",
-        "PTP_Delay_Request",
-        "PTP_Delay_Response",
-        "Forwarding_Notice",
-        "Handover_Command",
-        "Forwarding_Request",
-        "Forwarding_Granted",
-        "Secure_Data",
-        "Handover_Predict",
-    };
-    return (type >= 0 && type < static_cast<int>(sizeof(names) / sizeof(names[0]))) ? names[type] : "?";
+    switch (type) {
+        case Activation_Request:  return "Activation_Request";
+        case Activation_Token:    return "Activation_Token";
+        case PTP:                 return "PTP";
+        case ECDH_Request:        return "ECDH_Request";
+        case ECDH_Response:       return "ECDH_Response";
+        case Auth_Request:        return "Auth_Request";
+        case Auth_Granted:        return "Auth_Granted";
+        case Active_01:           return "Active_01";
+        case Active_02:           return "Active_02";
+        case Active_03:           return "Active_03";
+        case PTP_Sync:            return "PTP_Sync";
+        case PTP_Delay_Request:   return "PTP_Delay_Request";
+        case PTP_Delay_Response:  return "PTP_Delay_Response";
+        case Forwarding_Notice:   return "Forwarding_Notice";
+        case Forwarding_Request:  return "Forwarding_Request";
+        case Forwarding_Granted:  return "Forwarding_Granted";
+        case Secure_Data:         return "Secure_Data";
+        case Handover_Predict:    return "Handover_Predict";
+        default:                  return "?";
+    }
 }
 

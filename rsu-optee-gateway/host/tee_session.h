@@ -35,15 +35,18 @@ class TeeSession
         int initIdentity(Bytes& outGatewayPubKey);
         int initGateway(const Bytes& caPubKey, const Bytes& gwCertDer, const Bytes& esaCertDer, const Bytes& groupKey);
         int initCloudSession(const std::string& cloudCertPem, const std::string& host, const std::string& gateway);
+        int registerPeerRsu(const std::string& peerName, const Bytes& peerCertDer);
         int addActivationToken(const Bytes& encryptedToken, uint64_t currentPtpTime);
         int handleBootstrap(int msgType, const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
             Bytes& outPkt, int& outType);
+        int handleHandoverPredict(const Bytes& inPkt, uint64_t currentPtpTime, std::string& outTargetRsu,
+            Bytes& outSealedNotice);
         int handleForwardingRequest(const std::string& session, const Bytes& inPkt, uint64_t currentPtpTime,
             Bytes& outPkt);
         int secureMarshalOtToIt(const Bytes& otPkt, uint64_t currentPtpTime, Bytes& outItPkt);
-        int triggerHandover(const std::string& session, uint64_t ti, Block& outTau, Bytes& outYv, Bytes& outAuthD);
-        int receiveForwardingNotice(const std::string& session, const Bytes& yv, const Block& tau, const Bytes& authD,
-            Bytes& outYg);
+        int triggerHandover(const std::string& session, const std::string& targetRsu, uint64_t ti,
+            Bytes& outSealedNotice);
+        int receiveForwardingNotice(const std::string& senderRsu, const Bytes& sealedNotice, uint64_t currentPtpTime);
 
     private:
         struct Impl;

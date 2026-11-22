@@ -53,18 +53,19 @@ enum TaGatewayCommand
     // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT  = 5,
 
-    // Secrecy Forwarding (source RSU G_{i+1}): compute tau_{i+2} = Poly1305(K_dg, t_i, m) and output { Y_V, tau, Auth_d }
-    // params[0] = MEMREF_TEMP_INPUT:  packed { t_i, session }
-    // params[1] = MEMREF_TEMP_OUTPUT: packed { tau (16B), yv, auth_d }
+    // Secrecy Forwarding (source RSU G_{i+1}): compute tau_{i+2} = Poly1305(K_dg, t_i, m) and seal
+    // Forwarding_Notice { Y_V, tau, Auth_d, label } under mutually-authenticated K_rsu inside TA
+    // params[0] = MEMREF_TEMP_INPUT:  packed { t_i, session, target_rsu }
+    // params[1] = MEMREF_TEMP_OUTPUT: sealed Forwarding_Notice (E_{K_rsu}(...))
     // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
     // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_TRIGGER_HANDOVER         = 6,
 
-    // Secrecy Forwarding (target RSU G_{i+2}): pre-compute K_dh_i, KT_i, auth_{i+2} and output fresh Y_{G_{i+2}}
-    // params[0] = MEMREF_TEMP_INPUT:  packed { session, tau (16B), yv, auth_d }
-    // params[1] = MEMREF_TEMP_OUTPUT: out_yg (DER SubjectPublicKeyInfo)
-    // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
-    // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
+    // Secrecy Forwarding (target RSU G_{i+2}): decrypt Forwarding_Notice under K_rsu, pre-compute K_dh_i, KT_i,
+    // auth_{i+2}, and auth'_{i+2} inside TA using this gateway's CA-certified keypair X_gw
+    // params[0] = MEMREF_TEMP_INPUT:  packed { current_ptp_time, sender_rsu, sealed_notice }
+    // params[1] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
+    // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
     TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE = 7,
 
     // Handle a vehicle's Forwarding_Request at the target RSU -> Forwarding_Granted
@@ -79,7 +80,20 @@ enum TaGatewayCommand
     // params[0] = MEMREF_TEMP_OUTPUT: out_gw_pub_key (91B DER SPKI)
     // params[1] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
     // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
-    TA_GATEWAY_CMD_INIT_IDENTITY            = 9
+    TA_GATEWAY_CMD_INIT_IDENTITY            = 9,
+
+    // Register a neighbor RSU's CA-signed X.509 certificate and derive symmetric K_rsu inside Secure World.
+    // params[0] = MEMREF_TEMP_INPUT:  packed { peer_name, peer_cert_der }
+    // params[1] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
+    // params[2] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
+    TA_GATEWAY_CMD_REGISTER_PEER_RSU        = 10,
+
+    // Handle vehicle's encrypted Handover_Predict inside TA: verify Auth_d & OTP_dt, seal Forwarding_Notice under K_rsu
+    // params[0] = MEMREF_TEMP_INPUT:  packed { current_ptp_time, in_pkt }
+    // params[1] = MEMREF_TEMP_OUTPUT: packed { target_rsu, sealed_notice }
+    // params[2] = VALUE_OUTPUT:       a = gateway status (GW_OK, ...)
+    // params[3] = MEMREF_TEMP_OUTPUT: Secure World trace log lines
+    TA_GATEWAY_CMD_HANDLE_HANDOVER_PREDICT  = 11
 };
 
 // Gateway status codes returned in VALUE_OUTPUT.a

@@ -86,6 +86,56 @@ std::optional<SessionAck> parseSessionAck(const Bytes& body)
     }
 }
 
+Bytes packPeerCert(const std::string& destRsu, const std::string& peerName, const Bytes& peerCertDer)
+{
+    Bytes out;
+    wire_codec::putString(out, destRsu);
+    wire_codec::putString(out, peerName);
+    wire_codec::putBytes(out, peerCertDer);
+    return out;
+}
+
+std::optional<PeerCertFrame> parsePeerCert(const Bytes& body)
+{
+    try {
+        wire_codec::Reader r(body, "Peer_Cert");
+        PeerCertFrame pc;
+        pc.destRsu = r.str();
+        pc.peerName = r.str();
+        pc.peerCertDer = r.field();
+        if (pc.destRsu.empty() || pc.peerName.empty() || pc.peerCertDer.empty()) {
+            return std::nullopt;
+        }
+        return pc;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+Bytes packPeerCertAck(const std::string& destRsu, const std::string& peerName)
+{
+    Bytes out;
+    wire_codec::putString(out, destRsu);
+    wire_codec::putString(out, peerName);
+    return out;
+}
+
+std::optional<PeerCertAck> parsePeerCertAck(const Bytes& body)
+{
+    try {
+        wire_codec::Reader r(body, "Peer_Cert_Ack");
+        PeerCertAck ack;
+        ack.destRsu = r.str();
+        ack.peerName = r.str();
+        if (ack.destRsu.empty() || ack.peerName.empty()) {
+            return std::nullopt;
+        }
+        return ack;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
 SessionAck openHttpsSession(RawSocket& backhaul, const std::string& rsu, const Bytes& gatewayPublicKey,
     const std::string& iface, const std::function<bool()>& stop, std::chrono::seconds timeout)
 {
@@ -117,25 +167,6 @@ SessionAck openHttpsSession(RawSocket& backhaul, const std::string& rsu, const B
         });
     }
     return *result;
-}
-
-Bytes packHandoverTrigger(const std::string& rsu, const std::string& session, const std::string& targetRsu)
-{
-    return toBytes(rsu + "\n" + session + "\n" + targetRsu);
-}
-
-std::optional<HandoverTrigger> parseHandoverTrigger(const Bytes& body)
-{
-    const auto first = std::find(body.begin(), body.end(), '\n');
-    const auto second = first == body.end() ? body.end() : std::find(first + 1, body.end(), '\n');
-    if (second == body.end()) {
-        return std::nullopt;
-    }
-    return HandoverTrigger{
-        std::string(body.begin(), first),
-        std::string(first + 1, second),
-        std::string(second + 1, body.end())
-    };
 }
 
 Bytes packClockAnchor(int64_t simTimeNs)

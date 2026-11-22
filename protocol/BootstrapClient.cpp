@@ -3,27 +3,12 @@
 #include "MessageType.h"
 #include "ProtocolMsg.h"
 #include "Trace.h"
-#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <openssl/crypto.h>
 
 namespace
 {
-
-// Auth_d xor t: t, big-endian, XORed into the last 8 bytes of the first AES block of Auth_d
-Block authOtpNonce(const Bytes& authD, uint64_t t)
-{
-    Block nonce;
-    if (authD.size() < nonce.size()) {
-        throw std::runtime_error("OTP: Auth_d shorter than one block");
-    }
-    std::copy_n(authD.begin(), nonce.size(), nonce.begin());
-    for (int i = 0; i < 8; ++i) {
-        nonce[15 - i] ^= static_cast<uint8_t>(t >> (8 * i));
-    }
-    return nonce;
-}
 
 const Bytes& otpMessage()
 {
@@ -146,7 +131,7 @@ void BootstrapClient::authRequest(const ProtocolMsg& received)
 
     // Step 6: compute OTP_dt = Poly1305(K_dg, Auth_d xor t, m); send ONLY OTP_dt (never Auth_d)
     const uint64_t t = VehicleSession::otpSlot(mSession.localClock());
-    const Block nonce = authOtpNonce(mSession.traits().authD, t);
+    const Block nonce = VehicleSession::otpNonce(mSession.traits().authD, t);
 
     AuthRequestPayload otp;
     otp.type = Auth_Request;
@@ -197,7 +182,7 @@ void BootstrapClient::saveVehicle(const ProtocolMsg& received)
     const Bytes grantedData = authGrantedOtpData(m);
     bool otpValid = false;
     for (uint64_t t = tMin; t <= tMax; ++t) {
-        const Block expected = poly1305Aes(mPendingKdg, authOtpNonce(mSession.traits().authD, t), grantedData);
+        const Block expected = poly1305Aes(mPendingKdg, VehicleSession::otpNonce(mSession.traits().authD, t), grantedData);
         if (CRYPTO_memcmp(expected.data(), m.otp.data(), expected.size()) == 0) {
             otpValid = true;
             break;
@@ -224,13 +209,14 @@ void BootstrapClient::saveVehicle(const ProtocolMsg& received)
     }
     mEsaPublicKey = m.esaPublicKey;
     mSession.activateWithRsu(received.getSender(), m.kG, mPendingKdg, mOtpSlot);
+    mSession.setNeighborRsus(m.nextRsus);
     printKeep("K_g", m.kG);
     printDetail("t_i = " + std::to_string(mOtpSlot) + " (slot of Auth_Request OTP_dt)");
 
     // Step 9.4: compute Auth_de, generate FRESH Active-message OTP_dt (Theorem 2), and derive K_de
     mAuthDe = computeAuthDe(idD, mSession.traits().uuid, mSession.traits().firmwareHash, mEsaPublicKey);
     const uint64_t tActive = VehicleSession::otpSlot(mSession.localClock());
-    mActiveOtp = poly1305Aes(mPendingKdg, authOtpNonce(mSession.traits().authD, tActive),
+    mActiveOtp = poly1305Aes(mPendingKdg, VehicleSession::otpNonce(mSession.traits().authD, tActive),
         activeOtpData(mSession.traits().authD, mAuthDe));
     const Sha256 kDe = computeKDe(idD, mSession.traits().authD, mAuthDe, mActiveOtp);
     mKde.assign(kDe.begin(), kDe.end());

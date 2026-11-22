@@ -264,21 +264,17 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
                 wire::Reader r(in);
                 const uint64_t ti = r.uint(8);
                 const std::string session = toStr(r.field());
+                const std::string targetRsu = toStr(r.field());
 
-                Block tau{};
-                Bytes yv, authD;
-                int status = sess->triggerHandover(session, ti, tau, yv, authD);
+                Bytes sealedNotice;
+                int status = sess->triggerHandover(session, targetRsu, ti, sealedNotice);
                 if (status == GW_OK) {
-                    Bytes out;
-                    out.insert(out.end(), tau.begin(), tau.end());
-                    wire::putField(out, yv);
-                    wire::putField(out, authD);
-                    if (out.size() > params[1].memref.size) {
+                    if (sealedNotice.size() > params[1].memref.size) {
                         status = GW_ERR_BUFFER;
                         params[1].memref.size = 0;
                     } else {
-                        std::memcpy(params[1].memref.buffer, out.data(), out.size());
-                        params[1].memref.size = static_cast<uint32_t>(out.size());
+                        std::memcpy(params[1].memref.buffer, sealedNotice.data(), sealedNotice.size());
+                        params[1].memref.size = static_cast<uint32_t>(sealedNotice.size());
                     }
                 } else {
                     params[1].memref.size = 0;
@@ -289,6 +285,38 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
             }
 
             case TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE: {
+                if (t0 != TEE_PARAM_TYPE_MEMREF_INPUT || t1 != TEE_PARAM_TYPE_VALUE_OUTPUT) {
+                    return TEE_ERROR_BAD_PARAMETERS;
+                }
+                const auto* buf = static_cast<const uint8_t*>(params[0].memref.buffer);
+                const Bytes in(buf, buf + params[0].memref.size);
+                wire::Reader r(in);
+                const uint64_t ptpTime = r.uint(8);
+                const std::string senderRsu = toStr(r.field());
+                const Bytes sealedNotice = r.field();
+
+                const int status = sess->receiveForwardingNotice(senderRsu, sealedNotice, ptpTime);
+                params[1].value.a = static_cast<uint32_t>(status);
+                copyLogsToParam(sess, t2, params[2]);
+                return TEE_SUCCESS;
+            }
+
+            case TA_GATEWAY_CMD_REGISTER_PEER_RSU: {
+                if (t0 != TEE_PARAM_TYPE_MEMREF_INPUT || t1 != TEE_PARAM_TYPE_VALUE_OUTPUT) {
+                    return TEE_ERROR_BAD_PARAMETERS;
+                }
+                const auto* buf = static_cast<const uint8_t*>(params[0].memref.buffer);
+                const Bytes in(buf, buf + params[0].memref.size);
+                wire::Reader r(in);
+                const std::string peerName = toStr(r.field());
+                const Bytes peerCert = r.field();
+                const int status = sess->registerPeerRsu(peerName, peerCert);
+                params[1].value.a = static_cast<uint32_t>(status);
+                copyLogsToParam(sess, t2, params[2]);
+                return TEE_SUCCESS;
+            }
+
+            case TA_GATEWAY_CMD_HANDLE_HANDOVER_PREDICT: {
                 if (t0 != TEE_PARAM_TYPE_MEMREF_INPUT || t1 != TEE_PARAM_TYPE_MEMREF_OUTPUT
                     || t2 != TEE_PARAM_TYPE_VALUE_OUTPUT) {
                     return TEE_ERROR_BAD_PARAMETERS;
@@ -296,20 +324,22 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
                 const auto* buf = static_cast<const uint8_t*>(params[0].memref.buffer);
                 const Bytes in(buf, buf + params[0].memref.size);
                 wire::Reader r(in);
-                const std::string session = toStr(r.field());
-                const Block tau = r.block();
-                const Bytes yv = r.field();
-                const Bytes authD = r.field();
+                const uint64_t ptpTime = r.uint(8);
+                const Bytes inPkt = r.field();
 
-                Bytes yg;
-                int status = sess->receiveForwardingNotice(session, yv, tau, authD, yg);
+                std::string targetRsu;
+                Bytes sealedNotice;
+                int status = sess->handleHandoverPredict(inPkt, ptpTime, targetRsu, sealedNotice);
                 if (status == GW_OK) {
-                    if (yg.size() > params[1].memref.size) {
+                    Bytes out;
+                    wire::putString(out, targetRsu);
+                    wire::putField(out, sealedNotice);
+                    if (out.size() > params[1].memref.size) {
                         status = GW_ERR_BUFFER;
                         params[1].memref.size = 0;
                     } else {
-                        std::memcpy(params[1].memref.buffer, yg.data(), yg.size());
-                        params[1].memref.size = static_cast<uint32_t>(yg.size());
+                        std::memcpy(params[1].memref.buffer, out.data(), out.size());
+                        params[1].memref.size = static_cast<uint32_t>(out.size());
                     }
                 } else {
                     params[1].memref.size = 0;

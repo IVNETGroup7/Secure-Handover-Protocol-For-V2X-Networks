@@ -21,15 +21,16 @@ Define_Module(TeeRsuService)
 namespace
 {
 
-constexpr short kHandoverTimer = 1;     // self-message: announce a vehicle to the next RSU (its name is the vehicle)
-
-// Re-anchor cRealTimeScheduler after HIL/SUMO initialization finishes so t=0..startup doesn't replay at >1x speed.
+// Push peer RSU CA certificates to physical RPi3 TAs and re-anchor cRealTimeScheduler after init completes.
 struct HilSchedulerSync : public omnetpp::cISimulationLifecycleListener
 {
-    explicit HilSchedulerSync(omnetpp::cSimulation* sim) : mSim(sim) {}
+    HilSchedulerSync(omnetpp::cSimulation* sim, TeeRsuService* rsu) : mSim(sim), mRsu(rsu) {}
 
     void lifecycleEvent(omnetpp::SimulationLifecycleEventType eventType, omnetpp::cObject*) override
     {
+        if (eventType == omnetpp::LF_POST_NETWORK_INITIALIZE && mRsu) {
+            mRsu->syncHilPeers();
+        }
         if ((eventType == omnetpp::LF_POST_NETWORK_INITIALIZE
                 || eventType == omnetpp::LF_ON_SIMULATION_START)
             && mSim) {
@@ -40,6 +41,7 @@ struct HilSchedulerSync : public omnetpp::cISimulationLifecycleListener
     }
 
     omnetpp::cSimulation* mSim = nullptr;
+    TeeRsuService* mRsu = nullptr;
 };
 
 // "rsu[0]" -> "rsu0": a storage object / file name
@@ -88,8 +90,6 @@ void TeeRsuService::initialize()
 {
     ItsG5Service::initialize();
     mName = getParentModule()->getParentModule()->getFullName(); // <rsu>.middleware.TeeRsuService
-    mNextRsu = par("nextRsu").stdstringValue();
-    mHandoverDelay = par("handoverDelay");
     mMarshalLatencySignal = registerSignal("marshalLatencyUs");
     mHandoverGrantedSignal = registerSignal("handoverGranted");
 
@@ -155,7 +155,8 @@ void TeeRsuService::initHil()
             mHilRadio->setPeerMac(piMac);
             mGatewayPublicKey = hello->gatewayPublicKey;
             const auto reg = mBroker->registerRsu(mName, mGatewayPublicKey,
-                [this](const ProtocolMsg& msg) { onBackhaul(msg); });
+                [this](const ProtocolMsg& msg) { onBackhaul(msg); },
+                [this](const std::string& peer, const Bytes& cert) { mPendingPeers[peer] = cert; });
             mCaPublicKey = reg.caPublicKey;
             mGatewayCert = reg.gatewayCert;
             mEsaCert = reg.esaCert;
@@ -206,7 +207,7 @@ void TeeRsuService::initHil()
     std::fflush(stdout);
 
     if (!mHilSyncListener) {
-        mHilSyncListener = std::make_unique<HilSchedulerSync>(getSimulation());
+        mHilSyncListener = std::make_unique<HilSchedulerSync>(getSimulation(), this);
         omnetpp::getEnvir()->addLifecycleListener(mHilSyncListener.get());
     }
     if (auto* sched = getSimulation()->getScheduler()) {
@@ -215,6 +216,52 @@ void TeeRsuService::initHil()
 
     mHilPollMsg = new omnetpp::cMessage("hilPoll");
     scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(1, omnetpp::SIMTIME_MS), mHilPollMsg);
+}
+
+void TeeRsuService::syncHilPeers()
+{
+    if (mHilPeersSynced || !mHilBackhaul) {
+        return;
+    }
+    mHilPeersSynced = true;
+    const int timeoutMs = static_cast<int>(par("hilHandshakeTimeout").doubleValue() * 1000.0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+
+    while (!mPendingPeers.empty() && std::chrono::steady_clock::now() < deadline) {
+        for (const auto& [peerName, peerCert] : mPendingPeers) {
+            sendFrame(*mHilBackhaul, FrameKind::Peer_Cert, packPeerCert(mName, peerName, peerCert));
+        }
+        const auto retryAt = std::chrono::steady_clock::now() + kSessionRetry;
+        while (!mPendingPeers.empty() && std::chrono::steady_clock::now() < retryAt
+            && std::chrono::steady_clock::now() < deadline) {
+            waitFor({ mHilBackhaul.get() }, 100);
+            drain(*mHilBackhaul, [&](FrameKind kind, const Bytes& body) {
+                if (kind == FrameKind::Peer_Cert_Ack) {
+                    if (const auto ack = parsePeerCertAck(body); ack && ack->destRsu == mName) {
+                        mPendingPeers.erase(ack->peerName);
+                    }
+                }
+            });
+        }
+    }
+    if (!mPendingPeers.empty()) {
+        throw omnetpp::cRuntimeError("%s: timed out registering %zu peer RSU cert(s) on %s",
+            mName.c_str(), mPendingPeers.size(), mHilIface.c_str());
+    }
+    std::printf("[HIL] %s peer RSU certificates verified in TrustZone (K_rsu ready)\n", mName.c_str());
+    std::fflush(stdout);
+}
+
+void TeeRsuService::flushLocalPendingPeers()
+{
+    for (const auto& [peerName, peerCert] : mPendingPeers) {
+        const int st = mGateway->registerPeerRsu(peerName, peerCert);
+        if (st != GW_OK) {
+            throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_REGISTER_PEER_RSU(%s): %s",
+                mName.c_str(), peerName.c_str(), statusName(st));
+        }
+    }
+    mPendingPeers.clear();
 }
 
 void TeeRsuService::initLocalTee()
@@ -233,13 +280,21 @@ void TeeRsuService::initLocalTee()
         throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_INIT_IDENTITY: %s", mName.c_str(), statusName(idStatus));
     }
     const auto reg = mBroker->registerRsu(mName, mGatewayPublicKey,
-        [this](const ProtocolMsg& msg) { onBackhaul(msg); });
+        [this](const ProtocolMsg& msg) { onBackhaul(msg); },
+        [this](const std::string& peerName, const Bytes& peerCert) {
+            mPendingPeers[peerName] = peerCert;
+            if (mLocalGatewayReady) {
+                flushLocalPendingPeers();
+            }
+        });
 
     const int init = mGateway->initGateway(reg.caPublicKey, reg.gatewayCert, reg.esaCert,
         hexKey(par("groupKey").stdstringValue()));
     if (init != GW_OK) {
         throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_INIT_GATEWAY: %s", mName.c_str(), statusName(init));
     }
+    mLocalGatewayReady = true;
+    flushLocalPendingPeers();
     const int cloud = mGateway->initCloudSession(mBroker->cloudCertificate(), kCloudAddress);
     if (cloud != GW_OK) {
         throw omnetpp::cRuntimeError("%s: TA_GATEWAY_CMD_INIT_CLOUD_SESSION: %s", mName.c_str(), statusName(cloud));
@@ -326,7 +381,7 @@ void TeeRsuService::onBackhaul(const ProtocolMsg& msg)
         return;
     }
     try {
-        mGateway->onHttps(msg); // Activation_Token, Forwarding_Notice, Handover_Command
+        mGateway->onHttps(msg); // Activation_Token, Forwarding_Notice
     } catch (const std::runtime_error& e) {
         EV_ERROR << mName << ": backhaul message dropped: " << e.what() << "\n";
     }
@@ -335,11 +390,6 @@ void TeeRsuService::onBackhaul(const ProtocolMsg& msg)
 void TeeRsuService::sendHttps(const ProtocolMsg& msg)
 {
     mBroker->sendBackhaul(msg);
-
-    // the vehicle is active here (the protocol ended for this RSU): pre-announce it to the next RSU
-    if (msg.getType() == Active_02 && !mNextRsu.empty()) {
-        scheduleAt(omnetpp::simTime() + mHandoverDelay, new omnetpp::cMessage(msg.getVehicle().c_str(), kHandoverTimer));
-    }
 }
 
 void TeeRsuService::sendRadio(const ProtocolMsg& msg)
@@ -349,11 +399,23 @@ void TeeRsuService::sendRadio(const ProtocolMsg& msg)
         emit(mHandoverGrantedSignal, mHandoversGranted);
     }
 
-    // Use DP0 only for the initial PTP pair (sub-ms delay, < 1 s burst); everything after
-    // (ECDH_Response, Auth_Granted, Handover_Command, Forwarding_Granted) uses DP2 to avoid
-    // Vanetza's 10 s DP0 BurstBudget lockout when OP-TEE ECDH exceeds the 1 s DP0 burst window.
-    const bool ptp = msg.getType() == PTP_Sync || msg.getType() == PTP_Delay_Response;
-    const auto profile = ptp ? vanetza::dcc::Profile::DP0 : vanetza::dcc::Profile::DP2;
+    // DCC profile: DP0 for pre-ECDH PTP, DP1 for bootstrap/handover security messages,
+    // DP2 for 10 Hz Secure_Data telemetry (security handover has higher priority than telemetry).
+    vanetza::dcc::Profile profile = vanetza::dcc::Profile::DP2;
+    switch (msg.getType()) {
+        case PTP_Sync:
+        case PTP_Delay_Response:
+            profile = vanetza::dcc::Profile::DP0;
+            break;
+        case ECDH_Response:
+        case Auth_Granted:
+        case Forwarding_Granted:
+            profile = vanetza::dcc::Profile::DP1;
+            break;
+        default:
+            profile = vanetza::dcc::Profile::DP2;
+            break;
+    }
 
     // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
     vanetza::btp::DataRequestB req;
@@ -370,17 +432,6 @@ void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
         pollHil();
         scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(1, omnetpp::SIMTIME_MS), mHilPollMsg);
         return;
-    }
-    if (msg->isSelfMessage() && msg->getKind() == kHandoverTimer) {
-        ++mHandoversTriggered;
-        if (mEnableHil && mHilBackhaul) {
-            sendFrame(*mHilBackhaul, FrameKind::Handover_Trigger,
-                packHandoverTrigger(mName, msg->getName(), mNextRsu));
-            EV_INFO << mName << " [HIL]: sent Handover_Trigger (" << msg->getName() << " -> " << mNextRsu
-                    << ") to physical RSU\n";
-        } else {
-            mGateway->startHandover(msg->getName(), mNextRsu); // Forwarding_Notice to mNextRsu
-        }
     }
     delete msg;
 }
@@ -478,10 +529,6 @@ void TeeRsuService::pollHil()
                     }
                     EV_INFO << mName << " [HIL]: received backhaul frame " << messageTypeName(msg.getType())
                             << " from physical RSU -> forwarding to simulation backhaul broker\n";
-                    if (msg.getType() == Active_02 && !mNextRsu.empty()) {
-                        scheduleAt(omnetpp::simTime() + mHandoverDelay,
-                            new omnetpp::cMessage(msg.getVehicle().c_str(), kHandoverTimer));
-                    }
                     mBroker->sendBackhaul(msg);
                 } catch (const std::exception& e) {
                     EV_ERROR << mName << " [HIL]: deserialize backhaul error: " << e.what() << "\n";

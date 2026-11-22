@@ -10,15 +10,12 @@ enum MessageType
 {
     // Initial Bootstrap (RSU <-> Vehicle <-> ESA)
     Activation_Request  = 0,
-    HTTPS_Session       = 1,
     Activation_Token    = 2,
     PTP                 = 3,
     ECDH_Request        = 4,
     ECDH_Response       = 5,
     Auth_Request        = 6,
-    Save_RSU            = 7,
     Auth_Granted        = 8,
-    Save_Vehicle        = 9,
     Active_01           = 10,
     Active_02           = 11,
     Active_03           = 12,
@@ -28,7 +25,6 @@ enum MessageType
 
     // Secrecy Forwarding Handover (RSU <-> RSU <-> Vehicle, no ESA)
     Forwarding_Notice   = 16,
-    Handover_Command    = 17,
     Forwarding_Request  = 18,
     Forwarding_Granted  = 19,
     Handover_Predict    = 21,
@@ -49,8 +45,7 @@ inline bool isBootstrapClientMessage(int type)
 
 inline bool isHandoverClientMessage(int type)
 {
-    return type == Handover_Command
-        || type == Forwarding_Granted;
+    return type == Forwarding_Granted;
 }
 
 #endif /* COMMON_MESSAGETYPE_H_ */

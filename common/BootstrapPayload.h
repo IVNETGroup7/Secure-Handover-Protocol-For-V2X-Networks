@@ -67,14 +67,15 @@ struct AuthRequestPayload
 Bytes pack(const AuthRequestPayload&);
 std::vector<std::string> describe(const AuthRequestPayload&);
 
-// M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg }
+// M = { Auth_Granted, OTP_dt, K_g, CY_e, Auth_eg, nextRsus }
 struct AuthGrantedPayload
 {
     uint8_t type;
-    Block otp;                  // OTP_dt: fresh Poly1305 MAC over { Auth_Granted, K_g, CY_e, Auth_eg }
-    Bytes kG;                   // K_g: group key (AES-128-GCM, vehicle <-> vehicle)
-    Bytes esaPublicKey;         // CY_e: ESA public key (DER SubjectPublicKeyInfo)
-    Bytes authEg;               // Auth_eg = AES(Id_d, CY_e), from the Activation_Token
+    Block otp;                              // OTP_dt: fresh Poly1305 MAC over { Auth_Granted, K_g, CY_e, Auth_eg, nextRsus }
+    Bytes kG;                               // K_g: group key (AES-128-GCM, vehicle <-> vehicle)
+    Bytes esaPublicKey;                     // CY_e: ESA public key (DER SubjectPublicKeyInfo)
+    Bytes authEg;                           // Auth_eg = AES(Id_d, CY_e), from the Activation_Token
+    std::vector<NeighborRsuKey> nextRsus;   // CA-verified neighbor RSUs (Y_{G_{i+1}}) for pre-computed handover
 };
 
 AuthGrantedPayload unpackAuthGranted(const Bytes&);

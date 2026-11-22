@@ -39,7 +39,6 @@ void VehicleTeeService::initialize()
     mPredictionStep = par("predictionStep").doubleValue();
     mPredictRadius = par("predictRadius").doubleValue();
     mHandoverRadius = par("handoverRadius").doubleValue();
-    mHandoverX = par("handoverX").doubleValue();
 
     mBootstrapDelaySignal = registerSignal("bootstrapDelay");
     mHandoverDelaySignal = registerSignal("handoverE2EDelayMs");
@@ -104,7 +103,6 @@ void VehicleTeeService::startBootstrap()
     config.targetRsu = firstRsu;
     config.autoStart = false;
     config.clockOffset = par("clockOffset").doubleValue();
-    config.deferHandover = true;    // Handover_Command pre-fetches keys; Forwarding_Request waits for checkHandover()
     config.seed = static_cast<unsigned>(intuniform(0, std::numeric_limits<int>::max()));
     mAgent = std::make_unique<VehicleAgent>(config);
 
@@ -114,7 +112,7 @@ void VehicleTeeService::startBootstrap()
         mPrefetchReadyAt = omnetpp::simTime();
         ++mPrefetchesCompleted;
         const double rttMs = (mPrefetchReadyAt - mPredictSentAt).dbl() * 1000.0;
-        EV_INFO << mName << ": [CTRA pre-fetch ready] Handover_Command from " << targetRsu
+        EV_INFO << mName << ": [CTRA pre-compute ready] keys for " << targetRsu
                 << " pre-computed in " << rttMs << " ms (holding keys until handover zone)\n";
     });
 
@@ -224,10 +222,11 @@ void VehicleTeeService::checkHandover()
         return;
     }
 
-    // Retry Forwarding_Request if an 802.11p frame was lost, after allowing
-    // enough time for an in-flight OP-TEE response (~1.7 s with concurrent ECDH).
+    // Retry Forwarding_Request (and re-send encrypted Handover_Predict in case of loss)
+    // if an 802.11p frame was lost after allowing 2.5 s.
     if (mAgent->handover().inFlight() && (omnetpp::simTime() - mRequestSentAt).dbl() >= 2.5) {
         mRequestSentAt = omnetpp::simTime();
+        mAgent->handover().resendPrediction();
         mAgent->handover().requestForwarding();
         return;
     }
@@ -237,12 +236,8 @@ void VehicleTeeService::checkHandover()
     }
 
     const std::string& target = mAgent->handover().targetRsu();
-    bool shouldRequest = false;
-    if (mEnableCtra) {
-        shouldRequest = mPredictor.shouldExecuteHandover(mAgent->session().currentRsu(), target, mHandoverRadius);
-    } else {
-        shouldRequest = (mHandoverX < 0 || positionX() >= mHandoverX);
-    }
+    const bool shouldRequest = !mEnableCtra
+        || mPredictor.shouldExecuteHandover(mAgent->session().currentRsu(), target, mHandoverRadius);
 
     if (shouldRequest) {
         if (mPrefetchReadyAt > omnetpp::SimTime::ZERO) {
@@ -268,7 +263,7 @@ void VehicleTeeService::indicate(const vanetza::btp::DataIndication&, omnetpp::c
     }
     try {
         mAgent->indicate(frame->msg()); // filters by destination (logical unicast)
-        checkHandover();                // a Handover_Command may have just arrived
+        checkHandover();                // Forwarding_Granted or active session transition may advance state
     } catch (const std::runtime_error& e) { // a malformed frame or payload: dropped, the simulation goes on
         EV_ERROR << mName << ": frame dropped: " << e.what() << "\n";
     }
@@ -300,12 +295,25 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
 
 void VehicleTeeService::sendRadio(const ProtocolMsg& msg)
 {
-    // DCC profile: initial pre-ECDH messages as TC0 / DP0 (< 1 s burst); once ECDH starts, Auth_Request
-    // and all subsequent traffic use DP2 to avoid DP0's 10 s BurstBudget lockout on HIL/RPi3 latency.
-    const bool preEcdh = msg.getType() == PTP
-        || msg.getType() == PTP_Delay_Request
-        || msg.getType() == ECDH_Request;
-    const auto profile = preEcdh ? vanetza::dcc::Profile::DP0 : vanetza::dcc::Profile::DP2;
+    // DCC profile: DP0 for pre-ECDH PTP/ECDH, DP1 for security bootstrap/handover messages
+    // (higher priority than 10 Hz Secure_Data telemetry on DP2).
+    vanetza::dcc::Profile profile = vanetza::dcc::Profile::DP2;
+    switch (msg.getType()) {
+        case PTP:
+        case PTP_Delay_Request:
+        case ECDH_Request:
+            profile = vanetza::dcc::Profile::DP0;
+            break;
+        case Auth_Request:
+        case Active_01:
+        case Handover_Predict:
+        case Forwarding_Request:
+            profile = vanetza::dcc::Profile::DP1;
+            break;
+        default:
+            profile = vanetza::dcc::Profile::DP2;
+            break;
+    }
 
     // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
     vanetza::btp::DataRequestB req;

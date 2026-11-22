@@ -17,10 +17,11 @@ enum class FrameKind : uint8_t {
     Session_Hello = 1,
     Session_Ack = 2,
     Data_Fragment = 3,
-    Handover_Trigger = 4,
     Clock_Anchor = 5,
     Cloud_Ready = 6,
-    Cloud_Refused = 7
+    Cloud_Refused = 7,
+    Peer_Cert = 8,
+    Peer_Cert_Ack = 9
 };
 
 constexpr auto kSessionTimeout = std::chrono::seconds(5);         // RSU: waiting for the ESA's Session_Ack
@@ -31,14 +32,6 @@ void sendFrame(RawSocket& link, FrameKind kind, const Bytes& body);
 void sendMsg(RawSocket& link, const ProtocolMsg& msg);
 Bytes toBytes(const std::string& text);
 
-struct HandoverTrigger
-{
-    std::string rsu;
-    std::string session;
-    std::string targetRsu;
-};
-Bytes packHandoverTrigger(const std::string& rsu, const std::string& session, const std::string& targetRsu);
-std::optional<HandoverTrigger> parseHandoverTrigger(const Bytes& body);
 Bytes packClockAnchor(int64_t simTimeNs);
 std::optional<int64_t> parseClockAnchor(const Bytes& body);
 std::optional<std::string> parseRsuTag(const Bytes& body);
@@ -78,6 +71,24 @@ Bytes packSessionHello(const std::string& rsu, const Bytes& gatewayPublicKey);
 std::optional<SessionHello> parseSessionHello(const Bytes& body);
 Bytes packSessionAck(const std::string& rsu, const Bytes& caPublicKey, const Bytes& gatewayCert, const Bytes& esaCert);
 std::optional<SessionAck> parseSessionAck(const Bytes& body);
+
+struct PeerCertFrame
+{
+    std::string destRsu;
+    std::string peerName;
+    Bytes peerCertDer;
+};
+
+struct PeerCertAck
+{
+    std::string destRsu;
+    std::string peerName;
+};
+
+Bytes packPeerCert(const std::string& destRsu, const std::string& peerName, const Bytes& peerCertDer);
+std::optional<PeerCertFrame> parsePeerCert(const Bytes& body);
+Bytes packPeerCertAck(const std::string& destRsu, const std::string& peerName);
+std::optional<PeerCertAck> parsePeerCertAck(const Bytes& body);
 
 // RSU side of the CA-authenticated HTTPS session setup with the ESA:
 // Sends Session_Hello (carrying TEE-generated Y_gw) until receiving matching Session_Ack.

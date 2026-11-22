@@ -8,6 +8,7 @@
 #include <csignal>
 #include <cstdio>
 #include <exception>
+#include <set>
 #include <stdexcept>
 
 namespace
@@ -88,6 +89,7 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
 
     Reassembler reassembler;
     Reassembler backhaulReassembler;
+    std::set<std::string> registeredPeers;
     auto step = [&] {
         drain(radio, [&](FrameKind kind, const Bytes& body) {
             if (kind == FrameKind::Protocol) {
@@ -111,9 +113,22 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
                         simRefNs = *simNs;
                         clockAnchored = true;
                     }
-                } else if (kind == FrameKind::Handover_Trigger) {
-                    if (const auto trig = parseHandoverTrigger(body); trig && trig->rsu == options.name) {
-                        gateway.startHandover(trig->session, trig->targetRsu);
+                } else if (kind == FrameKind::Peer_Cert) {
+                    if (const auto pc = parsePeerCert(body); pc && pc->destRsu == options.name) {
+                        int st = GW_OK;
+                        if (registeredPeers.count(pc->peerName) == 0) {
+                            st = gateway.registerPeerRsu(pc->peerName, pc->peerCertDer);
+                            if (st == GW_OK) {
+                                registeredPeers.insert(pc->peerName);
+                            } else {
+                                std::fprintf(stderr, "[%s] TA_GATEWAY_CMD_REGISTER_PEER_RSU(%s): %s\n",
+                                    options.name.c_str(), pc->peerName.c_str(), statusName(st));
+                            }
+                        }
+                        if (st == GW_OK) {
+                            sendFrame(backhaul, FrameKind::Peer_Cert_Ack,
+                                packPeerCertAck(options.name, pc->peerName));
+                        }
                     }
                 } else if (kind == FrameKind::Data_Fragment) {
                     if (auto packet = backhaulReassembler.add(body);

@@ -7,7 +7,9 @@ Bytes pack(const HandoverPredictPayload& m)
 {
     Bytes out;
     wire_codec::putUint(out, m.type, 1);
+    wire_codec::putBytes(out, m.authD);
     wire_codec::putString(out, m.targetRsu);
+    out.insert(out.end(), m.otp.begin(), m.otp.end());
     return out;
 }
 
@@ -16,73 +18,18 @@ HandoverPredictPayload unpackHandoverPredict(const Bytes& in)
     wire_codec::Reader reader(in, "handover payload");
     HandoverPredictPayload m;
     m.type = static_cast<uint8_t>(reader.uint(1));
+    m.authD = reader.field();
     m.targetRsu = reader.str();
+    m.otp = reader.array<16>();
     return m;
 }
 
 std::vector<std::string> describe(const HandoverPredictPayload& m)
 {
     return {
-        "M = { " + std::string(messageTypeName(m.type)) + ", G_{i+2} }",
+        "M = { " + std::string(messageTypeName(m.type)) + ", Auth_d, G_{i+2}, OTP_dt }",
         "G_{i+2} = " + m.targetRsu + " (CTRA most likely target RSU; single-RSU pre-fetch)",
-    };
-}
-
-Bytes pack(const ForwardingNoticePayload& m)
-{
-    Bytes out;
-    wire_codec::putUint(out, m.type, 1);
-    wire_codec::putBytes(out, m.vehiclePublicKey);
-    out.insert(out.end(), m.tau.begin(), m.tau.end());
-    wire_codec::putBytes(out, m.authD);
-    return out;
-}
-
-ForwardingNoticePayload unpackForwardingNotice(const Bytes& in)
-{
-    wire_codec::Reader reader(in, "handover payload");
-    ForwardingNoticePayload m;
-    m.type = static_cast<uint8_t>(reader.uint(1));
-    m.vehiclePublicKey = reader.field();
-    m.tau = reader.array<16>();
-    m.authD = reader.field();
-    return m;
-}
-
-std::vector<std::string> describe(const ForwardingNoticePayload& m)
-{
-    return {
-        "M = { " + std::string(messageTypeName(m.type)) + ", Y_V, tau_{i+2}, Auth_d }",
-        "Y_V    = " + toHex(m.vehiclePublicKey.data(), m.vehiclePublicKey.size()),
-        "Auth_d = " + toHex(m.authD.data(), m.authD.size()),
-    };
-}
-
-Bytes pack(const HandoverCommandPayload& m)
-{
-    Bytes out;
-    wire_codec::putUint(out, m.type, 1);
-    wire_codec::putString(out, m.targetRsu);
-    wire_codec::putBytes(out, m.targetRsuPublicKey);
-    return out;
-}
-
-HandoverCommandPayload unpackHandoverCommand(const Bytes& in)
-{
-    wire_codec::Reader reader(in, "handover payload");
-    HandoverCommandPayload m;
-    m.type = static_cast<uint8_t>(reader.uint(1));
-    m.targetRsu = reader.str();
-    m.targetRsuPublicKey = reader.field();
-    return m;
-}
-
-std::vector<std::string> describe(const HandoverCommandPayload& m)
-{
-    return {
-        "M = { " + std::string(messageTypeName(m.type)) + ", G_{i+2}, Y_G_{i+2} }",
-        "G_{i+2}   = " + m.targetRsu,
-        "Y_G_{i+2} = " + toHex(m.targetRsuPublicKey.data(), m.targetRsuPublicKey.size()),
+        "OTP_dt  = " + toHex(m.otp.data(), m.otp.size()),
     };
 }
 
@@ -109,7 +56,14 @@ ForwardingGrantedPayload unpackForwardingGranted(const Bytes& in)
     wire_codec::Reader reader(in, "handover payload");
     ForwardingGrantedPayload m;
     m.type = static_cast<uint8_t>(reader.uint(1));
-    m.nextRsuPublicKey = reader.field();
+    const size_t n = static_cast<size_t>(reader.uint(1));
+    m.nextRsus.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        NeighborRsuKey nb;
+        nb.name = reader.str();
+        nb.publicKeyDer = reader.field();
+        m.nextRsus.push_back(std::move(nb));
+    }
     m.authPrime = reader.array<32>();
     m.kG = reader.field();
     m.otp = reader.array<16>();
@@ -118,13 +72,18 @@ ForwardingGrantedPayload unpackForwardingGranted(const Bytes& in)
 
 std::vector<std::string> describe(const ForwardingGrantedPayload& m)
 {
+    std::string names;
+    for (size_t i = 0; i < m.nextRsus.size(); ++i) {
+        if (i > 0) names += ", ";
+        names += m.nextRsus[i].name;
+    }
     return {
-        "M = { " + std::string(messageTypeName(m.type)) + ", Y_G_{i+3}, auth'_{i+2}, K_G_{i+2}, OTP }",
-        "Y_G_{i+3}   = " + (m.nextRsuPublicKey.empty() ? std::string("(none)")
-            : toHex(m.nextRsuPublicKey.data(), m.nextRsuPublicKey.size())),
+        "M = { " + std::string(messageTypeName(m.type)) + ", nextRsus, auth'_{i+2}, K_G_{i+2}, OTP' }",
+        "nextRsus    = " + std::to_string(m.nextRsus.size())
+            + (names.empty() ? std::string("") : " [" + names + "]"),
         "auth'_{i+2} = " + toHex(m.authPrime.data(), m.authPrime.size()),
         "K_G_{i+2}   = " + toHex(m.kG.data(), m.kG.size()),
-        "OTP         = " + toHex(m.otp.data(), m.otp.size()),
+        "OTP'        = " + toHex(m.otp.data(), m.otp.size()),
     };
 }
 

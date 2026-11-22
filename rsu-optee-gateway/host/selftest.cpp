@@ -59,7 +59,7 @@ bool containsBytes(const Bytes& haystack, const uint8_t* needle, size_t len)
 
 // Step 2 helper: generate Gateway identity inside TA, sign with CA, register with ESA, initialize TA with CA certs
 Bytes provisionGateway(const CertificateAuthority& ca, ExternalSecurityAgent& esa, PacketManager& gateway,
-    const Bytes& groupKey = {})
+    const Bytes& groupKey = {}, Bytes* outGwCert = nullptr)
 {
     Bytes cyG;
     const int idStatus = gateway.initIdentity(cyG);
@@ -73,6 +73,9 @@ Bytes provisionGateway(const CertificateAuthority& ca, ExternalSecurityAgent& es
     const int init = gateway.initGateway(ca.publicKeyDer, gwCert, esa.certificate(), groupKey);
     if (init != GW_OK) {
         throw std::runtime_error(gateway.name() + ": TA_GATEWAY_CMD_INIT_GATEWAY: " + statusName(init));
+    }
+    if (outGwCert) {
+        *outGwCert = gwCert;
     }
     return cyG;
 }
@@ -333,24 +336,32 @@ bool secrecyForwarding(PacketManager& rsu0, PacketManager& rsu1, const Bytes& kG
     op.setTransport([&](const ProtocolMsg& msg) { bus.push_back({ Link::It, serialize(msg) }); });
     esa.setTransport([&](const ProtocolMsg& msg) { bus.push_back({ Link::It, serialize(msg) }); });
 
+    Bytes predictWirePayload, noticeWirePayload;
     auto run = [&] {
         while (!bus.empty()) {
             Frame frame = std::move(bus.front());
             bus.pop_front();
             const ProtocolMsg msg = deserialize(frame.bytes);
             if (frame.link == Link::Radio) {
-                if (msg.getType() == Forwarding_Request) {
+                if (msg.getType() == Handover_Predict) {
+                    predictWirePayload = getPayload(msg);
+                } else if (msg.getType() == Forwarding_Request) {
                     forwardingRequest = frame.bytes;
                 }
                 vehicle.indicate(msg);
                 rsu0.onRadio(msg);
                 rsu1.onRadio(msg);
-            } else if (msg.getDestination() == esa.getFullName()) {
-                esa.handleMessage(msg);
-            } else if (msg.getDestination() == op.name()) {
-                op.handleMessage(msg);
-            } else if (auto rsu = rsus.find(msg.getDestination()); rsu != rsus.end()) {
-                rsu->second->onHttps(msg);
+            } else {
+                if (msg.getType() == Forwarding_Notice) {
+                    noticeWirePayload = getPayload(msg);
+                }
+                if (msg.getDestination() == esa.getFullName()) {
+                    esa.handleMessage(msg);
+                } else if (msg.getDestination() == op.name()) {
+                    op.handleMessage(msg);
+                } else if (auto rsu = rsus.find(msg.getDestination()); rsu != rsus.end()) {
+                    rsu->second->onHttps(msg);
+                }
             }
         }
     };
@@ -388,17 +399,29 @@ bool secrecyForwarding(PacketManager& rsu0, PacketManager& rsu1, const Bytes& kG
     vehicle.bootstrap().start([&](const BootstrapResult& r) { ready = r; });
     run();
     if (result("4h. node[5] bootstraps with rsu[0]", ready && ready->rsu == rsu0.name()
-        && vehicle.session().currentRsu() == rsu0.name() && op.isConfirmed(traits.uuid),
-        ready ? "ready with " + ready->rsu + " (Operator confirmed)" : std::string("NOT READY"))) {
+        && vehicle.session().currentRsu() == rsu0.name()
+        && vehicle.session().neighborKey(rsu1.name()).has_value()
+        && op.isConfirmed(traits.uuid),
+        ready ? "ready with " + ready->rsu + " (pre-loaded Y_{rsu[1]}, Operator confirmed)" : std::string("NOT READY"))) {
         smartData("4i. SmartData to rsu[0]", rsu0.name());
 
-        rsu0.startHandover("node[5]", rsu1.name());
+        vehicle.handover().requestPrediction(rsu1.name());
+        run();
+        const bool encryptedHandoff = vehicle.handover().pending()
+            && !predictWirePayload.empty()
+            && !containsBytes(predictWirePayload, traits.authD.data(), traits.authD.size())
+            && !containsBytes(predictWirePayload, reinterpret_cast<const uint8_t*>(rsu1.name().data()), rsu1.name().size())
+            && !noticeWirePayload.empty()
+            && !containsBytes(noticeWirePayload, traits.authD.data(), traits.authD.size());
+        vehicle.handover().requestForwarding();
         run();
         const bool moved = handedOver && handedOver->rsu == rsu1.name() && vehicle.session().currentRsu() == rsu1.name();
-        const bool keys = moved && vehicle.session().groupKey() == kG1 && kG1 != ready->kG && handedOver->kDg != ready->kDg;
-        result("4j. Secrecy Forwarding to rsu[1]", keys, !handedOver ? "NO Forwarding_Granted accepted"
+        const bool keys = encryptedHandoff && moved && vehicle.session().groupKey() == kG1
+            && kG1 != ready->kG && handedOver->kDg != ready->kDg;
+        result("4j. Secrecy Forwarding to rsu[1]", keys, !encryptedHandoff ? "PREDICT OR NOTICE LEAKED PLAINTEXT"
+            : !handedOver ? "NO Forwarding_Granted accepted"
             : !moved ? "node[5] is NOT with rsu[1]" : !keys ? "node[5] does NOT hold rsu[1]'s K_g"
-            : "node[5] with rsu[1]: holds its K_g, K_dh_i as K_dg");
+            : "CTRA predict + E_K_rsu(Notice) -> node[5] with rsu[1] (fresh OTP', K_dh_i)");
 
         if (keys) {
             smartData("4k. SmartData to rsu[1]", rsu1.name());
@@ -541,7 +564,8 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
         pkiOk ? "self-signed GW/ESA/Cloud certs & RSU-relayed Activation_Request rejected" : "FAILED");
 
     // 7d. HIL shared-bus wire helpers + anchored clock hook + 4 concurrent TA sessions (rsu[2], rsu[3])
-    const auto trig = parseHandoverTrigger(packHandoverTrigger("rsu[0]", "node[0]", "rsu[1]"));
+    const auto peerCert = parsePeerCert(packPeerCert("rsu[1]", "rsu[0]", validGwCert));
+    const auto peerAck = parsePeerCertAck(packPeerCertAck("rsu[1]", "rsu[0]"));
     const auto anchor = parseClockAnchor(packClockAnchor(1234567890LL));
     const auto tag = parseRsuTag(toBytes("rsu[1]\n"));
     const auto hello = parseSessionHello(packSessionHello("rsu[0]", cyG0));
@@ -569,17 +593,63 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
     TeeSession tee3(storageId + ".rsu3", true);
     PacketManager rsu2(tee2, "rsu[2]");
     PacketManager rsu3(tee3, "rsu[3]");
-    provisionGateway(ca, esa, rsu2);
-    provisionGateway(ca, esa, rsu3);
+    Bytes cert2, cert3;
+    const Bytes cyG2 = provisionGateway(ca, esa, rsu2, {}, &cert2);
+    provisionGateway(ca, esa, rsu3, {}, &cert3);
+    const int reg23 = rsu2.registerPeerRsu("rsu[3]", cert3);
+    const int reg32 = rsu3.registerPeerRsu("rsu[2]", cert2);
 
-    const bool hilOk = trig && trig->rsu == "rsu[0]" && trig->session == "node[0]" && trig->targetRsu == "rsu[1]"
+    const bool hilOk = peerCert && peerCert->destRsu == "rsu[1]" && peerCert->peerName == "rsu[0]"
+        && peerCert->peerCertDer == validGwCert
+        && peerAck && peerAck->destRsu == "rsu[1]" && peerAck->peerName == "rsu[0]"
         && anchor && *anchor == 1234567890LL
         && tag && *tag == "rsu[1]"
         && hello && hello->rsu == "rsu[0]" && hello->gatewayPublicKey == cyG0
         && ack && ack->rsu == "rsu[0]" && ack->caPublicKey == ca.publicKeyDer
+        && reg23 == GW_OK && reg32 == GW_OK
         && clockCalled && radioReplies == 1;
     checkItem("7d. HIL wire helpers & 4 TA sessions", hilOk,
-        hilOk ? "Session_Hello/Ack, HandoverTrigger, ClockAnchor, PTP & 4 RSUs OK" : "FAILED");
+        hilOk ? "Session_Hello/Ack, PeerCert/Ack, ClockAnchor, PTP & 4 RSUs OK" : "FAILED");
+
+    // 7e. Secrecy Forwarding security checks: rogue peer cert, spoofed predict, forged notice, fan-out cap & rate limit
+    const int roguePeerStatus = rsu2.registerPeerRsu("rogue-rsu", selfSignedGwCert);
+    std::string dummyTarget;
+    Bytes dummyNotice;
+    const uint64_t tNowNs = static_cast<uint64_t>(SimTime::now().ns());
+    const int spoofPredictStatus = rsu2.handleHandoverPredict(randomBytes(64), tNowNs, dummyTarget, dummyNotice);
+    const int forgedNoticeStatus = rsu3.receiveForwardingNotice("rogue-rsu", randomBytes(96), tNowNs);
+    const int tamperedNoticeStatus = rsu3.receiveForwardingNotice("rsu[2]", randomBytes(96), tNowNs);
+
+    // Bootstrap node[6] cleanly on rsu[2] -> test 4-notice fan-out cap and 5/s Forwarding_Request rate limit on rsu[3]
+    const Outcome activeNode6 = bootstrapViaOperator("node[6]", 19, rsu2, esa, op, cyG2);
+    Bytes dummySealed;
+    int fanoutOk = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (rsu2.triggerHandover("node[6]", "rsu[3]", 0, dummySealed) == GW_OK) {
+            ++fanoutOk;
+        }
+    }
+    const int fanoutBlocked = rsu2.triggerHandover("node[6]", "rsu[3]", 0, dummySealed);
+
+    const Bytes bogusFwdReq = pack(ForwardingRequestPayload{ Forwarding_Request, Sha256{}, Block{} });
+    int rateAllowedBeforeLimit = 0;
+    for (int i = 0; i < 5; ++i) {
+        if (rsu3.handleForwardingRequest("dos-sender", bogusFwdReq, tNowNs).status == GW_IGNORED) {
+            ++rateAllowedBeforeLimit;
+        }
+    }
+    const Reply rateBlocked = rsu3.handleForwardingRequest("dos-sender", bogusFwdReq, tNowNs);
+    const bool secFwdOk = (roguePeerStatus == GW_ERR_CRYPTO)
+        && (spoofPredictStatus == GW_IGNORED)
+        && (forgedNoticeStatus == GW_IGNORED)
+        && (tamperedNoticeStatus == GW_IGNORED)
+        && activeNode6.vehicleReady
+        && (fanoutOk == 4)
+        && (fanoutBlocked == GW_IGNORED)
+        && (rateAllowedBeforeLimit == 5)
+        && (rateBlocked.status == GW_IGNORED);
+    checkItem("7e. Secrecy Forwarding security/DoS", secFwdOk,
+        secFwdOk ? "rogue peer, spoofed predict/notice, fan-out <= 4 & req rate limit OK" : "FAILED");
 
     esa.setTransport(nullptr);
     op.setTransport(nullptr);
@@ -609,10 +679,28 @@ int runSelfTest(TeeSession& tee, const std::string& storageId)
         PacketManager gateway(tee, "rsu[0]");
         const CloudIdentity cloud = newCloudIdentity(ca, kCloudAddress);
 
-        const Bytes cyG0 = provisionGateway(ca, esa, gateway);
+        Bytes gwCert0;
+        const Bytes cyG0 = provisionGateway(ca, esa, gateway, {}, &gwCert0);
         const int session = gateway.initCloudSession(cloud.pem(), kCloudAddress);
         if (session != GW_OK) {
             throw std::runtime_error(std::string("TA_GATEWAY_CMD_INIT_CLOUD_SESSION: ") + statusName(session));
+        }
+
+        const std::string storage1 = storageId + ".rsu1";
+        TeeSession tee1(storage1, true);
+        std::printf("OP-TEE TA session opened for rsu[1] (session %llu, storage %s)\n",
+            static_cast<unsigned long long>(tee1.sessionId()), storage1.c_str());
+        PacketManager target(tee1, "rsu[1]");
+        const Bytes kG1 = randomBytes(kGroupKeySize);
+        Bytes gwCert1;
+        provisionGateway(ca, esa, target, kG1, &gwCert1);
+        const int session1 = target.initCloudSession(cloud.pem(), kCloudAddress);
+        if (session1 != GW_OK) {
+            throw std::runtime_error(std::string("rsu[1]: ") + statusName(session1));
+        }
+        if (gateway.registerPeerRsu("rsu[1]", gwCert1) != GW_OK
+            || target.registerPeerRsu("rsu[0]", gwCert0) != GW_OK) {
+            throw std::runtime_error("failed to register CA-signed peer RSU certificates");
         }
 
         title("1. normal bootstrap via Human Operator (node[0] with rsu[0], +0.25 s clock skew)");
@@ -636,18 +724,6 @@ int runSelfTest(TeeSession& tee, const std::string& storageId)
 
         title("4. Secure Marshaling (OT -> IT) + Secrecy Forwarding handover (node[5]: rsu[0] -> rsu[1])");
         marshaling = secureMarshaling(gateway, cloud, normal.result);
-
-        const std::string storage1 = storageId + ".rsu1";
-        TeeSession tee1(storage1, true);
-        std::printf("OP-TEE TA session opened for rsu[1] (session %llu, storage %s)\n",
-            static_cast<unsigned long long>(tee1.sessionId()), storage1.c_str());
-        PacketManager target(tee1, "rsu[1]");
-        const Bytes kG1 = randomBytes(kGroupKeySize);
-        provisionGateway(ca, esa, target, kG1);
-        const int session1 = target.initCloudSession(cloud.pem(), kCloudAddress);
-        if (session1 != GW_OK) {
-            throw std::runtime_error(std::string("rsu[1]: ") + statusName(session1));
-        }
         forwarding = secrecyForwarding(gateway, target, kG1, esa, op, cyG0, cloud);
 
         title("5. CY_g of no CA-registered gateway (node[3])");
@@ -678,8 +754,8 @@ int runSelfTest(TeeSession& tee, const std::string& storageId)
     ok &= report("5. CY_g of no gateway", !stranger.vehicleReady && !stranger.operatorConfirmed, stranger);
     ok &= report("6. before t_0 (TA enforced)", !early.vehicleReady && !early.operatorConfirmed && early.ignored == 1,
         early);
-    std::printf("  %-38s Reboot/DoS, CA PKI, Operator-only & HIL helpers   %s\n",
-        "7. security & HIL checks (7a-7d)", securityHil ? "ok" : "FAILED");
+    std::printf("  %-38s Reboot/DoS, CA PKI, Operator-only, HIL & SecFwd   %s\n",
+        "7. security & HIL checks (7a-7e)", securityHil ? "ok" : "FAILED");
     ok &= securityHil;
 
     std::printf("%s\n", ok ? "gateway OK" : "gateway FAILED");

@@ -1,5 +1,6 @@
 #include "VehicleSession.h"
 #include "ProtocolMsg.h"
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -21,6 +22,19 @@ uint64_t VehicleSession::otpSlot(simtime_t clock)
     return static_cast<uint64_t>(std::floor(clock.dbl() / kOtpTimeStep));
 }
 
+Block VehicleSession::otpNonce(const Bytes& authD, uint64_t t)
+{
+    Block nonce{};
+    if (authD.size() < nonce.size()) {
+        throw std::runtime_error("OTP: Auth_d shorter than one block");
+    }
+    std::copy_n(authD.begin(), nonce.size(), nonce.begin());
+    for (int i = 0; i < 8; ++i) {
+        nonce[15 - i] ^= static_cast<uint8_t>(t >> (8 * i));
+    }
+    return nonce;
+}
+
 void VehicleSession::activateWithRsu(std::string rsu, Bytes kG, Bytes kDg, uint64_t authSlot)
 {
     mCurrentRsu = std::move(rsu);
@@ -29,9 +43,29 @@ void VehicleSession::activateWithRsu(std::string rsu, Bytes kG, Bytes kDg, uint6
     mLastAuthSlot = authSlot;
 }
 
+void VehicleSession::setNeighborRsus(const std::vector<NeighborRsuKey>& neighbors)
+{
+    mNeighborRsus.clear();
+    for (const NeighborRsuKey& nb : neighbors) {
+        if (!nb.name.empty() && !nb.publicKeyDer.empty()) {
+            mNeighborRsus[nb.name] = nb.publicKeyDer;
+        }
+    }
+}
+
+std::optional<Bytes> VehicleSession::neighborKey(const std::string& rsuName) const
+{
+    const auto it = mNeighborRsus.find(rsuName);
+    if (it == mNeighborRsus.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
 void VehicleSession::clearActiveKeys()
 {
     mKdg.clear();
+    mNeighborRsus.clear();
     mEcdhKey.reset();
 }
 

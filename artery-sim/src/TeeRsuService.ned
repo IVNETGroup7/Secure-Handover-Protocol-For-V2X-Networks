@@ -11,8 +11,6 @@ simple TeeRsuService like ItsG5Service
         string sealedStatePath = default("");       // "": <RSU name, no brackets>.sealed, e.g. rsu0.sealed
         bool freshState = default(true);            // drop the sealed state an earlier run left
         string groupKey = default("");              // K_g, 32 hex digits; "": generated inside the TA
-        string nextRsu = default("");               // Secrecy Forwarding: where the vehicles activated here go next
-        double handoverDelay @unit(s) = default(0s);    // from the vehicle's activation to its Forwarding_Notice
         string backhaulModule = default("backhaulBroker");
         bool enableHil = default(false);            // Hardware-in-the-Loop: bridge this RSU to physical hardware
         string hilIface = default("");            // network interface connected to the physical RSU (or set HIL_IFACE env var)

@@ -24,7 +24,6 @@ class VehicleAgent
             std::string targetRsu = "rsu[0]";   // Initial RSU link-layer address on OT radio
             bool autoStart = true;              // false = wait for bootstrap().start()
             double clockOffset = 0.0;           // s: initial clock skew before PTP correction
-            bool deferHandover = false;         // true = Handover_Command pre-fetches keys until requestForwarding()
             unsigned seed = 0;                  // PRNG seed for UUID & keys
         };
 

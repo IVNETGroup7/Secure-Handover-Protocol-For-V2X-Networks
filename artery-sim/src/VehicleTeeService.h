@@ -8,9 +8,9 @@
 //      (OTP_dt), to the RSU it is activated with
 //   3. CTRA Trajectory Prediction + Secrecy Forwarding: CtraPredictor continuously integrates the vehicle's
 //      [x, y, v, psi, a, omega] state over "predictionHorizon" against all candidate RSUs in the network, selects
-//      the single most likely next RSU, sends Handover_Predict to the current RSU so ONLY that candidate RSU is
-//      notified via Forwarding_Notice, pre-fetches its Handover_Command (deriving tau_{i+2}, K_dh_i, KT_i, auth_{i+2}
-//      in advance), and executes Forwarding_Request -> Forwarding_Granted upon entering "handoverRadius".
+//      the single most likely next RSU, pre-computes (tau_{i+2}, K_dh_i, KT_i, auth_{i+2}) using its pre-loaded
+//      CA-verified neighbor key, sends encrypted Handover_Predict to the current RSU so ONLY that target RSU is
+//      notified via E_{K_rsu}(Forwarding_Notice), and executes Forwarding_Request -> Forwarding_Granted at "handoverRadius".
 
 #include "CtraPredictor.h"
 #include "ProtocolMsg.h"
@@ -57,7 +57,6 @@ class VehicleTeeService : public artery::ItsG5Service
         double mPredictionStep = 0.1;
         double mPredictRadius = 80.0;
         double mHandoverRadius = 160.0;
-        double mHandoverX = -1.0;
         bool mReady = false;
         std::string mPredictedRsu;
         omnetpp::simtime_t mStartedAt;

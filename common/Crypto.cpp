@@ -133,19 +133,6 @@ Bytes selfSignedCertificate(EVP_PKEY* key, const std::string& commonName)
     return der;
 }
 
-std::optional<Bytes> verifiedCertificateKey(const Bytes& certificateDer)
-{
-    const unsigned char* in = certificateDer.data();
-    std::unique_ptr<X509, decltype(&X509_free)> cert(d2i_X509(nullptr, &in, static_cast<long>(certificateDer.size())),
-        X509_free);
-    EVP_PKEY* key = cert ? X509_get0_pubkey(cert.get()) : nullptr;
-    if (!key || X509_verify(cert.get(), key) != 1) {
-        ERR_clear_error();
-        return std::nullopt;
-    }
-    return publicKeyDer(key);
-}
-
 Bytes issueCertificate(EVP_PKEY* caKey, const std::string& caCommonName,
     const Bytes& subjectPublicKeyDer, const std::string& subjectCommonName, bool isCa)
 {

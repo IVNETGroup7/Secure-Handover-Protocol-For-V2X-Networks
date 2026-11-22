@@ -7,9 +7,8 @@
 #include <stdexcept>
 #include <openssl/crypto.h>
 
-HandoverClient::HandoverClient(VehicleSession& session, bool deferHandover) :
-    mSession(session),
-    mDeferHandover(deferHandover)
+HandoverClient::HandoverClient(VehicleSession& session) :
+    mSession(session)
 {
 }
 
@@ -22,7 +21,6 @@ const std::string& HandoverClient::targetRsu() const
 void HandoverClient::handleMessage(const ProtocolMsg& msg)
 {
     switch (msg.getType()) {
-        case Handover_Command:   onHandoverCommand(msg); break;
         case Forwarding_Granted: onForwardingGranted(msg); break;
         default:
             std::cerr << mSession.name() << ": unexpected handover message type "
@@ -31,66 +29,66 @@ void HandoverClient::handleMessage(const ProtocolMsg& msg)
     }
 }
 
-void HandoverClient::requestPrediction(const std::string& targetRsu)
+void HandoverClient::sendEncryptedPredict(const std::string& targetRsu)
 {
-    if (!mSession.isActivated() || targetRsu.empty() || targetRsu == mSession.currentRsu()) {
-        return;
-    }
     printStep("HandoverPredict");
 
+    const uint64_t tNow = VehicleSession::otpSlot(mSession.localClock());
     HandoverPredictPayload m;
     m.type = Handover_Predict;
+    m.authD = mSession.traits().authD;
     m.targetRsu = targetRsu;
+    m.otp = poly1305Aes(mSession.kDg(), VehicleSession::otpNonce(m.authD, tNow), handoverPredictOtpData(targetRsu));
     for (const std::string& line : describe(m)) {
         printDetail(line);
     }
 
-    // M = { Handover_Predict, G_{i+2} } sent to current RSU so it notifies ONLY targetRsu
-    mSession.send(Handover_Predict, mSession.currentRsu(), 0, 0, "", pack(m));
+    const Bytes sealed = aesGcmEncrypt(mSession.kDg(), pack(m));
+    printDetail("E_K_dg(M) = AES-256-GCM, " + std::to_string(sealed.size()) + " bytes -> " + mSession.currentRsu());
+    mSession.send(Handover_Predict, mSession.currentRsu(), 0, 0, "", sealed);
 }
 
-void HandoverClient::onHandoverCommand(const ProtocolMsg& received)
+void HandoverClient::requestPrediction(const std::string& targetRsu)
 {
-    printStep("HandoverCommand", &received);
-
-    const HandoverCommandPayload m = unpackHandoverCommand(getPayload(received));
-    for (const std::string& line : describe(m)) {
-        printDetail(line);
-    }
-
-    if (!mSession.isActivated() || !mSession.ecdhKey()) {
-        printCheck(false, "not activated with any RSU: ignored");
+    if (!mSession.isActivated() || !mSession.ecdhKey() || targetRsu.empty() || targetRsu == mSession.currentRsu()) {
         return;
     }
-    if (received.getSender() != mSession.currentRsu()) {
-        printCheck(false, "not from " + mSession.currentRsu() + ", the RSU I am activated with: ignored");
+
+    const auto targetKey = mSession.neighborKey(targetRsu);
+    if (!targetKey) {
+        printCheck(false, "no pre-loaded key for " + targetRsu + ": cannot pre-compute handover");
         return;
     }
-    printCheck(true, "from " + mSession.currentRsu() + ", the RSU I am activated with");
 
     const Block tau = forwardingToken(mSession.kDg(), mSession.lastAuthSlot());
     PendingHandover handover;
-    handover.target = m.targetRsu;
-    handover.keys = handoverKeys(ecdh(mSession.ecdhKey(), publicKeyFromDer(m.targetRsuPublicKey).get()), tau);
+    handover.target = targetRsu;
+    handover.keys = handoverKeys(ecdh(mSession.ecdhKey(), publicKeyFromDer(*targetKey).get()), tau);
     mPending = handover;
     printDetail("tau_{i+2} = Poly1305(K_dg, t_i = " + std::to_string(mSession.lastAuthSlot())
         + ", m); K_dh_i = ECDH(X_V, Y_G_{i+2}); KT_i = Poly1305(K_dh_i, K_dh_i xor tau_{i+2}, m)");
 
+    sendEncryptedPredict(targetRsu);
+
     if (mOnPrefetchReady) {
-        mOnPrefetchReady(m.targetRsu);
+        mOnPrefetchReady(targetRsu);
     }
 
-    if (mDeferHandover) {
-        printDetail("Forwarding_Request to " + m.targetRsu + " held until requestForwarding()");
+    printDetail("Forwarding_Request to " + targetRsu + " held until requestForwarding()");
+}
+
+void HandoverClient::resendPrediction()
+{
+    if (!mPending || !mSession.isActivated()) {
         return;
     }
-    requestForwarding();
+    sendEncryptedPredict(mPending->target);
 }
 
 void HandoverClient::requestForwarding()
 {
     if (!mPending) {
-        throw std::runtime_error(mSession.name() + ": requestForwarding() without a Handover_Command");
+        throw std::runtime_error(mSession.name() + ": requestForwarding() without pre-computed handover keys");
     }
     printStep("ForwardingRequest");
 
@@ -131,22 +129,36 @@ void HandoverClient::onForwardingGranted(const ProtocolMsg& received)
     }
     printCheck(true, "E_KT_i(M) decrypts with my KT_i (GCM tag valid)");
     const ForwardingGrantedPayload m = unpackForwardingGranted(*plain);
+    if (m.type != Forwarding_Granted) {
+        printCheck(false, "unexpected inner message type in Forwarding_Granted: ignored");
+        return;
+    }
     for (const std::string& line : describe(m)) {
         printDetail(line);
     }
 
-    if (CRYPTO_memcmp(m.otp.data(), mPending->otp.data(), m.otp.size()) != 0) {
-        printCheck(false, "OTP is not the one I sent: ignored");
+    if (CRYPTO_memcmp(mPending->keys.authPrime.data(), m.authPrime.data(), m.authPrime.size()) != 0) {
+        printCheck(false, "auth'_{i+2} != SHA256(KT_i || auth_{i+2}): ignored");
         return;
     }
-    printCheck(true, "OTP is the one I sent");
+    printCheck(true, "auth'_{i+2} = SHA256(KT_i || auth_{i+2})");
 
-    const Sha256 authPrime = sha256(Bytes(mPending->keys.auth.begin(), mPending->keys.auth.end()));
-    if (CRYPTO_memcmp(authPrime.data(), m.authPrime.data(), authPrime.size()) != 0) {
-        printCheck(false, "auth'_{i+2} != SHA256(auth_{i+2}): ignored");
+    const uint64_t tNow = VehicleSession::otpSlot(mSession.localClock());
+    const uint64_t tMin = tNow >= static_cast<uint64_t>(kOtpWindow) ? tNow - kOtpWindow : 0;
+    const uint64_t tMax = tNow + kOtpWindow;
+    bool otpValid = false;
+    for (uint64_t t = tMin; t <= tMax; ++t) {
+        const Block expected = forwardingGrantedOtp(mPending->keys, t, m.nextRsus, m.authPrime, m.kG);
+        if (CRYPTO_memcmp(expected.data(), m.otp.data(), expected.size()) == 0) {
+            otpValid = true;
+            break;
+        }
+    }
+    if (!otpValid) {
+        printCheck(false, "fresh OTP' in Forwarding_Granted invalid in t +- 1: ignored");
         return;
     }
-    printCheck(true, "auth'_{i+2} = SHA256(auth_{i+2})");
+    printCheck(true, "fresh OTP' in Forwarding_Granted verified with KT_i in t +- 1");
 
     if (m.kG.size() != kGroupKeySize) {
         printCheck(false, "K_G_{i+2} has " + std::to_string(m.kG.size()) + " bytes: ignored");
@@ -157,6 +169,7 @@ void HandoverClient::onForwardingGranted(const ProtocolMsg& received)
     const Bytes kDh = mPending->keys.kDh;
     const uint64_t nextAuthSlot = mPending->slot;
     mSession.activateWithRsu(received.getSender(), m.kG, kDh, nextAuthSlot);
+    mSession.setNeighborRsus(m.nextRsus);
     mPending.reset();
 
     trace::keep(mSession.name(), "K_g", mSession.groupKey(), mSession.name());

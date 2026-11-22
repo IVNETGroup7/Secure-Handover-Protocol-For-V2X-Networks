@@ -10,9 +10,12 @@
 #include "Traits.h"
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
+#include <vector>
 #include <openssl/evp.h>
 
 class ProtocolMsg;
@@ -49,6 +52,9 @@ class VehicleSession
         uint64_t lastAuthSlot() const { return mLastAuthSlot; }
 
         void activateWithRsu(std::string rsu, Bytes kG, Bytes kDg, uint64_t authSlot);
+        void setNeighborRsus(const std::vector<NeighborRsuKey>& neighbors);
+        std::optional<Bytes> neighborKey(const std::string& rsuName) const;
+        const std::map<std::string, Bytes>& neighborRsus() const { return mNeighborRsus; }
         void clearActiveKeys();
 
         // Optional callback invoked before a PTP_Delay_Request leaves over the air
@@ -58,6 +64,7 @@ class VehicleSession
         int received() const { return mReceived; }
 
         static uint64_t otpSlot(simtime_t clock);
+        static Block otpNonce(const Bytes& authD, uint64_t t);
 
     private:
         std::string mName;
@@ -72,6 +79,7 @@ class VehicleSession
         Bytes mGroupKey;
         Bytes mKdg;
         uint64_t mLastAuthSlot = 0;
+        std::map<std::string, Bytes> mNeighborRsus;
 
         int mSent = 0;
         int mReceived = 0;

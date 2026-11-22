@@ -6,7 +6,7 @@
 VehicleAgent::VehicleAgent(const Config& config) :
     mSession(config.name, config.seed, config.clockOffset),
     mBootstrap(mSession, BootstrapClient::Config{ config.targetRsu, config.autoStart }),
-    mHandover(mSession, config.deferHandover),
+    mHandover(mSession),
     mData(mSession)
 {
 }

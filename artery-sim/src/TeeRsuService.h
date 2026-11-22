@@ -5,14 +5,12 @@
 // rsu-optee-gateway/ (its PacketManager and TeeSession) as an Artery ITS-G5 service. Each RSU opens its own
 // TA session in this process (TeeSession: its own isolated TA session state, K_g and Secure Storage object),
 // so RSUs share nothing but the backhaul.
-//   radio (BTP port 2025, SHB, TC0)    bootstrap and Secrecy Forwarding messages -> PacketManager -> OP-TEE TA;
+//   radio (BTP port 2025, SHB, TC0..2) bootstrap and Secrecy Forwarding messages -> PacketManager -> OP-TEE TA;
 //                                      Secure_Data -> Secure Marshaling in the TA -> the cloud (BackhaulBroker)
-//   backhaul (BackhaulBroker)          the ESA (Activation_Token) and the other RSUs (Forwarding_Notice,
-//                                      Handover_Command)
+//   backhaul (BackhaulBroker)          the ESA (Activation_Token) and peer RSUs (Forwarding_Notice)
 // Only the Activation_Requests that name this RSU (their CY_g) are relayed to the ESA: every RSU in range hears
 // them, and a second relay would start a second bootstrap.
-// With "nextRsu" set, a vehicle activated here (Active_02 sent) is announced to that RSU right away (Secrecy
-// Forwarding, common/Handover.h): it hands over to it with no new bootstrap when it gets there.
+// On CTRA Handover_Predict, this TA seals K_rsu-authenticated Forwarding_Notice exclusively for the predicted target.
 
 #include "ProtocolMsg.h"
 #include "packet_manager.h"
@@ -21,6 +19,7 @@
 #include "Link.h"
 #include "artery/application/ItsG5Service.h"
 #include <chrono>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -30,6 +29,7 @@ class TeeRsuService : public artery::ItsG5Service
 {
     public:
         ~TeeRsuService() override;
+        void syncHilPeers();
 
     protected:
         void initialize() override;
@@ -51,6 +51,7 @@ class TeeRsuService : public artery::ItsG5Service
         void sendHilSessionAck();
         void pollHil();
         void shutdownHil();
+        void flushLocalPendingPeers();
 
         bool mEnableHil = false;
         std::string mHilIface;
@@ -62,6 +63,9 @@ class TeeRsuService : public artery::ItsG5Service
         Bytes mGatewayCert;
         Bytes mEsaCert;
         bool mHilCloudReady = false;
+        bool mHilPeersSynced = false;
+        std::map<std::string, Bytes> mPendingPeers;
+        bool mLocalGatewayReady = false;
         omnetpp::simtime_t mLastCloudCertSent = -1;
         bool mHilClockSent = false;
         std::chrono::steady_clock::time_point mHilClockRefWall{};
@@ -73,8 +77,6 @@ class TeeRsuService : public artery::ItsG5Service
         std::unique_ptr<TeeSession> mTee;
         std::unique_ptr<PacketManager> mGateway;
         BackhaulBroker* mBroker = nullptr;
-        std::string mNextRsu;                               // Secrecy Forwarding target ("": none)
-        omnetpp::simtime_t mHandoverDelay;
 
         // statistics (results/*.sca, *.vec)
         long mMarshaled = 0;

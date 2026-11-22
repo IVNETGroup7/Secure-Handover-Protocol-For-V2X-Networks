@@ -9,7 +9,7 @@ simple VehicleTeeService like ItsG5Service
         @signal[handoverE2EDelayMs](type=double);
         @statistic[handoverE2EDelayMs](title="Forwarding_Request -> Forwarding_Granted accepted"; unit=ms; record=last,vector,stats);
         @signal[prefetchLeadTimeMs](type=double);
-        @statistic[prefetchLeadTimeMs](title="Handover_Command pre-fetched -> Forwarding_Request sent"; unit=ms; record=last,vector,stats);
+        @statistic[prefetchLeadTimeMs](title="CTRA pre-fetch -> Forwarding_Request sent"; unit=ms; record=last,vector,stats);
         @signal[ctraPredictions](type=long);
         @statistic[ctraPredictions](title="CTRA Handover_Predict sent"; record=last,vector);
         @signal[secureDataSent](type=long);
@@ -24,7 +24,6 @@ simple VehicleTeeService like ItsG5Service
         double predictionStep @unit(s) = default(0.1s);     // CTRA integration step
         double predictRadius @unit(m) = default(80m);       // max trajectory-to-RSU distance to trigger pre-fetch
         double handoverRadius @unit(m) = default(160m);     // distance to pre-fetched RSU to execute Forwarding_Request
-        double handoverX @unit(m) = default(-1m);       // fallback x threshold when enableCtra = false
         double clockOffset @unit(s) = default(0s);      // initial error of the vehicle clock (PTP corrects it)
         string backhaulModule = default("backhaulBroker");
 }

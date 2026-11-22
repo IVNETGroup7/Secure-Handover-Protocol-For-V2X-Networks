@@ -22,6 +22,7 @@ class BackhaulBroker : public omnetpp::cSimpleModule
 {
     public:
         using RsuCallback = std::function<void(const ProtocolMsg&)>;
+        using PeerCertCallback = std::function<void(const std::string& peerName, const Bytes& peerCertDer)>;
 
         struct RsuRegistration
         {
@@ -34,9 +35,10 @@ class BackhaulBroker : public omnetpp::cSimpleModule
         ~BackhaulBroker() override;
 
         // Step 2: CA issues X.509 certificate for RSU's TEE-generated CY_g, ESA verifies it against CA
-        // and derives K_esa, and RSU receives { caPublicKey, gatewayCert, esaCert }.
+        // and derives K_esa, and RSU receives { caPublicKey, gatewayCert, esaCert }. Also exchanges
+        // CA-signed peer certificates among registered RSUs so each TA derives symmetric K_rsu keys.
         RsuRegistration registerRsu(const std::string& rsuName, const Bytes& gatewayPublicKey,
-            RsuCallback onMessage);
+            RsuCallback onMessage, PeerCertCallback onPeerCert = nullptr);
 
         // Step 1 (IT Domain): Human Operator sends Activation_Request(CY_g, t_0, t_f, UUID_d, SHA256(fw_d))
         // directly to ESA over IT/HTTPS (NEVER over OT radio!).
@@ -71,6 +73,8 @@ class BackhaulBroker : public omnetpp::cSimpleModule
         std::unique_ptr<CloudIdentity> mCloud;
         std::map<std::string, RsuCallback> mRsus;           // RSU -> what reaches it
         std::map<std::string, Bytes> mGatewayKeys;          // RSU -> CY_g
+        std::map<std::string, Bytes> mGatewayCerts;         // RSU -> CA-signed DER X.509 certificate
+        std::map<std::string, PeerCertCallback> mPeerCertCallbacks;
 
         // statistics (results/*.sca)
         long mDelivered = 0;

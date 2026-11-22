@@ -24,6 +24,15 @@ void putField(Bytes& out, const Bytes& field)
     out.insert(out.end(), field.begin(), field.end());
 }
 
+void putString(Bytes& out, const std::string& text)
+{
+    if (text.size() > 0xffff) {
+        throw std::runtime_error("TA codec string too large");
+    }
+    putUint(out, text.size(), 2);
+    out.insert(out.end(), text.begin(), text.end());
+}
+
 uint64_t Reader::uint(int size)
 {
     need(static_cast<size_t>(size));
@@ -52,6 +61,12 @@ Bytes Reader::field()
     return out;
 }
 
+std::string Reader::str()
+{
+    const Bytes b = field();
+    return std::string(b.begin(), b.end());
+}
+
 void Reader::need(size_t size) const
 {
     if (mPos + size > mIn.size()) {
@@ -75,6 +90,11 @@ Bytes pack(const AuthGranted& m)
     putField(out, m.kG);
     putField(out, m.esaPublicKey);
     putField(out, m.authEg);
+    putUint(out, m.nextRsus.size(), 1);
+    for (const NeighborRsuKey& nb : m.nextRsus) {
+        putString(out, nb.name);
+        putField(out, nb.publicKeyDer);
+    }
     return out;
 }
 
@@ -95,6 +115,11 @@ Bytes authGrantedOtpData(const AuthGranted& m)
     putField(out, m.kG);
     putField(out, m.esaPublicKey);
     putField(out, m.authEg);
+    putUint(out, m.nextRsus.size(), 1);
+    for (const NeighborRsuKey& nb : m.nextRsus) {
+        putString(out, nb.name);
+        putField(out, nb.publicKeyDer);
+    }
     return out;
 }
 
@@ -148,11 +173,79 @@ Active unpackActive(const Bytes& in)
     return m;
 }
 
+Bytes handoverPredictOtpData(const std::string& targetRsu)
+{
+    Bytes out;
+    putUint(out, Handover_Predict, 1);
+    putString(out, targetRsu);
+    return out;
+}
+
+HandoverPredict unpackHandoverPredict(const Bytes& in)
+{
+    Reader reader(in);
+    HandoverPredict m;
+    m.type = static_cast<uint8_t>(reader.uint(1));
+    m.authD = reader.field();
+    m.targetRsu = reader.str();
+    m.otp = reader.block();
+    return m;
+}
+
+Bytes pack(const ForwardingNotice& m)
+{
+    Bytes out;
+    putUint(out, m.type, 1);
+    putField(out, m.vehiclePublicKey);
+    out.insert(out.end(), m.tau.begin(), m.tau.end());
+    putField(out, m.authD);
+    putString(out, m.vehicleLabel);
+    return out;
+}
+
+ForwardingNotice unpackForwardingNotice(const Bytes& in)
+{
+    Reader reader(in);
+    ForwardingNotice m;
+    m.type = static_cast<uint8_t>(reader.uint(1));
+    m.vehiclePublicKey = reader.field();
+    m.tau = reader.block();
+    m.authD = reader.field();
+    m.vehicleLabel = reader.str();
+    return m;
+}
+
+Bytes forwardingRequestOtpData(const Sha256& auth)
+{
+    Bytes out;
+    putUint(out, Forwarding_Request, 1);
+    out.insert(out.end(), auth.begin(), auth.end());
+    return out;
+}
+
+Bytes forwardingGrantedOtpData(const ForwardingGranted& m)
+{
+    Bytes out;
+    putUint(out, Forwarding_Granted, 1);
+    putUint(out, m.nextRsus.size(), 1);
+    for (const NeighborRsuKey& nb : m.nextRsus) {
+        putString(out, nb.name);
+        putField(out, nb.publicKeyDer);
+    }
+    out.insert(out.end(), m.authPrime.begin(), m.authPrime.end());
+    putField(out, m.kG);
+    return out;
+}
+
 Bytes pack(const ForwardingGranted& m)
 {
     Bytes out;
     putUint(out, m.type, 1);
-    putField(out, m.nextRsuPublicKey);
+    putUint(out, m.nextRsus.size(), 1);
+    for (const NeighborRsuKey& nb : m.nextRsus) {
+        putString(out, nb.name);
+        putField(out, nb.publicKeyDer);
+    }
     out.insert(out.end(), m.authPrime.begin(), m.authPrime.end());
     putField(out, m.kG);
     out.insert(out.end(), m.otp.begin(), m.otp.end());

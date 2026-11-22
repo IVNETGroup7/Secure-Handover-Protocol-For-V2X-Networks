@@ -139,20 +139,7 @@ void PacketManager::onRadio(const ProtocolMsg& msg)
         case Auth_Request:       onBootstrapStep("SaveRSU + AuthGranted", msg); break;
         case Active_01:          onBootstrapStep("Active02", msg); break;
         case Forwarding_Request: onForwardingRequest(msg); break;   // Secrecy Forwarding, target RSU
-        case Handover_Predict: {
-            // Vehicle CTRA predictor notified this source RSU of the single most likely target RSU:
-            // pre-fetch tokens exclusively with that target RSU (no broadcast to other candidate RSUs)
-            const HandoverPredictPayload m = unpackHandoverPredict(getPayload(msg));
-            trace::step(mName, "HandoverPredict (CTRA pre-fetch)", messageTypeName(msg.getType()),
-                msg.getSender(), msg.getVehicle());
-            for (const std::string& line : describe(m)) {
-                trace::detail(mName, line);
-            }
-            if (!m.targetRsu.empty() && m.targetRsu != mName) {
-                startHandover(msg.getVehicle(), m.targetRsu);
-            }
-            break;
-        }
+        case Handover_Predict:   onHandoverPredict(msg); break;     // Encrypted CTRA Handover_Predict -> OP-TEE TA
         case Secure_Data:
             // the OT packet in a bootstrap message (no reassembly): the Secure Marshaling as for the data frames
             onSmartData({ OtPacket::Kind::SmartData, msg.getSender(), getPayload(msg), Clock::now() });
@@ -168,13 +155,7 @@ void PacketManager::onHttps(const ProtocolMsg& msg)
     }
     switch (msg.getType()) {
         case Activation_Token:  activationToken(msg); break;    // from the ESA (encrypted under K_esa)
-        case Forwarding_Notice: forwardingNotice(msg); break;   // from the source RSU (I am the target)
-        case Handover_Command:
-            // from the target RSU (I am the source): to the vehicle, still in my range (maybe not yet in the target's)
-            trace::step(mName, "HandoverCommand (relay)", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
-            send(Handover_Command, msg.getVehicle(), msg.getAckNum(), msg.getSeqNum() + 1, "", getPayload(msg),
-                Via::Radio);
-            break;
+        case Forwarding_Notice: forwardingNotice(msg); break;   // from peer RSU (encrypted under K_rsu)
         default: break;
     }
 }
@@ -194,48 +175,40 @@ void PacketManager::activationToken(const ProtocolMsg& msg)
     }
 }
 
-bool PacketManager::startHandover(const std::string& session, const std::string& targetRsu)
+void PacketManager::onHandoverPredict(const ProtocolMsg& received)
 {
-    // source RSU G_{i+1}: { Y_V, tau_{i+2}, Auth_d } from the TA (K_dg stays there), over HTTPS to G_{i+2}
-    trace::step(mName, "SecrecyForwarding (OP-TEE TA): " + session + " -> " + targetRsu);
-    ForwardingNoticePayload notice;
-    const int status = triggerHandover(session, 0, notice);
+    // Vehicle CTRA predictor sent E_K_dg(Handover_Predict, Auth_d, targetRsu, OTP_dt) -> verify & seal E_K_rsu inside TA
+    trace::step(mName, "HandoverPredict (OP-TEE TA)", messageTypeName(received.getType()),
+        received.getSender(), received.getVehicle());
+    std::string targetRsu;
+    Bytes sealedNotice;
+    const int status = handleHandoverPredict(getPayload(received), now(), targetRsu, sealedNotice);
+    if (status == GW_IGNORED) {
+        ++mIgnored;
+        trace::detail(mName, "the TA refused Handover_Predict");
+        return;
+    }
     if (status != GW_OK) {
-        if (status == GW_IGNORED) {
-            ++mIgnored;
-        }
-        trace::check(mName, false, std::string("TA_GATEWAY_CMD_TRIGGER_HANDOVER: ") + statusName(status));
-        return false;
+        trace::check(mName, false, std::string("TA_GATEWAY_CMD_HANDLE_HANDOVER_PREDICT: ") + statusName(status));
+        return;
     }
-    for (const std::string& line : describe(notice)) {
-        trace::detail(mName, line);
-    }
-    send(Forwarding_Notice, targetRsu, 0, 0, session, pack(notice), Via::Https);
-    return true;
+    send(Forwarding_Notice, targetRsu, 0, 0, received.getVehicle(), sealedNotice, Via::Https);
 }
 
 void PacketManager::forwardingNotice(const ProtocolMsg& msg)
 {
-    // target RSU G_{i+2}: K_dh_i, KT_i and auth_{i+2} pre-computed in the TA; Y_G_{i+2} goes back to the
-    // source in a Handover_Command for the vehicle
+    // target RSU G_{i+2}: opaque E_K_rsu(Forwarding_Notice) decrypted inside OP-TEE TA; pre-computes
+    // K_dh_i = ECDH(X_gw, Y_V), KT_i, auth_{i+2}, and auth'_{i+2} inside TA (no Handover_Command sent)
     trace::step(mName, "ForwardingNotice (OP-TEE TA)", messageTypeName(msg.getType()), msg.getSender(), msg.getVehicle());
-    const ForwardingNoticePayload notice = unpackForwardingNotice(getPayload(msg));
-    for (const std::string& line : describe(notice)) {
-        trace::detail(mName, line);
-    }
-    const Reply reply = receiveForwardingNotice(msg.getVehicle(), notice);
-    if (reply.status != GW_OK) {
-        trace::check(mName, false, std::string("TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE: ") + statusName(reply.status));
+    const int status = receiveForwardingNotice(msg.getSender(), getPayload(msg), now());
+    if (status == GW_IGNORED) {
+        ++mIgnored;
+        trace::detail(mName, "the TA refused Forwarding_Notice");
         return;
     }
-
-    // M = { Handover_Command, G_{i+2}, Y_G_{i+2} }
-    HandoverCommandPayload command;
-    command.type = Handover_Command;
-    command.targetRsu = mName;
-    command.targetRsuPublicKey = reply.payload;
-    send(Handover_Command, msg.getSender(), msg.getAckNum(), msg.getSeqNum() + 1, msg.getVehicle(), pack(command),
-        Via::Https);
+    if (status != GW_OK) {
+        trace::check(mName, false, std::string("TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE: ") + statusName(status));
+    }
 }
 
 // ECDH_Request, Auth_Request, Active_01: into the TA; its reply goes where its type says
@@ -317,6 +290,11 @@ int PacketManager::initGateway(const Bytes& caPubKey, const Bytes& gatewayCert, 
     return mTee.initGateway(caPubKey, gatewayCert, esaCert, groupKey);
 }
 
+int PacketManager::registerPeerRsu(const std::string& peerName, const Bytes& peerCertDer)
+{
+    return mTee.registerPeerRsu(peerName, peerCertDer);
+}
+
 int PacketManager::initCloudSession(const std::string& certificatePem, const std::string& host)
 {
     return mTee.initCloudSession(certificatePem, host, mName);
@@ -334,6 +312,12 @@ Reply PacketManager::handleBootstrap(int type, const std::string& session, const
     return reply;
 }
 
+int PacketManager::handleHandoverPredict(const Bytes& payload, uint64_t ptpTimeNs, std::string& outTargetRsu,
+    Bytes& outSealedNotice)
+{
+    return mTee.handleHandoverPredict(payload, ptpTimeNs, outTargetRsu, outSealedNotice);
+}
+
 Reply PacketManager::handleForwardingRequest(const std::string& session, const Bytes& payload, uint64_t ptpTimeNs)
 {
     Reply reply;
@@ -349,26 +333,16 @@ Reply PacketManager::marshal(const Bytes& otPacket, uint64_t ptpTimeNs)
     return reply;
 }
 
-int PacketManager::triggerHandover(const std::string& session, uint64_t authSlot, ForwardingNoticePayload& notice)
+int PacketManager::triggerHandover(const std::string& session, const std::string& targetRsu, uint64_t authSlot,
+    Bytes& outSealedNotice)
 {
-    Block tau{};
-    Bytes yv, authD;
-    const int ret = mTee.triggerHandover(session, authSlot, tau, yv, authD);
-    if (ret == GW_OK) {
-        notice = ForwardingNoticePayload{ Forwarding_Notice, std::move(yv), tau, std::move(authD) };
-    }
-    return ret;
+    return mTee.triggerHandover(session, targetRsu, authSlot, outSealedNotice);
 }
 
-Reply PacketManager::receiveForwardingNotice(const std::string& session, const ForwardingNoticePayload& notice)
+int PacketManager::receiveForwardingNotice(const std::string& senderRsu, const Bytes& sealedNotice,
+    uint64_t ptpTimeNs)
 {
-    Reply reply;
-    reply.status = mTee.receiveForwardingNotice(session, notice.vehiclePublicKey, notice.tau, notice.authD,
-        reply.payload);
-    if (reply.status == GW_OK) {
-        reply.type = Handover_Command;
-    }
-    return reply;
+    return mTee.receiveForwardingNotice(senderRsu, sealedNotice, ptpTimeNs);
 }
 
 const char* statusName(int status)

@@ -34,6 +34,7 @@ For a concise overview and quick-start commands, see [README.md](README.md).
    - [7.2 Road Topology, SUMO Mobility & Custom Modules](#72-road-topology-sumo-mobility--custom-modules)
    - [7.3 Simulation Configurations (`omnetpp.ini`)](#73-simulation-configurations-omnetppini)
    - [7.4 Observed `D250m_80211p` Trace & Scalar Results](#74-observed-d250m_80211p-trace--scalar-results)
+   - [7.5 Observed Physical RPi3 `HIL_RPi3_QuadRsu` Results](#75-observed-physical-rpi3-hil_rpi3_quadrsu-results)
 
 ---
 
@@ -104,9 +105,9 @@ All elliptic-curve keys use **NIST P-256** (`prime256v1`, `kEcdhCurve = "P-256"`
 3. **PTP Time Synchronization (Phase B Prerequisite)**: Vehicle initiates `PTP` to the RSU; RSU replies `PTP_Sync(t_1)`, Vehicle sends `PTP_Delay_Request` ($t_3$), RSU responds `PTP_Delay_Response(t_4)`. Vehicle runs `correctClock` before proceeding.
 4. **ECDH Key Agreement (Steps 4 & 5)**: Vehicle sends ephemeral public key $Y_V$ in `ECDH_Request`. RSU TA generates ephemeral $(X_g, Y_g)$, derives $K_{dg} = \text{ECDH}(X_g, Y_V)$ (32 B, kept strictly inside TA; $X_g$ immediately destroyed), and inserts $K_{dg}$ into its unauthenticated pending ECDH pool without touching active sessions.
 5. **Mutual Authentication & Group Key (Steps 6–9)**:
-   - Vehicle quantizes time into `kOtpTimeStep = 0.1 s` slots ($t_{\text{slot}} = \lfloor t / 0.1 \rfloor$) and sends `Auth_Request(OTP_req)` (strictly omitting `Auth_d`):
+   - Vehicle quantizes time into `kOtpTimeStep = 0.5 s` slots ($t_{\text{slot}} = \lfloor t / 0.5 \rfloor$) and sends `Auth_Request(OTP_req)` (strictly omitting `Auth_d`):
      $$OTP_{\text{req}} = \text{Poly1305}(K_{dg}, Auth_d \oplus t_{\text{slot}}, \text{"secure-bootstrap OTP\_dt"})$$
-   - RSU TA purges expired pending tokens ($t > t_f \implies Auth_d$ added to compromised blocklist), discards any `Auth_Request` matching an already-active device (preserving the active session), sweeps `(pending K_dg) × (in-window pending Auth_d with t_0 <= t <= t_f) × {t-1, t, t+1}`, activates the device keyed by `Auth_d`, seals Secure Storage (version 3), and computes a **fresh** `Auth_Granted` `OTP_dt` over `{Auth_Granted, K_g, CY_e, Auth_eg}`:
+   - RSU TA purges expired pending tokens ($t > t_f \implies Auth_d$ added to compromised blocklist), discards any `Auth_Request` matching an already-active device (preserving the active session), sweeps `(pending K_dg) × (in-window pending Auth_d with t_0 <= t <= t_f) × {t-1, t, t+1}`, activates the device keyed by `Auth_d`, seals Secure Storage (version 3), advances the clock across `saveState()` via `ta_crypto::monotonicTimeMs()` (`TEE_GetSystemTime` in OP-TEE), and computes a **fresh** `Auth_Granted` `OTP_dt` at the actual send-time slot over `{Auth_Granted, K_g, CY_e, Auth_eg}`:
      $$\text{Auth\_Granted} = E_{K_{dg}}(\{OTP_{\text{granted}}, K_g, CY_e, Auth_{eg}\})$$
    - Vehicle decrypts `Auth_Granted`, performs **Level 1** verification (validating fresh $OTP_{\text{granted}}$ under $K_{dg}, Auth_d$ across $t \pm 1$) and **Level 2** verification ($Auth_{eg} == \text{AES}(Id_d, CY_e)$), stores $K_g$ and slot $t_i$, computes $Auth_{de}$, generates a **fresh** `Active_01` `OTP_dt` over `{Active_01, Auth_d, Auth_de}` (distinct from Step 6's plaintext $OTP_{\text{req}}$), derives $K_{de}$, and sends `Active_01` $= E_{K_{dg}}(\{Auth_d, OTP_{\text{active}}, Auth_{de}\})$.
 6. **Activation Confirmation (Steps 10–12)**: RSU TA decrypts `Active_01`, verifies `Auth_d` and fresh `OTP_active` inside Secure World (rejecting duplicates and never deleting active sessions on spoofed input), and re-encrypts `Active_02` under $K_{esa}$ before handing it to Normal World. ESA decrypts `E_{K_{esa}}(Active_02)`, verifies `Auth_d`, authorized gateway, and `Auth_de`, derives the matching $K_{de}$, and sends `Active_03(UUID_d, SHA256(fw_d))` to `HumanOperator`.
@@ -140,7 +141,7 @@ Handover transfers vehicle authentication without exposing $K_{dg}$ to Normal Wo
 
 ### 2.3 IEEE 1588 PTP Synchronization & Slotted OTPs
 
-Because `[t_0, t_f]` is only `5.0 s` wide and `OTP_dt` slots step every `0.1 s`, unsynchronized vehicle clocks cause authentication mismatches:
+Because `[t_0, t_f]` is only `5.0 s` wide and `OTP_dt` slots step every `0.5 s`, unsynchronized vehicle clocks cause authentication mismatches:
 - Vehicle sends `PTP` to initiate sync; RSU replies `PTP_Sync` ($t_1$), vehicle stamps local $t_2$, transmits `PTP_Delay_Request` ($t_3$ stamped on air), and receives `PTP_Delay_Response` ($t_4$).
 - `correctClock` computes link delay and clock offset:
   $$\text{delay} = \frac{(t_2 - t_1) + (t_4 - t_3)}{2}, \qquad \text{offset} = \frac{(t_2 - t_1) - (t_4 - t_3)}{2}$$
@@ -154,13 +155,13 @@ When bridging physical hardware (RPi3) or the VM (`virbr0`) with Artery ([`net/R
 - **EtherTypes**:
   - `kRadioEtherType = 0x88B5`: OT radio plane (`Vehicle` ↔ `RSU`)
   - `kBackhaulEtherType = 0x88B6`: IT/Backhaul plane (`RSU` ↔ `ESA` / `RSU` ↔ `RSU` / `Cloud`)
-- **Frame Capacity & Fragmentation**:
-  - `RawSocket` opens Linux `AF_PACKET` / `SOCK_RAW` (dropping `PACKET_OUTGOING` loopback echoes) with `kMaxFrameData = 1498` bytes payload per Ethernet frame.
+- **Frame Capacity, Unicast Pinning & Fragmentation**:
+  - `RawSocket` opens Linux `AF_PACKET` / `SOCK_RAW` (enabling `PACKET_IGNORE_OUTGOING` where supported and dropping `PACKET_OUTGOING` loopback echoes) with `kMaxFrameData = 1498` bytes payload per Ethernet frame. Discovery retries broadcast `Session_Hello` every `kSessionRetry = 500 ms`; once `Session_Hello`/`Session_Ack` completes, both sides pin the learned peer unicast MAC (`setPeerMac`, while loopback `lo` stays broadcast), preventing switch/router broadcast rate-limiting across 4 concurrent RSUs.
   - Payloads larger than `1498` B (such as 65 KB `SmartData` or X.509 PEM certificates) split into `FrameKind::Data_Fragment` chunks reassembled with `kReassemblyTimeout = 2 s`.
 - **Control & HIL Multiplexing (`FrameKind`)**:
   - `Protocol`, `Data_Fragment`, `Session_Hello` (`{ rsuName, Y_gw }` generated inside OP-TEE TA), and `Session_Ack` (`{ rsuName, caPublicKey, gatewayCert, esaCert }`) for CA-authenticated startup provisioning.
   - `Handover_Trigger` (`packHandoverTrigger` / `parseHandoverTrigger`): Artery backhaul trigger instructing physical/VM `rsu[0]` to initiate `Forwarding_Notice` toward `rsu[1]`.
-  - `Clock_Anchor` (`packClockAnchor` / `parseClockAnchor`): Artery periodically pushes simulation time $t_{\text{sim}}$ so remote RPi3/VM `./app rsu` processes anchor their `steady_clock` (`PacketManager::setClock`) to OMNeT++ `simTime()`, keeping 0.1 s OTP slots and `[t_0, t_f]` windows aligned despite Unix-epoch vs. simulator-time offsets.
+  - `Clock_Anchor` (`packClockAnchor` / `parseClockAnchor`): Artery periodically pushes simulation time $t_{\text{sim}}$ so remote RPi3/VM `./app rsu` processes anchor their `steady_clock` (`PacketManager::setClock`) to OMNeT++ `simTime()`, keeping 0.5 s OTP slots and `[t_0, t_f]` windows aligned despite Unix-epoch vs. simulator-time offsets.
   - `Cloud_Ready` / `Cloud_Refused`: Signals when each RSU TA verifies and pins the CA-signed Cloud cert or if Cloud verification rejects an IT packet.
 
 ---
@@ -180,7 +181,7 @@ When bridging physical hardware (RPi3) or the VM (`virbr0`) with Artery ([`net/R
   - Return codes: `GW_OK = 0`, `GW_IGNORED = 1`, `GW_ERR_ARGS = -1` (plus negative error codes).
   - [`ta/ta_entry.cpp`](rsu-optee-gateway/ta/ta_entry.cpp): GlobalPlatform TA entrypoints and minimal C++17 runtime stubs without `libstdc++`.
   - [`ta/gateway_session.h`](rsu-optee-gateway/ta/gateway_session.h) / [`ta/gateway_session.cpp`](rsu-optee-gateway/ta/gateway_session.cpp): Full TA protocol state machine (TEE-resident `X_gw`, CA-verified `K_esa`, anonymous `Activation_Token` decryption, expired/compromised `Auth_d` blocklist, active-session reboot/DoS protection, 3-slot OTP sweep, fresh `Auth_Granted` & `Active_01` OTPs, `E_{K_{esa}}(Active_02)` re-encryption, `marshal`, Secrecy Forwarding).
-  - [`ta/crypto_tee.h`](rsu-optee-gateway/ta/crypto_tee.h) / [`ta/crypto_tee.cpp`](rsu-optee-gateway/ta/crypto_tee.cpp): Uses GP TEE Internal Core API in `OPTEE` mode (`TEE_ALG_ECDH_P256`, `TEE_ALG_ECDSA_P256`, `TEE_ALG_AES_GCM`), RAII `EcdhKeyPair` keeping `X_gw` as an opaque `TEE_ObjectHandle`, RFC 8439 Poly1305, and a freestanding DER/PEM X.509 certificate verifier against the pinned Root CA public key (`verifyCertDerSignedByCa` / `verifyCertPemSignedByCa`).
+  - [`ta/crypto_tee.h`](rsu-optee-gateway/ta/crypto_tee.h) / [`ta/crypto_tee.cpp`](rsu-optee-gateway/ta/crypto_tee.cpp): Uses GP TEE Internal Core API in `OPTEE` mode (`TEE_ALG_ECDH_P256`, `TEE_ALG_ECDSA_P256`, `TEE_ALG_AES_GCM`), RAII `EcdhKeyPair` keeping `X_gw` as an opaque `TEE_ObjectHandle`, RFC 8439 Poly1305, `monotonicTimeMs()` via `TEE_GetSystemTime` (so `Auth_Granted` `OTP_dt` reflects elapsed `saveState()` latency), and a freestanding DER/PEM X.509 certificate verifier against the pinned Root CA public key (`verifyCertDerSignedByCa` / `verifyCertPemSignedByCa`).
   - [`ta/codec.h`](rsu-optee-gateway/ta/codec.h) / [`ta/codec.cpp`](rsu-optee-gateway/ta/codec.cpp): Binary codec across Normal/Secure World buffers.
 
 ### 3.2 `HOST_SIM` Mode vs. `OPTEE` Hardware Mode
@@ -343,3 +344,21 @@ Running `D250m_80211p` with `opp_run_release` reached `t = 85 s` (`Event #43987`
 - **Backhaul, Operator & Cloud (`HighwayHandover.backhaulBroker`)**:
   - `backhaulDelivered`: `10` (4 initial bootstrap IT messages: `Activation_Request` Operator→ESA, `E_{K_{esa}}(Activation_Token)` ESA→RSU, `E_{K_{esa}}(Active_02)` RSU→ESA, `Active_03` ESA→Operator + 3 × `Forwarding_Notice` / `Handover_Command` pairs), `backhaulUndeliverable`: `0`, `operatorConfirmations`: `1`
   - `cloudStored`: `842` (`cloudRefused = 0`, `cloudJsonBytes:sum = 366561`)
+
+### 7.5 Observed Physical RPi3 `HIL_RPi3_QuadRsu` Results
+
+Running the full 85 s `HIL_RPi3_QuadRsu` scenario with all 4 RSU instances executing in Raspberry Pi 3 OP-TEE TrustZone (`192.168.15.18`, bridged over `enp3s0` under `cRealTimeScheduler`) initialized all 4 RSUs (`Session_Ack` + `Cloud_Ready`), reached `t = 85 s` (`Event #383448`, exit code `0`), and wrote [`HIL_RPi3_QuadRsu-0.sca`](artery-sim/scenario/results/HIL_RPi3_QuadRsu-0.sca) with:
+- **Vehicle (`HighwayHandover.node[0].middleware.VehicleTeeService`)**:
+  - `bootstrapped`: `1` (`bootstrapDelay:last = 1.763544305488 s`, `Active_03` delivered to Operator at `t = 2.639 s`)
+  - `ctraPredictionsSent`: `4`, `prefetchesCompleted`: `4`
+  - `handovers`: `3` (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`, `handoverE2EDelayMs:last = 210.991768195 ms`)
+  - `secureDataSent`: `825` (`205` to `rsu[0]`, `238` to `rsu[1]`, `252` to `rsu[2]`, `130` to `rsu[3]`)
+- **RSUs (`TeeRsuService`)**:
+  - `rsu[0]`: `marshaledPackets = 187`, `marshalRefused = 18`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 0`
+  - `rsu[1]`: `marshaledPackets = 209`, `marshalRefused = 29`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 2`
+  - `rsu[2]`: `marshaledPackets = 218`, `marshalRefused = 34`, `teeIgnored = 0`, `handoversTriggered = 2`, `handoversGranted = 2`
+  - `rsu[3]`: `marshaledPackets = 121`, `marshalRefused = 9`, `teeIgnored = 0`, `handoversTriggered = 0`, `handoversGranted = 2`
+  - *(Note: `marshalRefused` bursts occur briefly while 10 Hz packets queue behind ~1.95 s P-256 Cloud session key rotation `newCloudSession()` or handover ECDH inside RPi3 TrustZone and legitimately expire outside the `t ± 1` OTP freshness window.)*
+- **Backhaul, Operator & Cloud (`HighwayHandover.backhaulBroker`)**:
+  - `backhaulDelivered`: `12`, `backhaulUndeliverable`: `0`, `operatorConfirmations`: `1`
+  - `cloudStored`: `735` (`cloudRefused = 0`, `cloudJsonBytes:sum = 319998`)

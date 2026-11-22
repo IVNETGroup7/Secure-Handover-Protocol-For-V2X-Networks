@@ -120,11 +120,11 @@ In **4-RSU HIL**, all 4 Manhattan Grid RSUs execute in isolated OP-TEE TA sessio
 3. **Run Artery on the host PC** (ensure `sudo setcap cap_net_raw=ep artery-sim/deps/omnetpp-5.7.1/bin/opp_run_release` or run with privileges):
    ```bash
    make hil-quad HIL_IFACE=<host-nic>          # headless
-   make hil-quad HIL_IFACE=<host-nic> GUI=1    # with sumo-gui + Qtenv
+   make hil-quad HIL_IFACE=<host-nic> GUI=1    # with sumo-gui
    ```
    *(Or invoke `./artery-sim/run-hil-quad.sh --iface <host-nic> [--gui] [--rebuild]` directly.)*
 
-Artery drives SUMO mobility around the **400 m × 400 m Manhattan Grid** (`20 m/s` along `w_0 w_1 n_0 n_1 e_0 e_1 s_0 s_1`), ITS-G5 802.11p channel physics, vehicle `node[0]` with `CtraPredictor`, the ESA, and Cloud signature/decryption verification (`BackhaulBroker`), bridging `0x88b5` radio and `0x88b6` backhaul traffic over `<host-nic>` so `rsu[0]`..`rsu[3]` execute initial bootstrapping, SmartData marshaling, selective CTRA token pre-fetching, and TrustZone-to-TrustZone **Secrecy Forwarding** on the physical RPi3.
+Artery drives SUMO mobility around the **400 m × 400 m Manhattan Grid** (`20 m/s` along `w_0 w_1 n_0 n_1 e_0 e_1 s_0 s_1`), ITS-G5 802.11p channel physics, vehicle `node[0]` with `CtraPredictor`, the ESA, and Cloud signature/decryption verification (`BackhaulBroker`), bridging `0x88b5` radio and `0x88b6` backhaul traffic over `<host-nic>` so `rsu[0]`..`rsu[3]` execute initial bootstrapping, SmartData marshaling, selective CTRA token pre-fetching, and TrustZone-to-TrustZone **Secrecy Forwarding** on the physical RPi3. Once `Session_Hello` / `Session_Ack` discovery completes, `RawSocket` pins each side's learned peer unicast MAC (`setPeerMac`) so LAN switches/routers do not drop concurrent 4-RSU frames under broadcast storm control.
 
 ---
 

@@ -1,4 +1,5 @@
 #include "modes.h"
+#include "BootstrapOtp.h"
 #include "BootstrapPayload.h"
 #include "ExternalSecurityAgent.h"
 #include "HumanOperator.h"
@@ -9,6 +10,7 @@
 #include "SmartData.h"
 #include "Traits.h"
 #include "VehicleAgent.h"
+#include "VehicleSession.h"
 #include "gateway_ta.h"
 #include "packet_manager.h"
 #include <algorithm>
@@ -474,7 +476,8 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
 
     // Also test a real Auth_Request computed by already-active node[0] using its own K_dg & Auth_d (reboot protection)
     const int64_t nowNs = SimTime::now().ns();
-    const Block rebootOtp = dataOtp(activeNode0.result.kDg, activeNode0.result.authD, dataOtpSlot(nowNs),
+    const Block rebootOtp = bootstrapOtp(bootstrapOtpKey(activeNode0.result.kDg, BootstrapOtp::AuthRequest),
+        VehicleSession::otpNonce(activeNode0.result.authD, dataOtpSlot(nowNs)),
         Bytes(kOtpMessage, kOtpMessage + std::char_traits<char>::length(kOtpMessage)));
     const Reply rebootAuth = rsu0.handleBootstrap(Auth_Request, "node[0]",
         pack(AuthRequestPayload{ Auth_Request, rebootOtp }), static_cast<uint64_t>(nowNs));

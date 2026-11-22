@@ -34,7 +34,8 @@ constexpr double kActivationWindow = 5.0; // s
 // ECDH domain parameters (the "q" of K_dg = Y_d^(X_g) mod q): public, the same for every node
 constexpr const char* kEcdhCurve = "P-256";
 
-// OTP_dt = Poly1305(K_dg, Auth_d xor t, m): m and the time step of t are public, known by vehicle and RSU
+// OTP_dt = MAC(K_dg, Auth_d xor t, m): m and the time step of t are public, known by vehicle and RSU
+// (bootstrap OTPs: Ascon, BootstrapOtp.h; handover and SmartData OTPs: Poly1305-AES)
 constexpr const char* kOtpMessage = "secure-bootstrap OTP_dt";   // m
 constexpr double kOtpTimeStep = 0.5;                            // s: t = floor(PTP-synchronized clock / step)
 constexpr int kOtpWindow = 1;   // RSU: tries t = its own slot +- kOtpWindow slots (delay and residual clock error)

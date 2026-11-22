@@ -1,4 +1,5 @@
 #include "gateway_session.h"
+#include "BootstrapOtp.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -59,6 +60,25 @@ const Bytes& otpMessage()
     static const Bytes m(kOtpMessage, kOtpMessage + std::char_traits<char>::length(kOtpMessage));
     return m;
 }
+
+// K_otp keys of the bootstrap Ascon OTPs (derived from K_dg): wiped from TA memory when they go out of scope
+struct WipedOtpKeys
+{
+    std::vector<OtpKey> keys;
+
+    WipedOtpKeys() = default;
+    WipedOtpKeys(const Bytes& kDg, BootstrapOtp which) : keys{ bootstrapOtpKey(kDg, which) } {}
+    WipedOtpKeys(const WipedOtpKeys&) = delete;
+    WipedOtpKeys& operator=(const WipedOtpKeys&) = delete;
+    ~WipedOtpKeys()
+    {
+        for (OtpKey& key : keys) {
+            ta_crypto::cleanse(key.data(), key.size());
+        }
+    }
+
+    const OtpKey& front() const { return keys.front(); }
+};
 
 std::string hex(const Bytes& data)
 {
@@ -430,19 +450,27 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
 
     purgeExpiredActivations(now);
 
+    // Auth_Request K_otp of every pending K_dg, derived once for the reboot check and the anonymous sweep
+    WipedOtpKeys pendingKeys;
+    pendingKeys.keys.reserve(mPendingEcdh.size());
+    for (const auto& ecdh : mPendingEcdh) {
+        pendingKeys.keys.push_back(bootstrapOtpKey(ecdh.kDg, BootstrapOtp::AuthRequest));
+    }
+
     // Spec Step 7.1 & Section 5.3 (Reboot Protection):
     // Discard any Auth_Request from an already-active device WITHOUT disturbing its active session.
     for (const auto& [_, active] : mActiveSessions) {
+        const WipedOtpKeys activeKey(active.kDg, BootstrapOtp::AuthRequest);
         for (uint64_t t = tMin; t <= tMax; ++t) {
             const Block nonce = otpNonce(active.authD, t);
-            const Block activeOtp = ta_crypto::poly1305Aes(active.kDg, nonce, otpMessage());
+            const Block activeOtp = bootstrapOtp(activeKey.front(), nonce, otpMessage());
             if (ta_crypto::constTimeCmp(activeOtp.data(), request.otp.data(), activeOtp.size()) == 0) {
                 check(false, session + ": Auth_Request from already-active device (" + active.session
                     + "): discarded (active session preserved)");
                 return std::nullopt;
             }
-            for (const auto& ecdh : mPendingEcdh) {
-                const Block candidate = ta_crypto::poly1305Aes(ecdh.kDg, nonce, otpMessage());
+            for (const OtpKey& ecdhKey : pendingKeys.keys) {
+                const Block candidate = bootstrapOtp(ecdhKey, nonce, otpMessage());
                 if (ta_crypto::constTimeCmp(candidate.data(), request.otp.data(), candidate.size()) == 0) {
                     check(false, session + ": Auth_Request from already-active device (" + active.session
                         + " via new ECDH): discarded (active session preserved)");
@@ -463,14 +491,16 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
         }
     }
 
-    for (auto ecdh = mPendingEcdh.begin(); ecdh != mPendingEcdh.end() && pendingMatch == mPendingActivations.end(); ++ecdh) {
+    for (size_t i = 0; i < mPendingEcdh.size() && pendingMatch == mPendingActivations.end(); ++i) {
+        const auto ecdh = mPendingEcdh.begin() + static_cast<std::ptrdiff_t>(i);
+        const OtpKey& ecdhKey = pendingKeys.keys[i];
         for (auto pending = mPendingActivations.begin(); pending != mPendingActivations.end(); ++pending) {
             if (now < pending->t0 || now > pending->tf) {
                 continue; // Enforce both t_0 <= now <= t_f
             }
             bool matched = false;
             for (uint64_t t = tMin; t <= tMax; ++t) {
-                const Block otp = ta_crypto::poly1305Aes(ecdh->kDg, otpNonce(pending->authD, t), otpMessage());
+                const Block otp = bootstrapOtp(ecdhKey, otpNonce(pending->authD, t), otpMessage());
                 if (ta_crypto::constTimeCmp(otp.data(), request.otp.data(), otp.size()) == 0) {
                     ecdhMatch = ecdh;
                     pendingMatch = pending;
@@ -525,7 +555,7 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
     mPendingEcdh.erase(ecdhMatch);
     saveState();
 
-    // Spec Step 8: generate FRESH Poly1305 OTP_dt authenticating Auth_Granted under K_dg and Auth_d,
+    // Spec Step 8: generate FRESH Ascon OTP_dt authenticating Auth_Granted under K_dg and Auth_d,
     // advancing the timestamp by elapsed TEE / Secure Storage sealing time before sending.
     const uint64_t taEndMs = ta_crypto::monotonicTimeMs();
     const uint64_t elapsedNs = taEndMs >= taStartMs ? (taEndMs - taStartMs) * 1000000ULL : 0ULL;
@@ -537,7 +567,8 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
     m.esaPublicKey = mEsaPublicKey;
     m.authEg = active.authEg;
     m.nextRsus = neighborRsuList();
-    m.otp = ta_crypto::poly1305Aes(active.kDg, otpNonce(active.authD, tReply), wire::authGrantedOtpData(m));
+    const WipedOtpKeys grantedKey(active.kDg, BootstrapOtp::AuthGranted);
+    m.otp = bootstrapOtp(grantedKey.front(), otpNonce(active.authD, tReply), wire::authGrantedOtpData(m));
 
     Bytes sealed = ta_crypto::aesGcmEncrypt(active.kDg, wire::pack(m));
     print(session + ": Auth_Granted = E_K_dg(M with fresh OTP_dt + " + std::to_string(m.nextRsus.size())
@@ -578,9 +609,10 @@ std::optional<Bytes> GatewayTaSession::active02(const std::string& session, cons
     uint64_t tMin = 0, tMax = 0;
     slotWindow(tNow, tMin, tMax);
     const Bytes otpInput = wire::activeOtpData(m.authD, m.authDe);
+    const WipedOtpKeys activeKey(matched->kDg, BootstrapOtp::Active01);
     bool otpValid = false;
     for (uint64_t t = tMin; t <= tMax; ++t) {
-        const Block expected = ta_crypto::poly1305Aes(matched->kDg, otpNonce(matched->authD, t), otpInput);
+        const Block expected = bootstrapOtp(activeKey.front(), otpNonce(matched->authD, t), otpInput);
         if (ta_crypto::constTimeCmp(expected.data(), m.otp.data(), expected.size()) == 0) {
             otpValid = true;
             break;

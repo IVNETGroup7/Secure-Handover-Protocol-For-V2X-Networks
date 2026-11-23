@@ -1,15 +1,17 @@
+// Include INET 4 / OMNeT++ headers BEFORE project headers (common/SimTime.h defines global ::SimTime).
+#include <inet/common/packet/Packet.h>
+#include <inet/common/packet/chunk/BytesChunk.h>
+#include <inet/networklayer/common/L3AddressResolver.h>
+#include <inet/networklayer/common/L3AddressTag_m.h>
+#include <inet/transportlayer/common/L4PortTag_m.h>
+#include <omnetpp.h>
+
 #include "TeeRsuService.h"
 #include "BackhaulBroker.h"
-#include "MessageType.h"
 #include "Link.h"
+#include "MessageType.h"
 #include "SimTime.h"
-#include "V2xFrame.h"
 #include "gateway_ta.h"
-#include <omnetpp.h>
-#include <vanetza/btp/data_request.hpp>
-#include <vanetza/common/byte_order.hpp>
-#include <vanetza/dcc/profile.hpp>
-#include <vanetza/geonet/interface.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -86,33 +88,42 @@ void TeeRsuService::shutdownHil()
     mHilBackhaul.reset();
 }
 
-void TeeRsuService::initialize()
+void TeeRsuService::initialize(int stage)
 {
-    ItsG5Service::initialize();
-    mName = getParentModule()->getParentModule()->getFullName(); // <rsu>.middleware.TeeRsuService
-    mMarshalLatencySignal = registerSignal("marshalLatencyUs");
-    mHandoverGrantedSignal = registerSignal("handoverGranted");
+    cSimpleModule::initialize(stage);
 
-    mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
-        par("backhaulModule").stringValue()));
-    if (!mBroker) {
-        throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
-            par("backhaulModule").stringValue());
-    }
+    if (stage == inet::INITSTAGE_LOCAL) {
+        mName = getParentModule()->getFullName(); // <rsu>.app[0]
+        mLocalPort = par("localPort").intValue();
+        mVehiclePort = par("vehiclePort").intValue();
+        mMarshalLatencySignal = registerSignal("marshalLatencyUs");
+        mHandoverGrantedSignal = registerSignal("handoverGranted");
 
-    mEnableHil = par("enableHil").boolValue();
-    mHilIface = par("hilIface").stdstringValue();
-    if (mHilIface.empty()) {
-        if (const char* envIface = std::getenv("HIL_IFACE")) {
-            mHilIface = envIface;
+        mEnableHil = par("enableHil").boolValue();
+        mHilIface = par("hilIface").stdstringValue();
+        if (mHilIface.empty()) {
+            if (const char* envIface = std::getenv("HIL_IFACE")) {
+                mHilIface = envIface;
+            }
         }
-    }
+    } else if (stage == inet::INITSTAGE_APPLICATION_LAYER) {
+        mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
+            par("backhaulModule").stringValue()));
+        if (!mBroker) {
+            throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
+                par("backhaulModule").stringValue());
+        }
 
-    if (mEnableHil) {
-        mBroker->otpAlgo();
-        initHil();
-    } else {
-        initLocalTee();
+        mSocket.setOutputGate(gate("socketOut"));
+        mSocket.setCallback(this);
+        mSocket.bind(mLocalPort);
+
+        if (mEnableHil) {
+            mBroker->otpAlgo();
+            initHil();
+        } else {
+            initLocalTee();
+        }
     }
 }
 
@@ -121,7 +132,7 @@ void TeeRsuService::initHil()
     if (mHilIface.empty()) {
         throw omnetpp::cRuntimeError(
             "%s: HIL enabled but no host interface specified; set HIL_IFACE=<iface> or pass "
-            "--*.rsu[*].middleware.TeeRsuService.hilIface=\\\"<iface>\\\"",
+            "--*.rsu[*].app[0].hilIface=\\\"<iface>\\\"",
             mName.c_str());
     }
     EV_INFO << mName << ": Hardware-in-the-Loop (HIL) enabled on interface " << mHilIface
@@ -318,7 +329,7 @@ void TeeRsuService::onRadioRx(const ProtocolMsg& msg)
             return;
         }
         sendMsg(*mHilRadio, msg);
-        EV_INFO << mName << " [HIL]: forwarded radio " << messageTypeName(msg.getType())
+        EV_INFO << mName << " [HIL]: forwarded 5G NR radio " << messageTypeName(msg.getType())
                 << " from " << msg.getSender() << " to physical RSU on " << mHilIface << "\n";
         return;
     }
@@ -331,20 +342,35 @@ void TeeRsuService::onRadioRx(const ProtocolMsg& msg)
     mGateway->onRadio(msg); // filters by destination (logical unicast)
 }
 
-void TeeRsuService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket* packet,
-    const artery::NetworkInterface&)
+void TeeRsuService::socketDataArrived(inet::UdpSocket*, inet::Packet* packet)
 {
-    Enter_Method("indicate");
-    std::unique_ptr<omnetpp::cPacket> owned(packet);
-    const auto frame = dynamic_cast<const V2xFrame*>(packet);
-    if (!frame) {
-        return;
-    }
+    std::unique_ptr<inet::Packet> owned(packet);
     try {
-        onRadioRx(frame->msg());
-    } catch (const std::runtime_error& e) { // a malformed frame or payload: dropped, the simulation goes on
-        EV_ERROR << mName << ": frame dropped: " << e.what() << "\n";
+        const auto addrInd = packet->findTag<inet::L3AddressInd>();
+        const auto portInd = packet->findTag<inet::L4PortInd>();
+        const auto chunk = packet->peekDataAsBytes();
+        const Bytes wire = chunk->getBytes();
+        const ProtocolMsg msg = deserialize(wire);
+        if (addrInd) {
+            mPeerEndpoints[msg.getSender()] = {
+                addrInd->getSrcAddress(),
+                portInd ? portInd->getSrcPort() : mVehiclePort
+            };
+        }
+        onRadioRx(msg);
+    } catch (const std::runtime_error& e) {
+        EV_ERROR << mName << ": 5G NR UDP frame dropped: " << e.what() << "\n";
     }
+}
+
+void TeeRsuService::socketErrorArrived(inet::UdpSocket*, inet::Indication* indication)
+{
+    EV_WARN << mName << ": UDP socket error indication: " << indication->getName() << "\n";
+    delete indication;
+}
+
+void TeeRsuService::socketClosed(inet::UdpSocket*)
+{
 }
 
 // Secure_Data: OT packet -> TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT -> IT packet for the cloud
@@ -400,31 +426,24 @@ void TeeRsuService::sendRadio(const ProtocolMsg& msg)
         emit(mHandoverGrantedSignal, mHandoversGranted);
     }
 
-    // DCC profile: DP0 for pre-ECDH PTP, DP1 for bootstrap/handover security messages,
-    // DP2 for 10 Hz Secure_Data telemetry (security handover has higher priority than telemetry).
-    vanetza::dcc::Profile profile = vanetza::dcc::Profile::DP2;
-    switch (msg.getType()) {
-        case PTP_Sync:
-        case PTP_Delay_Response:
-            profile = vanetza::dcc::Profile::DP0;
-            break;
-        case ECDH_Response:
-        case Auth_Granted:
-        case Forwarding_Granted:
-            profile = vanetza::dcc::Profile::DP1;
-            break;
-        default:
-            profile = vanetza::dcc::Profile::DP2;
-            break;
+    const std::string& dest = msg.getDestination();
+    PeerEndpoint ep;
+    const auto it = mPeerEndpoints.find(dest);
+    if (it != mPeerEndpoints.end()) {
+        ep = it->second;
+    } else {
+        if (!inet::L3AddressResolver().tryResolve(dest.c_str(), ep.addr)) {
+            EV_WARN << mName << ": cannot resolve 5G NR destination '" << dest << "' for "
+                    << messageTypeName(msg.getType()) << "\n";
+            return;
+        }
+        ep.port = mVehiclePort;
     }
 
-    // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
-    vanetza::btp::DataRequestB req;
-    req.destination_port = vanetza::host_cast(getPortNumber());
-    req.gn.transport_type = vanetza::geonet::TransportType::SHB;
-    req.gn.traffic_class.tc_id(static_cast<unsigned>(profile));
-    req.gn.communication_profile = vanetza::geonet::CommunicationProfile::ITS_G5;
-    request(req, new V2xFrame(msg));
+    const Bytes wire = serialize(msg);
+    auto* pkt = new inet::Packet(messageTypeName(msg.getType()));
+    pkt->insertAtBack(inet::makeShared<inet::BytesChunk>(wire));
+    mSocket.sendTo(pkt, ep.addr, ep.port);
 }
 
 void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
@@ -432,6 +451,10 @@ void TeeRsuService::handleMessage(omnetpp::cMessage* msg)
     if (msg == mHilPollMsg) {
         pollHil();
         scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(1, omnetpp::SIMTIME_MS), mHilPollMsg);
+        return;
+    }
+    if (!msg->isSelfMessage()) {
+        mSocket.processMessage(msg);
         return;
     }
     delete msg;
@@ -463,7 +486,7 @@ void TeeRsuService::maybeSyncHilClock()
 {
     // Only rsu[0] drives periodic clock anchors on the shared 0x88b6 bus, and rate-limits
     // by wall clock (>= 50 ms) so TraCI startup catch-up does not burst-drop frames on the NIC.
-    if (getParentModule()->getParentModule()->getIndex() != 0) {
+    if (getParentModule()->getIndex() != 0) {
         return;
     }
     const auto wallNow = std::chrono::steady_clock::now();
@@ -506,12 +529,8 @@ void TeeRsuService::pollHil()
                     if (msg.getSender() != mName) {
                         return;
                     }
-                    if (msg.getType() == Forwarding_Granted) {
-                        ++mHandoversGranted;
-                        emit(mHandoverGrantedSignal, mHandoversGranted);
-                    }
                     EV_INFO << mName << " [HIL]: received radio frame " << messageTypeName(msg.getType())
-                            << " from physical RSU -> transmitting over simulation radio to "
+                            << " from physical RSU -> transmitting over 5G NR to "
                             << msg.getDestination() << "\n";
                     sendRadio(msg);
                 } catch (const std::exception& e) {
@@ -569,7 +588,7 @@ void TeeRsuService::finish()
     recordScalar("teeIgnored", mGateway ? mGateway->ignored() : 0);
     recordScalar("handoversTriggered", mHandoversTriggered);
     recordScalar("handoversGranted", mHandoversGranted);
-    ItsG5Service::finish();
+    cSimpleModule::finish();
     // the TA session goes with this RSU
     mGateway.reset();
     mTee.reset();

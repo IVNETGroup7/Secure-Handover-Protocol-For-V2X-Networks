@@ -1,13 +1,20 @@
+// Include INET 4 / Artery / OMNeT++ headers BEFORE project headers (common/SimTime.h defines global ::SimTime).
+#include "artery/application/Middleware.h"
+#include "artery/traci/VehicleController.h"
+#include <inet/common/ModuleAccess.h>
+#include <inet/common/packet/Packet.h>
+#include <inet/common/packet/chunk/BytesChunk.h>
+#include <inet/mobility/contract/IMobility.h>
+#include <inet/networklayer/common/L3AddressResolver.h>
+#include <inet/networklayer/contract/IInterfaceTable.h>
+#include <inet/networklayer/ipv4/IIpv4RoutingTable.h>
+#include <inet/networklayer/ipv4/Ipv4Route.h>
+#include <omnetpp.h>
+
 #include "VehicleTeeService.h"
 #include "BackhaulBroker.h"
+#include "MessageType.h"
 #include "Trace.h"
-#include "V2xFrame.h"
-#include "artery/application/VehicleDataProvider.h"
-#include <omnetpp.h>
-#include <vanetza/btp/data_request.hpp>
-#include <vanetza/common/byte_order.hpp>
-#include <vanetza/dcc/profile.hpp>
-#include <vanetza/geonet/interface.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -24,43 +31,80 @@ constexpr double kPi = 3.14159265358979323846;
 
 VehicleTeeService::~VehicleTeeService()
 {
+    unsubscribeNrServingCell();
     cancelAndDelete(mStartTimer);
     cancelAndDelete(mBootstrapLaunchTimer);
     cancelAndDelete(mBootstrapTimeoutTimer);
     cancelAndDelete(mDataTimer);
 }
 
-void VehicleTeeService::initialize()
+void VehicleTeeService::initialize(int stage)
 {
-    ItsG5Service::initialize();
-    mName = getParentModule()->getParentModule()->getFullName(); // <node>.middleware.VehicleTeeService
-    mEnableCtra = par("enableCtra").boolValue();
-    mPredictionHorizon = par("predictionHorizon").doubleValue();
-    mPredictionStep = par("predictionStep").doubleValue();
-    mPredictRadius = par("predictRadius").doubleValue();
-    mHandoverRadius = par("handoverRadius").doubleValue();
+    cSimpleModule::initialize(stage);
 
-    mBootstrapDelaySignal = registerSignal("bootstrapDelay");
-    mHandoverDelaySignal = registerSignal("handoverE2EDelayMs");
-    mPrefetchLeadTimeSignal = registerSignal("prefetchLeadTimeMs");
-    mCtraPredictionSignal = registerSignal("ctraPredictions");
-    mSecureDataSignal = registerSignal("secureDataSent");
+    if (stage == inet::INITSTAGE_LOCAL) {
+        mName = getParentModule()->getFullName(); // <node>.app[0]
+        mLocalPort = par("localPort").intValue();
+        mDestPort = par("destPort").intValue();
+        mEnableCtra = par("enableCtra").boolValue();
+        mPredictionHorizon = par("predictionHorizon").doubleValue();
+        mPredictionStep = par("predictionStep").doubleValue();
+        mPredictRadius = par("predictRadius").doubleValue();
+        mHandoverRadius = par("handoverRadius").doubleValue();
 
-    mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
-        par("backhaulModule").stringValue()));
-    if (!mBroker) {
-        throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
-            par("backhaulModule").stringValue());
+        mBootstrapDelaySignal = registerSignal("bootstrapDelay");
+        mHandoverDelaySignal = registerSignal("handoverE2EDelayMs");
+        mPrefetchLeadTimeSignal = registerSignal("prefetchLeadTimeMs");
+        mCtraPredictionSignal = registerSignal("ctraPredictions");
+        mSecureDataSignal = registerSignal("secureDataSent");
+        mNrServingCellSignal = registerSignal("nrServingCellId");
+        mNrRadioHandoversSignal = registerSignal("nrRadioHandovers");
+    } else if (stage == inet::INITSTAGE_APPLICATION_LAYER) {
+        mBroker = dynamic_cast<BackhaulBroker*>(getSimulation()->getSystemModule()->getSubmodule(
+            par("backhaulModule").stringValue()));
+        if (!mBroker) {
+            throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
+                par("backhaulModule").stringValue());
+        }
+        mBroker->otpAlgo();
+
+        ensureDefaultCellularRoute();
+
+        mSocket.setOutputGate(gate("socketOut"));
+        mSocket.setCallback(this);
+        mSocket.bind(mLocalPort);
+
+        discoverRsus();
+        subscribeNrServingCell();
+
+        mStartTimer = new omnetpp::cMessage("bootstrap");
+        mBootstrapLaunchTimer = new omnetpp::cMessage("bootstrapOtLaunch");
+        mBootstrapTimeoutTimer = new omnetpp::cMessage("bootstrapTimeout");
+        mDataTimer = new omnetpp::cMessage("Secure_Data");
+        scheduleAt(omnetpp::simTime() + par("startDelay"), mStartTimer);
     }
-    mBroker->otpAlgo();
+}
 
-    discoverRsus();
-
-    mStartTimer = new omnetpp::cMessage("bootstrap");
-    mBootstrapLaunchTimer = new omnetpp::cMessage("bootstrapOtLaunch");
-    mBootstrapTimeoutTimer = new omnetpp::cMessage("bootstrapTimeout");
-    mDataTimer = new omnetpp::cMessage("Secure_Data");
-    scheduleAt(omnetpp::simTime() + par("startDelay"), mStartTimer);
+void VehicleTeeService::ensureDefaultCellularRoute()
+{
+    omnetpp::cModule* host = getParentModule();
+    auto* rt = inet::L3AddressResolver().findIpv4RoutingTableOf(host);
+    auto* ift = inet::L3AddressResolver().findInterfaceTableOf(host);
+    if (!rt || !ift) {
+        return;
+    }
+    inet::NetworkInterface* cellIf = ift->findInterfaceByName("cellular");
+    if (!cellIf) {
+        return;
+    }
+    if (!rt->getDefaultRoute()) {
+        auto* defaultRoute = new inet::Ipv4Route();
+        defaultRoute->setDestination(inet::Ipv4Address::UNSPECIFIED_ADDRESS);
+        defaultRoute->setNetmask(inet::Ipv4Address::UNSPECIFIED_ADDRESS);
+        defaultRoute->setInterface(cellIf);
+        rt->addRoute(defaultRoute);
+    }
+    cellIf->setBroadcast(false);
 }
 
 void VehicleTeeService::discoverRsus()
@@ -72,9 +116,17 @@ void VehicleTeeService::discoverRsus()
         if (!rsu) {
             break;
         }
-        if (omnetpp::cModule* mob = rsu->getSubmodule("mobility")) {
-            const double rx = mob->par("initialX").doubleValue();
-            const double ry = mob->par("initialY").doubleValue();
+        if (omnetpp::cModule* mobMod = rsu->getSubmodule("mobility")) {
+            double rx = 0.0;
+            double ry = 0.0;
+            if (auto* mob = dynamic_cast<inet::IMobility*>(mobMod)) {
+                const inet::Coord pos = mob->getCurrentPosition();
+                rx = pos.x;
+                ry = pos.y;
+            } else {
+                rx = mobMod->par("initialX").doubleValue();
+                ry = mobMod->par("initialY").doubleValue();
+            }
             candidates.push_back({ rsu->getFullName(), rx, ry });
         }
     }
@@ -83,14 +135,81 @@ void VehicleTeeService::discoverRsus()
 
 void VehicleTeeService::updateKinematics()
 {
-    const auto& vdp = getFacilities().get_const<artery::VehicleDataProvider>();
-    const double x = vdp.position().x.value();
-    const double y = vdp.position().y.value();
-    const double v = vdp.speed().value();
-    // Convert Artery TrueNorth clockwise angle to OMNeT++ Cartesian heading psi (dx/dt = v*cos(psi), dy/dt = v*sin(psi))
-    const double psi = vdp.heading().value() - (kPi / 2.0);
-    const double a = vdp.acceleration().value();
-    mPredictor.update(x, y, v, psi, a, omnetpp::simTime().dbl());
+    omnetpp::cModule* host = getParentModule();
+    if (auto* mw = dynamic_cast<artery::Middleware*>(
+            findModuleByPath(par("middlewareModule").stringValue()))) {
+        if (const auto* vc = mw->getFacilities().get_const_ptr<traci::VehicleController>()) {
+            const auto pos = vc->getPosition();
+            const double x = pos.x.value();
+            const double y = pos.y.value();
+            const double v = vc->getSpeed().value();
+            // Convert Artery TrueNorth clockwise angle to OMNeT++ Cartesian heading psi (dx/dt = v*cos(psi), dy/dt = v*sin(psi))
+            const double psi = vc->getHeading().getTrueNorth().value() - (kPi / 2.0);
+            mPredictor.update(x, y, v, psi, std::numeric_limits<double>::quiet_NaN(), omnetpp::simTime().dbl());
+            return;
+        }
+    }
+
+    if (auto* mob = dynamic_cast<inet::IMobility*>(host->getSubmodule("mobility"))) {
+        const inet::Coord pos = mob->getCurrentPosition();
+        const inet::Coord vel = mob->getCurrentVelocity();
+        const double v = std::hypot(vel.x, vel.y);
+        const double psi = (v > 1e-4) ? std::atan2(vel.y, vel.x) : mPredictor.state().psi;
+        mPredictor.update(pos.x, pos.y, v, psi, std::numeric_limits<double>::quiet_NaN(), omnetpp::simTime().dbl());
+    }
+}
+
+void VehicleTeeService::subscribeNrServingCell()
+{
+    omnetpp::cModule* host = getParentModule();
+    if (host && host->hasPar("nrServingNodeId")) {
+        const int initCell = static_cast<int>(host->par("nrServingNodeId").intValue());
+        if (initCell > 0) {
+            onNrServingCellChanged(initCell);
+        }
+    }
+    if (omnetpp::cModule* nrPhy = findModuleByPath("^.cellularNic.nrPhy")) {
+        mNrPhyModule = nrPhy;
+        mServingCellSignal = registerSignal("servingCell");
+        mNrPhyModule->subscribe(mServingCellSignal, this);
+    }
+}
+
+void VehicleTeeService::unsubscribeNrServingCell()
+{
+    if (mNrPhyModule && mServingCellSignal != SIMSIGNAL_NULL) {
+        if (mNrPhyModule->isSubscribed(mServingCellSignal, this)) {
+            mNrPhyModule->unsubscribe(mServingCellSignal, this);
+        }
+    }
+    mNrPhyModule = nullptr;
+}
+
+void VehicleTeeService::receiveSignal(omnetpp::cComponent*, omnetpp::simsignal_t signalID, long value,
+    omnetpp::cObject*)
+{
+    if (signalID == mServingCellSignal) {
+        onNrServingCellChanged(static_cast<int>(value));
+    }
+}
+
+void VehicleTeeService::onNrServingCellChanged(int cellId)
+{
+    if (cellId <= 0 || cellId == mLastNrServingCellId) {
+        return;
+    }
+    if (mLastNrServingCellId != 0) {
+        ++mNrRadioHandovers;
+        emit(mNrRadioHandoversSignal, mNrRadioHandovers);
+        char detail[128];
+        std::snprintf(detail, sizeof(detail), "gNodeB macNodeId %d -> %d (5G NR X2 handover #%ld)",
+            mLastNrServingCellId, cellId, mNrRadioHandovers);
+        trace::step(mName, "5G NR Radio Handover");
+        trace::detail(mName, detail);
+        EV_INFO << mName << ": [5G NR] " << detail << "\n";
+    }
+    mLastNrServingCellId = cellId;
+    emit(mNrServingCellSignal, static_cast<long>(cellId));
 }
 
 void VehicleTeeService::startBootstrap()
@@ -124,7 +243,7 @@ void VehicleTeeService::startBootstrap()
         const double ms = (omnetpp::simTime() - mRequestSentAt).dbl() * 1000.0;
         emit(mHandoverDelaySignal, ms);
         EV_INFO << mName << ": handed over to " << result.rsu << " in " << ms << " ms\n";
-        getParentModule()->getParentModule()->bubble(("handover: " + result.rsu).c_str());
+        getParentModule()->bubble(("handover: " + result.rsu).c_str());
     });
 
     mAgent->bootstrap().setFailureCallback([this](const std::string& reason) {
@@ -138,7 +257,7 @@ void VehicleTeeService::startBootstrap()
     const VehicleTraits& traits = mAgent->session().traits();
     mBroker->requestActivation(firstRsu, now, now + kActivationWindow, traits.uuid, traits.firmwareHash);
 
-    // Allow Phase A backhaul delivery (20 ms sim / HIL Ethernet) before Phase B starts over 802.11p
+    // Allow Phase A backhaul delivery (20 ms sim / HIL Ethernet) before Phase B starts over 5G NR
     scheduleAt(omnetpp::simTime() + omnetpp::simtime_t(100, omnetpp::SIMTIME_MS), mBootstrapLaunchTimer);
 }
 
@@ -152,7 +271,7 @@ void VehicleTeeService::launchOtBootstrap()
         mReady = true;
         cancelEvent(mBootstrapTimeoutTimer);
         emit(mBootstrapDelaySignal, omnetpp::simTime() - mStartedAt);
-        getParentModule()->getParentModule()->bubble(("bootstrap OK: " + result.rsu).c_str());
+        getParentModule()->bubble(("bootstrap OK: " + result.rsu).c_str());
         if (!mDataTimer->isScheduled()) {
             scheduleAt(omnetpp::simTime() + par("dataInterval"), mDataTimer);
         }
@@ -210,10 +329,10 @@ void VehicleTeeService::checkPrediction()
     trace::step(mName, "CTRA Trajectory Predictor");
     trace::detail(mName, summary);
     trace::detail(mName, "notifying ONLY " + pred->targetRsu + " via " + current
-        + " (selective token pre-fetch, other candidate RSUs untouched)");
+        + " (selective token pre-fetch over 5G NR, other candidate RSUs untouched)");
 
     EV_INFO << mName << ": " << summary << "\n";
-    getParentModule()->getParentModule()->bubble(("CTRA predict: " + pred->targetRsu).c_str());
+    getParentModule()->bubble(("CTRA predict: " + pred->targetRsu).c_str());
     mAgent->handover().requestPrediction(pred->targetRsu);
 }
 
@@ -223,8 +342,7 @@ void VehicleTeeService::checkHandover()
         return;
     }
 
-    // Retry Forwarding_Request (and re-send encrypted Handover_Predict in case of loss)
-    // if an 802.11p frame was lost after allowing 2.5 s.
+    // Retry Forwarding_Request (and re-send encrypted Handover_Predict in case of 5G NR handover loss)
     if (mAgent->handover().inFlight() && (omnetpp::simTime() - mRequestSentAt).dbl() >= 2.5) {
         mRequestSentAt = omnetpp::simTime();
         mAgent->handover().resendPrediction();
@@ -253,21 +371,30 @@ void VehicleTeeService::checkHandover()
     }
 }
 
-void VehicleTeeService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket* packet,
-    const artery::NetworkInterface&)
+void VehicleTeeService::socketDataArrived(inet::UdpSocket*, inet::Packet* packet)
 {
-    Enter_Method("indicate");
-    std::unique_ptr<omnetpp::cPacket> owned(packet);
-    const auto frame = dynamic_cast<const V2xFrame*>(packet);
-    if (!frame || !mAgent) {
+    std::unique_ptr<inet::Packet> owned(packet);
+    if (!mAgent) {
         return;
     }
     try {
-        mAgent->indicate(frame->msg()); // filters by destination (logical unicast)
-        checkHandover();                // Forwarding_Granted or active session transition may advance state
-    } catch (const std::runtime_error& e) { // a malformed frame or payload: dropped, the simulation goes on
-        EV_ERROR << mName << ": frame dropped: " << e.what() << "\n";
+        const auto chunk = packet->peekDataAsBytes();
+        const Bytes wire = chunk->getBytes();
+        mAgent->indicate(deserialize(wire));
+        checkHandover();
+    } catch (const std::runtime_error& e) {
+        EV_ERROR << mName << ": 5G NR UDP frame dropped: " << e.what() << "\n";
     }
+}
+
+void VehicleTeeService::socketErrorArrived(inet::UdpSocket*, inet::Indication* indication)
+{
+    EV_WARN << mName << ": UDP socket error indication: " << indication->getName() << "\n";
+    delete indication;
+}
+
+void VehicleTeeService::socketClosed(inet::UdpSocket*)
+{
 }
 
 void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
@@ -289,54 +416,48 @@ void VehicleTeeService::handleMessage(omnetpp::cMessage* msg)
         checkHandover();
         sendSecureData();
         scheduleAt(omnetpp::simTime() + par("dataInterval"), mDataTimer);
+    } else if (!msg->isSelfMessage()) {
+        mSocket.processMessage(msg);
     } else {
         delete msg;
     }
 }
 
+inet::L3Address VehicleTeeService::resolveRsuAddress(const std::string& rsuName)
+{
+    const auto it = mRsuAddresses.find(rsuName);
+    if (it != mRsuAddresses.end()) {
+        return it->second;
+    }
+    const inet::L3Address addr = inet::L3AddressResolver().resolve(rsuName.c_str());
+    mRsuAddresses[rsuName] = addr;
+    return addr;
+}
+
 void VehicleTeeService::sendRadio(const ProtocolMsg& msg)
 {
-    // DCC profile: DP0 for pre-ECDH PTP/ECDH, DP1 for security bootstrap/handover messages
-    // (higher priority than 10 Hz Secure_Data telemetry on DP2).
-    vanetza::dcc::Profile profile = vanetza::dcc::Profile::DP2;
-    switch (msg.getType()) {
-        case PTP:
-        case PTP_Delay_Request:
-        case ECDH_Request:
-            profile = vanetza::dcc::Profile::DP0;
-            break;
-        case Auth_Request:
-        case Active_01:
-        case Handover_Predict:
-        case Forwarding_Request:
-            profile = vanetza::dcc::Profile::DP1;
-            break;
-        default:
-            profile = vanetza::dcc::Profile::DP2;
-            break;
-    }
-
-    // Vanetza has no GeoUnicast here: single-hop broadcast, receivers filter by destination (logical unicast)
-    vanetza::btp::DataRequestB req;
-    req.destination_port = vanetza::host_cast(getPortNumber());
-    req.gn.transport_type = vanetza::geonet::TransportType::SHB;
-    req.gn.traffic_class.tc_id(static_cast<unsigned>(profile));
-    req.gn.communication_profile = vanetza::geonet::CommunicationProfile::ITS_G5;
-    request(req, new V2xFrame(msg));
+    const inet::L3Address destAddr = resolveRsuAddress(msg.getDestination());
+    const Bytes wire = serialize(msg);
+    auto* pkt = new inet::Packet(messageTypeName(msg.getType()));
+    pkt->insertAtBack(inet::makeShared<inet::BytesChunk>(wire));
+    mSocket.sendTo(pkt, destAddr, mDestPort);
 }
 
 double VehicleTeeService::positionX() const
 {
-    return getFacilities().get_const<artery::VehicleDataProvider>().position().x.value();
+    return mPredictor.state().x;
 }
 
 void VehicleTeeService::finish()
 {
+    unsubscribeNrServingCell();
     recordScalar("bootstrapped", mReady ? 1 : 0);
     recordScalar("secureDataSent", mSecureDataSent);
     recordScalar("ctraPredictionsSent", mPredictionsSent);
     recordScalar("prefetchesCompleted", mPrefetchesCompleted);
     recordScalar("handovers", mHandovers);
+    recordScalar("nrRadioHandovers", mNrRadioHandovers);
+    recordScalar("nrServingCellId", mLastNrServingCellId);
     for (const auto& [rsu, sent] : mSentTo) {
         recordScalar(("secureDataSentTo " + rsu).c_str(), sent);
     }
@@ -344,5 +465,5 @@ void VehicleTeeService::finish()
         recordScalar("protocolMessagesSent", mAgent->session().sent());
         recordScalar("protocolMessagesReceived", mAgent->session().received());
     }
-    ItsG5Service::finish();
+    cSimpleModule::finish();
 }

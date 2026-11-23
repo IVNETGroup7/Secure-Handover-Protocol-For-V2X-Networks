@@ -1,0 +1,7 @@
+<config>
+    <!-- Dynamic RFC1918 wildcard assignment (no fixed host IPs):
+         5G NR cellular subnet (10.x.x.x/8) vs. core/edge backhaul (192.168.x.x/24) -->
+    <interface hosts="gNB[*]" names="cellular" address="10.x.x.x" netmask="255.0.0.0"/>
+    <interface hosts="node[*]" names="cellular" address="10.x.x.x" netmask="255.0.0.0"/>
+    <interface hosts="*" address="192.168.x.x" netmask="255.255.255.0"/>
+</config>

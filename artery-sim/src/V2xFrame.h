@@ -2,8 +2,7 @@
 #define TEE_V2X_V2XFRAME_H_
 
 // A ProtocolMsg (common/ProtocolMsg.h) as an OMNeT++ packet: its wire format (serialize), the same bytes as on the
-// raw sockets of the repository, so Vanetza carries it over ITS-G5 (BTP port 2025) and BackhaulBroker over the
-// backhaul. Its byte length is the real one: the radio's airtime follows the protocol's real message sizes.
+// raw sockets of the repository, carried by BackhaulBroker over the delayed IT backhaul channel.
 
 #include "MessageType.h"
 #include "ProtocolMsg.h"

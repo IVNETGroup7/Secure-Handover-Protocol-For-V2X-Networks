@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- RSUs: the OP-TEE gateway (TeeRsuService.ned) on BTP port 2025 -->
-<services>
-    <service type="TeeRsuService">
-        <listener port="2025" />
-    </service>
-</services>

@@ -1,23 +1,23 @@
 #ifndef TEE_V2X_TEERSUSERVICE_H_
 #define TEE_V2X_TEERSUSERVICE_H_
 
-// An RSU whose secrets live in an Arm TrustZone OP-TEE Trusted Application (TA): the OP-TEE gateway of
-// rsu-optee-gateway/ (its PacketManager and TeeSession) as an Artery ITS-G5 service. Each RSU opens its own
-// TA session in this process (TeeSession: its own isolated TA session state, K_g and Secure Storage object),
-// so RSUs share nothing but the backhaul.
-//   radio (BTP port 2025, SHB, TC0..2) bootstrap and Secrecy Forwarding messages -> PacketManager -> OP-TEE TA;
-//                                      Secure_Data -> Secure Marshaling in the TA -> the cloud (BackhaulBroker)
-//   backhaul (BackhaulBroker)          the ESA (Activation_Token) and peer RSUs (Forwarding_Notice)
-// Only the Activation_Requests that name this RSU (their CY_g) are relayed to the ESA: every RSU in range hears
-// them, and a second relay would start a second bootstrap.
-// On CTRA Handover_Predict, this TA seals K_rsu-authenticated Forwarding_Notice exclusively for the predicted target.
+// A 5G NR Edge RSU Gateway whose secrets live in an Arm TrustZone OP-TEE Trusted Application (TA):
+// the OP-TEE gateway of rsu-optee-gateway/ (PacketManager and TeeSession) running as an INET 4 UDP
+// application (IApp) behind the 5G NR UPF/Router (co-located with gNB[i]). Each RSU opens its own
+// isolated TA session (or bridges over AF_PACKET 0x88b5/0x88b6 to physical RPi3/VM OP-TEE TrustZone):
+//   5G NR UDP (port 2025): bootstrap & Secrecy Forwarding -> PacketManager -> OP-TEE TA;
+//                          Secure_Data -> Secure Marshaling in the TA -> Cloud (BackhaulBroker)
+//   backhaul (BackhaulBroker): ESA (Activation_Token) and peer RSUs (E_{K_rsu}(Forwarding_Notice))
 
+#include <inet/common/InitStages.h>
+#include <inet/networklayer/common/L3Address.h>
+#include <inet/transportlayer/contract/udp/UdpSocket.h>
+#include <omnetpp/csimplemodule.h>
 #include "ProtocolMsg.h"
 #include "packet_manager.h"
 #include "tee_session.h"
 #include "RawSocket.h"
 #include "Link.h"
-#include "artery/application/ItsG5Service.h"
 #include <chrono>
 #include <map>
 #include <memory>
@@ -25,19 +25,30 @@
 
 class BackhaulBroker;
 
-class TeeRsuService : public artery::ItsG5Service
+class TeeRsuService : public omnetpp::cSimpleModule, public inet::UdpSocket::ICallback
 {
     public:
         ~TeeRsuService() override;
         void syncHilPeers();
 
     protected:
-        void initialize() override;
+        int numInitStages() const override { return inet::NUM_INIT_STAGES; }
+        void initialize(int stage) override;
         void handleMessage(omnetpp::cMessage*) override;
         void finish() override;
-        void indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket*, const artery::NetworkInterface&) override;
+
+        // inet::UdpSocket::ICallback
+        void socketDataArrived(inet::UdpSocket* socket, inet::Packet* packet) override;
+        void socketErrorArrived(inet::UdpSocket* socket, inet::Indication* indication) override;
+        void socketClosed(inet::UdpSocket* socket) override;
 
     private:
+        struct PeerEndpoint
+        {
+            inet::L3Address addr;
+            int port = 2025;
+        };
+
         void initHil();
         void initLocalTee();
         void sendRadio(const ProtocolMsg&);
@@ -52,6 +63,11 @@ class TeeRsuService : public artery::ItsG5Service
         void pollHil();
         void shutdownHil();
         void flushLocalPendingPeers();
+
+        int mLocalPort = 2025;
+        int mVehiclePort = 2025;
+        inet::UdpSocket mSocket;
+        std::map<std::string, PeerEndpoint> mPeerEndpoints;
 
         bool mEnableHil = false;
         std::string mHilIface;

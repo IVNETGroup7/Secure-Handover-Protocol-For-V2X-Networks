@@ -1,7 +1,7 @@
 #!/bin/bash
 # Launch all 4 logically separated Manhattan Grid RSUs (rsu[0], rsu[1], rsu[2], rsu[3]) concurrently
 # on the same Raspberry Pi 3, each backed by its own Arm TrustZone OP-TEE TA session and Secure Storage
-# object (rsu0.sealed .. rsu3.sealed), for Artery Hardware-in-the-Loop (HIL_RPi3_QuadRsu).
+# object (rsu0.sealed .. rsu3.sealed), for CrowNet 5G NR Hardware-in-the-Loop (HIL_RPi3_QuadRsu).
 set -euo pipefail
 
 PI_IP="${PI_IP:-}"

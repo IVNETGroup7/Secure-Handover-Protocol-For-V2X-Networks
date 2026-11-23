@@ -1,5 +1,6 @@
-# setup_artery.sh: OMNeT++ and Artery builds
+# setup_artery.sh: CrowNet (OMNeT++ 6.3 + INET 4 + Veins + Artery + Simu5G) and libtee_v2x.so builds
 deps/
+build/
 # runtime of the scenario
 scenario/results/
 scenario/*.sealed

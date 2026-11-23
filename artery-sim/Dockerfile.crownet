@@ -1,0 +1,72 @@
+# Build and runtime environment for CrowNet (OMNeT++ 6.3.0 + INET 4 + Veins + Artery + Simu5G)
+# and the V2X Secure Handover / OP-TEE HIL simulation modules.
+FROM ghcr.io/omnetpp/omnetpp:u24.04-6.3.0
+
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        cmake \
+        git \
+        pkg-config \
+        libboost-all-dev \
+        libcap2-bin \
+        libcrypto++-dev \
+        libcurl4-gnutls-dev \
+        libgdal-dev \
+        libgeographiclib-dev \
+        libgeos-dev \
+        libgl-dev \
+        libglew-dev \
+        libopenscenegraph-dev \
+        libopenthreads-dev \
+        libsqlite3-dev \
+        libssl-dev \
+        libzip-dev \
+        zipcmp \
+        zipmerge \
+        ziptool \
+        zlib1g-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# osgEarth 3.7.2 (required by CrowNet's OsgCoordinateConverter)
+ARG OSGEARTH_TAG="osgearth-3.7.2"
+RUN git clone --depth 1 --branch "${OSGEARTH_TAG}" --recurse-submodules --shallow-submodules \
+        https://github.com/gwaldron/osgearth.git /tmp/osgearth && \
+    cmake -S /tmp/osgearth -B /tmp/osgearth/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DOSGEARTH_BUILD_TOOLS=OFF \
+        -DOSGEARTH_BUILD_EXAMPLES=OFF \
+        -DOSGEARTH_BUILD_TESTS=OFF \
+        -DOSGEARTH_BUILD_IMGUI_NODEKIT=OFF \
+        -DOSGEARTH_BUILD_PROCEDURAL_NODEKIT=OFF \
+        -DOSGEARTH_BUILD_TRITON_NODEKIT=OFF \
+        -DOSGEARTH_BUILD_SILVERLINING_NODEKIT=OFF \
+        -DOSGEARTH_BUILD_LEGACY_SPLAT_NODEKIT=OFF && \
+    cmake --build /tmp/osgearth/build -j"$(nproc)" && \
+    cmake --install /tmp/osgearth/build && \
+    ldconfig && \
+    rm -rf /tmp/osgearth
+
+# Make /root/omnetpp accessible to non-root host UIDs (--user uid:gid) and grant
+# cap_net_raw+ep to opp_run_release for Hardware-in-the-Loop (AF_PACKET 0x88b5/0x88b6).
+RUN chmod a+rx /root && \
+    chmod -R a+rX /root/omnetpp && \
+    setcap cap_net_raw+ep /root/omnetpp/bin/opp_run_release && \
+    setcap cap_net_raw+ep /root/omnetpp/bin/opp_run_dbg
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-packaging && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV OMNETPP_ROOT=/root/omnetpp
+ENV PATH=/root/omnetpp/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/root/omnetpp/lib:/usr/local/lib
+ENV __omnetpp_root_dir=/root/omnetpp
+
+ENTRYPOINT []
+CMD ["/bin/bash"]

@@ -29,12 +29,12 @@ For a concise overview and quick-start commands, see [README.md](README.md).
 6. [Suite 3: Complementary VM Workflow (`setup-vm.sh`, `make vm`, `make vm-hil`)](#6-suite-3-complementary-vm-workflow-setup-vmsh-make-vm-make-vm-hil)
    - [6.1 VM Provisioning (`setup-vm.sh`)](#61-vm-provisioning-setup-vmsh)
    - [6.2 Self-Test & Bridged 4-RSU HIL (`vm-make.sh`, `make vm-hil`)](#62-self-test--bridged-4-rsu-hil-vm-makesh-make-vm-hil)
-7. [Suite 4: Artery / OMNeT++ / SUMO V2X Simulations (`artery-sim/`)](#7-suite-4-artery--omnet--sumo-v2x-simulations-artery-sim)
+7. [Suite 4: CrowNet 5G NR (OMNeT++ 6.3 + Artery + Simu5G + SUMO) V2X Simulations (`artery-sim/`)](#7-suite-4-crownet-5g-nr-omnet-63--artery--simu5g--sumo-v2x-simulations-artery-sim)
    - [7.1 Build Setup (`setup_artery.sh`)](#71-build-setup-setup_arterysh)
-   - [7.2 Road Topology, SUMO Mobility & Custom Modules](#72-road-topology-sumo-mobility--custom-modules)
+   - [7.2 5G NR Topology, SUMO Mobility & Custom Modules](#72-5g-nr-topology-sumo-mobility--custom-modules)
    - [7.3 Simulation Configurations (`omnetpp.ini`) & Run Flags](#73-simulation-configurations-omnetppini--run-flags)
-   - [7.4 Observed `D250m_80211p` Trace & Scalar Results](#74-observed-d250m_80211p-trace--scalar-results)
-   - [7.5 Observed Physical RPi3 `HIL_RPi3_QuadRsu` Results](#75-observed-physical-rpi3-hil_rpi3_quadrsu-results)
+   - [7.4 Observed `NR_5G` Trace & Scalar Results](#74-observed-nr_5g-trace--scalar-results)
+   - [7.5 Observed Physical RPi3 5G NR `HIL_RPi3_QuadRsu` Results](#75-observed-physical-rpi3-5g-nr-hil_rpi3_quadrsu-results)
 
 ---
 
@@ -43,8 +43,8 @@ For a concise overview and quick-start commands, see [README.md](README.md).
 | Test / Configuration | Command | Primary Files | Frameworks & Tech | Key Requirements | TEE Role | What It Verifies |
 |---|---|---|---|---|---|---|
 | **OP-TEE Gateway Self-Test** | `make run [OTP=ascon\|poly1305]` (or `./rsu-optee-gateway/app [--otp ascon\|poly1305] [--sealed <id>] [--fresh]`) | [`rsu-optee-gateway/host/selftest.cpp`](rsu-optee-gateway/host/selftest.cpp), [`rsu-optee-gateway/ta/`](rsu-optee-gateway/ta) | C++17, OpenSSL 3 (`HOST_SIM`) or `libteec` + `.ta` (`OPTEE`) | C++17 + OpenSSL 3 on Linux (`HOST_SIM`); `/dev/tee0` + `tee-supplicant` + signed `.ta` (`OPTEE`). Takes ~0.5 s | Full TA isolation (`GatewayTaSession`, `ta_crypto`, CA verification, `K_esa`, `K_rsu`, Secure Storage) | Scenarios `1`–`7` + subtests `4a`–`4m` & `7a`–`7e`: Operator-initiated IT bootstrap (zero OT leak of `UUID_d`/`SHA256(fw_d)`), CA-authenticated `K_esa` & pairwise peer `K_rsu` sealing, fresh per-step `OTP_dt` (Theorem 2), tampered OTP, expired window `[t_0, t_f]` + compromised `Auth_d` exclusion, early arrival `< t_0` enforced in TA, rogue `CY_g`, OT→IT Secure Marshaling, Cloud session rotation, CTRA + encrypted `Handover_Predict` / `K_rsu`-sealed `Forwarding_Notice` handover + replay/fan-out/rate-limit/cross-RSU rejection, post-`t_f` DoS & reboot protection, CA PKI rejection, and HIL shared-link helpers. |
-| **Artery Pure 802.11p Simulation** | `make sim [OTP=ascon\|poly1305]` (or `OTP_ALGO=... opp_run_release ... -c D250m_80211p` / `_GUI`) | [`artery-sim/scenario/omnetpp.ini`](artery-sim/scenario/omnetpp.ini), [`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned), [`CtraPredictor.cc`](artery-sim/src/CtraPredictor.cc), [`artery-sim/src/`](artery-sim/src) | OMNeT++ 5.7.1, Artery, INET, Veins, Vanetza (BTP/GeoNetworking), SUMO, TA (`HOST_SIM`) | Built `tee_v2x` (`libartery_tee_v2x.so`) & SUMO binary (`artery-sim/setup_artery.sh`) | Each of the 4 simulated RSUs (`rsu[0]`..`rsu[3]`) owns an isolated host `TeeSession` | **400 m × 400 m 3×3 Manhattan Grid** (`85 s`, `20 m/s`), ITS-G5 ch 180 physics, vehicle bootstrapping (`rsu[0]`), 10 Hz SmartData, **CTRA** trajectory prediction + selective single-RSU pre-fetch (`Handover_Predict`), and 3 Secrecy Forwarding handovers (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`). |
-| **4-RSU Raspberry Pi 3 HIL** | `make rpi3 PI_IP=<ip>` + `./rsu-quad-ssh.sh --pi-ip <ip> [--otp ...]` + `make hil-quad HIL_IFACE=<nic> [OTP=...] [GUI=1]` | [`rsu-optee-gateway/build-rpi3.sh`](rsu-optee-gateway/build-rpi3.sh), [`rsu-quad-ssh.sh`](rsu-quad-ssh.sh), [`artery-sim/run-hil-quad.sh`](artery-sim/run-hil-quad.sh), [`rsu_node.cpp`](rsu-optee-gateway/host/rsu_node.cpp), [`TeeRsuService.cc`](artery-sim/src/TeeRsuService.cc) | AArch64 RPi3 OP-TEE OS + `tee-supplicant` + `/dev/tee0` (`TA_FLAG_MULTI_SESSION`), OMNeT++ `cRealTimeScheduler`, Artery, SUMO, `AF_PACKET` (`0x88b5`/`0x88b6`) | RPi3 wired via Ethernet to `<nic>`, `cap_net_raw=ep` on `opp_run_release` (plus RPi3 `.ta` + `./app`) | All 4 RSUs (`rsu[0]`..`rsu[3]`, `rsu0.sealed`..`rsu3.sealed`) run concurrently inside OP-TEE on RPi3 | Real-time simulated Manhattan Grid vehicle with CTRA predictor, ESA, and Cloud (`BackhaulBroker`) exchanging bootstrap, 10 Hz SmartData marshaling, selective pre-fetch, and TrustZone-to-TrustZone Secrecy Forwarding over physical Ethernet. |
+| **CrowNet 5G NR Simulation** | `make sim [OTP=ascon\|poly1305] [GUI=1]` (or `./artery-sim/run-sim.sh [--config NR_5G\|NR_5G_GUI] [--otp ...] [--gui] [--rebuild]`) | [`artery-sim/scenario/omnetpp.ini`](artery-sim/scenario/omnetpp.ini), [`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned), [`CtraPredictor.cc`](artery-sim/src/CtraPredictor.cc), [`artery-sim/src/`](artery-sim/src) | CrowNet (OMNeT++ 6.3.0, INET 4, Veins, Artery, Simu5G 5G NR), host SUMO 1.26.0, TA (`HOST_SIM`) | Docker image `v2x-crownet:6.3.0`, CrowNet `.so` libs & `libtee_v2x.so` (`artery-sim/setup_artery.sh`), host `sumo` | Each of the 4 simulated RSUs (`rsu[0]`..`rsu[3]`) owns an isolated host `TeeSession` | **400 m × 400 m 3×3 Manhattan Grid** (`85 s`, `20 m/s`), **5G NR** (`3.5 GHz` n78, $\mu=1$, `25 RBs`, 4 `gNodeB`s + X2 handover + `UPF` + `Router`), vehicle bootstrapping (`rsu[0]`), 10 Hz SmartData over 5G NR UDP/IP, purely kinematic **CTRA** trajectory prediction + selective single-RSU pre-fetch (`Handover_Predict`), 3 live 5G NR X2 radio handovers (`gNB[0] → gNB[1] → gNB[2] → gNB[3]`), and 3 Secrecy Forwarding handovers (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`). |
+| **4-RSU Raspberry Pi 3 5G NR HIL** | `make rpi3 PI_IP=<ip>` + `./rsu-quad-ssh.sh --pi-ip <ip> [--otp ...]` + `make hil-quad HIL_IFACE=<nic> [OTP=...] [GUI=1]` | [`rsu-optee-gateway/build-rpi3.sh`](rsu-optee-gateway/build-rpi3.sh), [`rsu-quad-ssh.sh`](rsu-quad-ssh.sh), [`artery-sim/run-hil-quad.sh`](artery-sim/run-hil-quad.sh), [`artery-sim/run-sim.sh`](artery-sim/run-sim.sh), [`rsu_node.cpp`](rsu-optee-gateway/host/rsu_node.cpp), [`TeeRsuService.cc`](artery-sim/src/TeeRsuService.cc) | AArch64 RPi3 OP-TEE OS + `tee-supplicant` + `/dev/tee0` (`TA_FLAG_MULTI_SESSION`), CrowNet (OMNeT++ 6.3 `cRealTimeScheduler`, Artery, Simu5G 5G NR), host SUMO 1.26.0, `AF_PACKET` (`0x88b5`/`0x88b6`) | RPi3 wired via Ethernet to `<nic>`, Docker (`--network=host --cap-add=NET_RAW`), `v2x-crownet:6.3.0` (`cap_net_raw+ep` on `opp_run_release`), RPi3 `.ta` + `./app` | All 4 RSUs (`rsu[0]`..`rsu[3]`, `rsu0.sealed`..`rsu3.sealed`) run concurrently inside OP-TEE on RPi3 | Real-time simulated 5G NR Manhattan Grid vehicle (`ApplicationLayerVehicle`) with purely kinematic CTRA predictor, 4 gNodeBs + UPF + Router, ESA, and Cloud (`BackhaulBroker`) exchanging bootstrap, 10 Hz SmartData marshaling, selective pre-fetch, and TrustZone-to-TrustZone Secrecy Forwarding over physical Ethernet. |
 | **VM Self-Test (`optee-arm64-vm`)** | `./setup-vm.sh [--recreate]` + `make vm [OTP=ascon\|poly1305]` | [`setup-vm.sh`](setup-vm.sh), [`rsu-optee-gateway/vm-make.sh`](rsu-optee-gateway/vm-make.sh) | libvirt/KVM Ubuntu 24.04 VM, `optee_os` `vexpress-qemu_armv8a` DevKit, `optee_client` | KVM/libvirt on host PC, `rsync`, `ssh`, internet during provisioning | Same `./app` build/self-test flow inside `optee-arm64-vm` | Reproducible VM sandbox with ARM64 cross-compilers, OP-TEE DevKit, and `libteec` in `/opt/optee`. |
 | **VM Bridged 4-RSU HIL** | `make vm-hil [OTP=ascon\|poly1305]` + `make hil-quad HIL_IFACE=virbr0 [OTP=...] [GUI=1]` | [`Makefile`](Makefile), [`rsu-optee-gateway/vm-make.sh`](rsu-optee-gateway/vm-make.sh), [`rsu-optee-gateway/Makefile`](rsu-optee-gateway/Makefile), [`rsu_node.cpp`](rsu-optee-gateway/host/rsu_node.cpp) | libvirt `virbr0` bridge, 4 `./app rsu` daemons inside VM, Artery `HIL_RPi3_QuadRsu` on host | Provisioned `optee-arm64-vm`, `cap_net_raw=ep` on `opp_run_release`, `virbr0` active | 4 concurrent `rsu[0]`..`rsu[3]` daemon processes inside VM | Mirrors the 4-RSU Manhattan Grid RPi3 HIL setup over the KVM bridge (`virbr0`) without physical RPi3 hardware. |
 
@@ -327,83 +327,89 @@ When each `./app rsu` instance exits cleanly (timeout or signal), [`Benchmark::p
 
 ---
 
-## 7. Suite 4: Artery / OMNeT++ / SUMO V2X Simulations (`artery-sim/`)
+## 7. Suite 4: CrowNet 5G NR (OMNeT++ 6.3 + Artery + Simu5G + SUMO) V2X Simulations (`artery-sim/`)
 
 ### 7.1 Build Setup (`setup_artery.sh`)
 
-[`artery-sim/setup_artery.sh`](artery-sim/setup_artery.sh) automates 5 setup steps inside `artery-sim/deps/`:
-1. Downloads and builds **OMNeT++ 5.7.1**.
-2. Clones and registers `scenarios/tee_v2x_handover` inside **Artery** (`riebl/artery` with INET, Veins/TraCI, and Vanetza).
-3. Verifies **SUMO** installation.
-4. Configures CMake and builds `tee_v2x` (`libartery_tee_v2x.so`).
-5. Summarizes available run commands (`D250m_80211p` and `HIL_RPi3_QuadRsu`).
+[`artery-sim/setup_artery.sh`](artery-sim/setup_artery.sh) automates the CrowNet 5G NR build inside `artery-sim/deps/crownet/`:
+1. Builds the [`v2x-crownet:6.3.0`](artery-sim/Dockerfile.crownet) Docker image (`ghcr.io/omnetpp/omnetpp:u24.04-6.3.0` + `osgEarth 3.7.2` + Boost + Crypto++ + GeographicLib + OpenSSL 3 + `python3-packaging` + `cap_net_raw+ep` on `opp_run_release`).
+2. Clones **`roVer-HM/crownet`** (`master`) and initializes its C++ submodules (`inet4`, `veins`, `artery` + `vanetza`/`pybind11`, `simu5g`).
+3. Compiles all 6 frameworks in Release mode (`MODE=release`): `inet4` → `veins` → `veins_inet` → `artery` → `simu5g` → `crownet` (`libCROWNET.so`).
+4. Builds [`artery-sim/build/libtee_v2x.so`](artery-sim/Makefile) linking `common/`, `protocol/`, `net/`, `rsu-optee-gateway/{host,ta}`, and `artery-sim/src/`.
+5. Flags: `--rebuild-image` (force Docker image rebuild), `--clean-objs` (delete intermediate `.o`/`.d` files after linking each framework to keep disk usage compact).
 
-### 7.2 Road Topology, SUMO Mobility & Custom Modules
+### 7.2 5G NR Topology, SUMO Mobility & Custom Modules
 
-- **SUMO Mobility** ([`highway.sumocfg`](artery-sim/scenario/highway.sumocfg), [`highway.net.xml`](artery-sim/scenario/highway.net.xml), [`highway.rou.xml`](artery-sim/scenario/highway.rou.xml)): **400 m × 400 m 3×3 Manhattan Grid**; vehicle `v0` (`node[0]`) enters on `w_0` moving at **`20 m/s`** along route `manhattan_loop` (`w_0 w_1 n_0 n_1 e_0 e_1 s_0 s_1`) and traverses all 4 perimeter edges within `sim-time-limit = 85 s`.
-- **Network** ([`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned), `numRoadSideUnits = 4`):
-  - `rsu[0]` (West edge) at `(10 m, 200 m, 10 m)` → OP-TEE TA session #1 (`rsu0.sealed`)
-  - `rsu[1]` (North edge) at `(200 m, 10 m, 10 m)` → OP-TEE TA session #2 (`rsu1.sealed`)
-  - `rsu[2]` (East edge) at `(390 m, 200 m, 10 m)` → OP-TEE TA session #3 (`rsu2.sealed`)
-  - `rsu[3]` (South edge) at `(200 m, 390 m, 10 m)` → OP-TEE TA session #4 (`rsu3.sealed`)
+- **SUMO Mobility** ([`highway.sumocfg`](artery-sim/scenario/highway.sumocfg), [`highway.net.xml`](artery-sim/scenario/highway.net.xml), [`highway.rou.xml`](artery-sim/scenario/highway.rou.xml)): **400 m × 400 m 3×3 Manhattan Grid**; host SUMO 1.26.0 runs natively and connects to CrowNet via `traci.ConnectLauncher` on a dynamically allocated localhost TraCI port. Vehicle `v0` (`node[0]`, `crownet.nodes.ApplicationLayerVehicle`) enters on `w_0` moving at **`20 m/s`** along route `manhattan_loop` (`w_0 w_1 n_0 n_1 e_0 e_1 s_0 s_1`) and traverses all 4 perimeter edges within `sim-time-limit = 85 s`.
+- **5G NR Core, RAN & Edge RSU Network** ([`HighwayHandover.ned`](artery-sim/scenario/HighwayHandover.ned), [`demo.xml`](artery-sim/scenario/demo.xml)):
+  - **5G NR Carrier (`CarrierAggregation` + `Binder` + `LteChannelControl`)**: `3.5 GHz` (n78), numerology $\mu=1$ (`30 kHz` SCS), `25 RBs`, `NrAmc`, `NrChannelModel`, `ueTxPower = 26 dBm`, `eNodeBTxPower = 30 dBm`, `dynamicCellAssociation = true`, `enableHandover = true`, `handoverLatency = 50 ms`, `broadcastMessageInterval = 0.2 s`.
+  - **4 5G NR gNodeBs (`gNB[0..3]`, full-mesh X2/Xn SCTP links) + 4 co-located OP-TEE Edge RSU Gateways (`rsu[0..3]: StandardHost`)** connected via `upf` (`simu5g.nodes.Upf`) and `router` (`Eth10G`):
+    - `gNB[0]` (`macNodeId=1`) & `rsu[0]` (West edge) at `(10 m, 200 m, 10 m)` → OP-TEE TA session #1 (`rsu0.sealed`)
+    - `gNB[1]` (`macNodeId=2`) & `rsu[1]` (North edge) at `(200 m, 10 m, 10 m)` → OP-TEE TA session #2 (`rsu1.sealed`)
+    - `gNB[2]` (`macNodeId=3`) & `rsu[2]` (East edge) at `(390 m, 200 m, 10 m)` → OP-TEE TA session #3 (`rsu2.sealed`)
+    - `gNB[3]` (`macNodeId=4`) & `rsu[3]` (South edge) at `(200 m, 390 m, 10 m)` → OP-TEE TA session #4 (`rsu3.sealed`)
   - `backhaulBroker` ([`BackhaulBroker`](artery-sim/src/BackhaulBroker.cc), `latency = 20 ms`) hosting the Root CA (`CertificateAuthority`), `HumanOperator`, ESA (`ExternalSecurityAgent`), and Cloud verification (`cloudStored`, `cloudRefused`, `operatorConfirmations`, `cloudJsonBytes`).
-- **Artery Services** ([`artery-sim/src/`](artery-sim/src)):
-  - [`CtraPredictor.h`](artery-sim/src/CtraPredictor.h) / [`CtraPredictor.cc`](artery-sim/src/CtraPredictor.cc): Constant Turn Rate and Acceleration (CTRA) trajectory predictor ($X = [x, y, v, \psi, a, \omega]^T$) evaluating future vehicle positions (`predictionHorizon = 8.0 s`, `predictionStep = 0.1 s`) against all candidate RSUs to select the single most likely next RSU (`predictRadius = 80 m`) and trigger `Forwarding_Request` once within `handoverRadius = 160 m`.
-  - [`V2xFrame.h`](artery-sim/src/V2xFrame.h): Wraps `ProtocolMsg` packets in Vanetza BTP (`port 2025`; `DP0` for pre-ECDH `PTP`/`PTP_Delay_Request`/`ECDH_Request`/`PTP_Sync`/`PTP_Delay_Response`, `DP1` for security bootstrap & handover control `Auth_Request`/`Active_01`/`ECDH_Response`/`Auth_Granted`/`Handover_Predict`/`Forwarding_Request`/`Forwarding_Granted`, `DP2` for 10 Hz `Secure_Data`).
-  - [`VehicleTeeService.cc`](artery-sim/src/VehicleTeeService.cc): Runs `VehicleAgent` (`BootstrapClient`, `HandoverClient`, `SecureDataClient`) with `CtraPredictor` (`firstRsu = "rsu[0]"`, `startDelay = 0.5 s` triggers Phase A `HumanOperator` IT pre-activation followed `+100 ms` later by Phase B OT bootstrap, `dataInterval = 100 ms`, `dataSize = 200 B`).
-  - [`TeeRsuService.cc`](artery-sim/src/TeeRsuService.cc):
-    - When `enableHil = false` (`D250m_80211p`), creates an isolated host `TeeSession` + `PacketManager` per RSU, generating `(X_gw, CY_g)` inside the TA and provisioning CA-signed certs via `BackhaulBroker`.
-    - When `enableHil = true` (`HIL_RPi3_QuadRsu`), `initHil()` does not instantiate local `TeeSession` or `PacketManager` objects; Artery acts solely as an `AF_PACKET` bridge (`0x88b5` / `0x88b6`) polled every `1 ms`.
+- **Custom 5G NR V2X Modules** ([`artery-sim/src/`](artery-sim/src)):
+  - [`CtraPredictor.h`](artery-sim/src/CtraPredictor.h) / [`CtraPredictor.cc`](artery-sim/src/CtraPredictor.cc): Purely kinematic Constant Turn Rate and Acceleration (CTRA) trajectory predictor ($X = [x, y, v, \psi, a, \omega]^T$, zero map-matching or road-geometry heuristics) evaluating future vehicle positions (`predictionHorizon = 8.0 s`, `predictionStep = 0.1 s`) against all candidate RSUs to select the single most likely next RSU (`predictRadius = 80 m`) and trigger `Forwarding_Request` once within `handoverRadius = 160 m`.
+  - [`V2xFrame.h`](artery-sim/src/V2xFrame.h): Wraps serialized `ProtocolMsg` bytes for delayed backhaul scheduling in `BackhaulBroker`.
+  - [`VehicleTeeService.cc`](artery-sim/src/VehicleTeeService.cc): INET 4 `IApp` (`node[0].app[0]`) running `VehicleAgent` (`BootstrapClient`, `HandoverClient`, `SecureDataClient`) and `CtraPredictor` over **5G NR IPv4/UDP port 2025** (`NrNicUe` → `gNB[*]` → `UPF` → `Router` → `rsu[*]`), reading live SUMO kinematics via Artery's `VehicleMiddleware` (`traci::VehicleController`) and subscribing to Simu5G `nrPhy`'s `servingCell` signal to record `nrRadioHandovers` and `nrServingCellId`.
+  - [`TeeRsuService.cc`](artery-sim/src/TeeRsuService.cc): INET 4 `IApp` (`rsu[i].app[0]`) serving 5G NR UDP port 2025:
+    - When `enableHil = false` (`NR_5G`), creates an isolated host `TeeSession` + `PacketManager` per RSU, generating `(X_gw, CY_g)` inside the TA and provisioning CA-signed certs via `BackhaulBroker`.
+    - When `enableHil = true` (`HIL_RPi3_QuadRsu`), `initHil()` does not instantiate local `TeeSession` or `PacketManager` objects; CrowNet acts solely as an `AF_PACKET` bridge (`0x88b5` / `0x88b6`) polled every `1 ms`.
 
 ### 7.3 Simulation Configurations (`omnetpp.ini`) & Run Flags
 
-1. **`D250m_80211p` & `D250m_80211p_GUI`**:
-   - Pure IEEE 802.11p ITS-G5 (5.9 GHz ch 180, 10 MHz bandwidth, 6 Mbps bitrate, 200 mW TX power) over the 4-RSU Manhattan Grid with CTRA trajectory prediction. Run via `make sim [OTP=ascon|poly1305]`.
+1. **`NR_5G` & `NR_5G_GUI`**:
+   - Pure CrowNet 5G NR (`3.5 GHz` n78, $\mu=1$, `25 RBs`, 4 `gNodeB`s with full-mesh X2 handover + `UPF` + `Router` + 4 OP-TEE RSUs) over the 400 m × 400 m Manhattan Grid with purely kinematic CTRA trajectory prediction.
+   - Run via `make sim [OTP=ascon|poly1305] [GUI=1]` or `./artery-sim/run-sim.sh [--config NR_5G|NR_5G_GUI] [--otp ascon|poly1305] [--gui] [--rebuild] [-- <extra opp_run flags>]`.
 2. **`HIL_RPi3_QuadRsu` (+ `HIL_RPi3_QuadRsu_GUI`)**:
-   - Sets **`*.rsu[*].middleware.TeeRsuService.enableHil = true`** so **all 4 RSUs (`rsu[0]`..`rsu[3]`)** reside in 4 isolated OP-TEE TA sessions on the physical Raspberry Pi 3 (or `virbr0` VM), launched under **`--scheduler-class=omnetpp::cRealTimeScheduler`**.
+   - Extends `NR_5G` and sets **`*.rsu[*].app[0].enableHil = true`** so **all 4 RSUs (`rsu[0]`..`rsu[3]`)** reside in 4 isolated OP-TEE TA sessions on the physical Raspberry Pi 3 (or `virbr0` VM), launched under **`--scheduler-class=omnetpp::cRealTimeScheduler`** with `--network=host --cap-add=NET_RAW`.
    - Run via `make hil-quad HIL_IFACE=<nic> [OTP=ascon|poly1305] [GUI=1]` or `./artery-sim/run-hil-quad.sh --iface <nic> [--otp ascon|poly1305] [--gui] [--rebuild] [-- <extra opp_run flags>]`.
-   - Fails fast with an explicit error if `HIL_IFACE` / `hilIface` is omitted (`rsu[0]: HIL enabled but no host interface specified...`).
+   - Fails fast with an explicit error if `HIL_IFACE` / `--iface` is omitted.
 
 | Flag / Variable / Override | Applies To | Default | Description |
 |---|---|---|---|
-| `OTP=ascon\|poly1305` (Make) / `--otp ascon\|poly1305` (`run-hil-quad.sh`) / `OTP_ALGO` env | `make sim`, `make hil-quad`, `run-hil-quad.sh` | `ascon` | Selects the single OTP/MAC algorithm for vehicle, local TAs, and `Session_Ack` sent to physical RPi3 RSUs. |
-| `HIL_IFACE=<nic>` / `--iface <nic>` | `make hil-quad`, `run-hil-quad.sh` | *(required)* | Host Ethernet interface wired to RPi3 (e.g. `enp3s0`) or VM bridge (`virbr0`). |
-| `GUI=1` (Make) / `--gui` (`run-hil-quad.sh`) | `make hil-quad`, `run-hil-quad.sh` | headless | Switches config from `HIL_RPi3_QuadRsu` to `HIL_RPi3_QuadRsu_GUI` (`sumo-gui --start`). |
-| `--rebuild` | `run-hil-quad.sh` | off | Rebuilds `tee_v2x` (`libartery_tee_v2x.so`) before starting Artery (`make hil-quad` passes this automatically). |
-| `-- <extra opp_run flags>` | `run-hil-quad.sh` | — | Appends arbitrary OMNeT++ flags to `opp_run_release`, e.g. `--*.rsu[*].middleware.TeeRsuService.hilHandshakeTimeout=25s` or `--*.backhaulBroker.otpAlgo=\"poly1305\"`. |
-| `-h`, `--help` | `run-hil-quad.sh` | — | Prints usage and exits `0`. |
+| `--config <name>` | `run-sim.sh` | `NR_5G` (`NR_5G_GUI` with `--gui`) | OMNeT++ configuration name (`NR_5G`, `NR_5G_GUI`, `HIL_RPi3_QuadRsu`, `HIL_RPi3_QuadRsu_GUI`). |
+| `OTP=ascon\|poly1305` (Make) / `--otp ascon\|poly1305` / `OTP_ALGO` env | `make sim`, `make hil-quad`, `run-sim.sh`, `run-hil-quad.sh` | `ascon` | Selects the single OTP/MAC algorithm for vehicle, local TAs, and `Session_Ack` sent to physical RPi3 RSUs. |
+| `HIL_IFACE=<nic>` / `--iface <nic>` | `make hil-quad`, `run-hil-quad.sh`, `run-sim.sh` (HIL configs) | *(required for HIL)* | Host Ethernet interface wired to RPi3 (e.g. `enp3s0`) or VM bridge (`virbr0`). |
+| `GUI=1` (Make) / `--gui` | `make sim`, `make hil-quad`, `run-sim.sh`, `run-hil-quad.sh` | headless | Launches host `sumo-gui --start --quit-on-end` (`NR_5G_GUI` / `HIL_RPi3_QuadRsu_GUI`). |
+| `--rebuild` | `run-sim.sh`, `run-hil-quad.sh` | off (`make` passes it) | Rebuilds `artery-sim/build/libtee_v2x.so` inside `v2x-crownet:6.3.0` before running. |
+| `-- <extra opp_run flags>` | `run-sim.sh`, `run-hil-quad.sh` | — | Appends arbitrary OMNeT++ flags to `opp_run_release`, e.g. `--*.rsu[*].app[0].hilHandshakeTimeout=25s` or `--*.backhaulBroker.otpAlgo=\"poly1305\"`. |
+| `-h`, `--help` | `run-sim.sh`, `run-hil-quad.sh`, `setup_artery.sh` | — | Prints usage and exits `0`. |
 
-### 7.4 Observed `D250m_80211p` Trace & Scalar Results
+### 7.4 Observed `NR_5G` Trace & Scalar Results
 
-Running `D250m_80211p` with `opp_run_release` reached `t = 85 s` (exit code `0`) and wrote [`D250m_80211p-0.sca`](artery-sim/scenario/results/D250m_80211p-0.sca) with:
-- **Vehicle (`HighwayHandover.node[0].middleware.VehicleTeeService`)**:
-  - `bootstrapped`: `1` (`bootstrapDelay:last = 0.062451418192 s`)
-  - `ctraPredictionsSent`: `3`, `prefetchesCompleted`: `3` (`prefetchLeadTimeMs`: `count = 3`, `min/mean/max = 3700 ms`)
-  - `handovers`: `3` (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`, `handoverE2EDelayMs`: `mean = 1.1357343846667 ms`, `min = 1.127067718 ms`, `max = 1.153067718 ms`, `last = 1.127067718 ms`)
+Running `make sim OTP=ascon` and `make sim OTP=poly1305` reached `t = 85 s` (`Event #1696279`, elapsed `~3.0 s`, exit code `0`) and wrote [`NR_5G-0.sca`](artery-sim/scenario/results/NR_5G-0.sca) with identical delivery counts under both OTP modes:
+- **Vehicle (`HighwayHandover.node[0].app[0]`)**:
+  - `bootstrapped`: `1` (`bootstrapDelay:last = 0.0395 s`)
+  - **5G NR Radio Handovers**: `nrRadioHandovers = 3`, `nrServingCellId = 4` (`gNB[0] → gNB[1]` at `t = 21.85 s`, `gNB[1] → gNB[2]` at `t = 46.05 s`, `gNB[2] → gNB[3]` at `t = 70.25 s`)
+  - `ctraPredictionsSent`: `3`, `prefetchesCompleted`: `3` (`prefetchLeadTimeMs`: `count = 3`, `min/mean/max = 2900 ms`)
+  - `handovers`: `3` (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`, `handoverE2EDelayMs`: `count = 3`, `min/mean/max = 12 ms`)
   - `secureDataSent`: `842` (`220` to `rsu[0]`, `239` to `rsu[1]`, `239` to `rsu[2]`, `144` to `rsu[3]`)
-- **RSUs (`TeeRsuService`)**:
+- **RSUs (`rsu[*].app[0]`, `TeeRsuService`)**:
   - `rsu[0]`: `marshaledPackets = 220`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 0`
   - `rsu[1]`: `marshaledPackets = 239`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 1`
   - `rsu[2]`: `marshaledPackets = 239`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 1`
   - `rsu[3]`: `marshaledPackets = 144`, `marshalRefused = 0`, `teeIgnored = 0`, `handoversTriggered = 0`, `handoversGranted = 1`
 - **Backhaul, Operator & Cloud (`HighwayHandover.backhaulBroker`)**:
-  - `backhaulDelivered`: `7` (4 initial bootstrap IT messages: `Activation_Request` Operator→ESA, `E_{K_{esa}}(Activation_Token)` ESA→RSU, `E_{K_{esa}}(Active_02)` RSU→ESA, `Active_03` ESA→Operator + 3 × $K_{rsu}$-sealed `Forwarding_Notice`, without `Handover_Command` backhaul messages), `backhaulUndeliverable`: `0`, `operatorConfirmations`: `1`
+  - `backhaulDelivered`: `7` (4 initial bootstrap IT messages: `Activation_Request` Operator→ESA, `E_{K_{esa}}(Activation_Token)` ESA→RSU, `E_{K_{esa}}(Active_02)` RSU→ESA, `Active_03` ESA→Operator + 3 × $K_{rsu}$-sealed `Forwarding_Notice`), `backhaulUndeliverable`: `0`, `operatorConfirmations`: `1`
   - `cloudStored`: `842` (`cloudRefused = 0`, `cloudJsonBytes:sum = 366561`)
 
-### 7.5 Observed Physical RPi3 `HIL_RPi3_QuadRsu` Results
+### 7.5 Observed Physical RPi3 5G NR `HIL_RPi3_QuadRsu` Results
 
-Running the full 85 s `HIL_RPi3_QuadRsu` scenario with all 4 RSU instances executing in Raspberry Pi 3 OP-TEE TrustZone (`192.168.15.18`, bridged over `enp3s0` under `cRealTimeScheduler`) initialized all 4 RSUs (`Session_Ack` + `Cloud_Ready` + `peer RSU certificates verified in TrustZone (K_rsu ready)`), reached `t = 85 s` (`Event #383302`, elapsed `85.0018 s`, exit code `0`), and wrote [`HIL_RPi3_QuadRsu-0.sca`](artery-sim/scenario/results/HIL_RPi3_QuadRsu-0.sca) with:
-- **Vehicle (`HighwayHandover.node[0].middleware.VehicleTeeService`)**:
-  - `bootstrapped`: `1` (`bootstrapDelay:last = 1.779952305488 s`, `Active_03` delivered to Operator at `t = 2.8 s`)
-  - `ctraPredictionsSent`: `3`, `prefetchesCompleted`: `3` (`prefetchLeadTimeMs`: `count = 3`, `min/mean/max = 3700 ms`)
-  - `handovers`: `3` (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`, `handoverE2EDelayMs`: `mean = 229.58254763433 ms`, `min = 218.792217893 ms`, `max = 241.163212505 ms`, `last = 241.163212505 ms`)
-  - `secureDataSent`: `825` (`205` to `rsu[0]`, `239` to `rsu[1]`, `239` to `rsu[2]`, `142` to `rsu[3]`)
-- **RSUs (`TeeRsuService`)**:
-  - `rsu[0]`: `marshaledPackets = 192`, `marshalRefused = 13`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 0`
-  - `rsu[1]`: `marshaledPackets = 215`, `marshalRefused = 24`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 2`
-  - `rsu[2]`: `marshaledPackets = 219`, `marshalRefused = 20`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 2`
-  - `rsu[3]`: `marshaledPackets = 136`, `marshalRefused = 6`, `teeIgnored = 0`, `handoversTriggered = 0`, `handoversGranted = 2`
+Running the full 85 s 5G NR `HIL_RPi3_QuadRsu` scenario (`OTP=ascon`) with all 4 RSU instances executing in Raspberry Pi 3 OP-TEE TrustZone (`<pi-ip>`, bridged over `<host-nic>` under `cRealTimeScheduler`) initialized all 4 RSUs (`Session_Ack` + `Cloud_Ready` + `peer RSU certificates verified in TrustZone (K_rsu ready)`), reached `t = 85 s` (exit code `0`), and wrote [`HIL_RPi3_QuadRsu-0.sca`](artery-sim/scenario/results/HIL_RPi3_QuadRsu-0.sca) with:
+- **Vehicle (`HighwayHandover.node[0].app[0]`)**:
+  - `bootstrapped`: `1` (`bootstrapDelay:last = 1.8155 s`)
+  - **5G NR Radio Handovers**: `nrRadioHandovers = 3`, `nrServingCellId = 4` (`gNB[0] → gNB[1] → gNB[2] → gNB[3]`)
+  - `ctraPredictionsSent`: `3`, `prefetchesCompleted`: `3` (`prefetchLeadTimeMs`: `count = 3`, `min/mean/max = 2900 ms`)
+  - `handovers`: `3` (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`, `handoverE2EDelayMs`: `mean = 273.33 ms`, `min = 221 ms`, `max = 375 ms`)
+  - `secureDataSent`: `824` (`204` to `rsu[0]`, `239` to `rsu[1]`, `240` to `rsu[2]`, `141` to `rsu[3]`)
+- **RSUs (`rsu[*].app[0]`, `TeeRsuService`)**:
+  - `rsu[0]`: `marshaledPackets = 196`, `marshalRefused = 8`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 0`
+  - `rsu[1]`: `marshaledPackets = 215`, `marshalRefused = 24`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 1`
+  - `rsu[2]`: `marshaledPackets = 215`, `marshalRefused = 25`, `teeIgnored = 0`, `handoversTriggered = 1`, `handoversGranted = 1`
+  - `rsu[3]`: `marshaledPackets = 136`, `marshalRefused = 5`, `teeIgnored = 0`, `handoversTriggered = 0`, `handoversGranted = 1`
   - *(Note: `marshalRefused` bursts occur briefly while 10 Hz packets queue behind ~1.58 s P-256 Cloud session key rotation `newCloudSession()` inside RPi3 TrustZone and legitimately expire outside the `t ± 1` OTP freshness window.)*
 - **Backhaul, Operator & Cloud (`HighwayHandover.backhaulBroker`)**:
   - `backhaulDelivered`: `7`, `backhaulUndeliverable`: `0`, `operatorConfirmations`: `1`
-  - `cloudStored`: `762` (`cloudRefused = 0`, `cloudJsonBytes:sum = 331760`)
+  - `cloudStored`: `762` (`cloudRefused = 0`, `cloudJsonBytes:sum = 331753`)

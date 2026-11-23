@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Host-PC launcher for the quad-RSU (4-RSU) Raspberry Pi 3 Hardware-in-the-Loop test.
+# Host-PC launcher for the 5G NR quad-RSU (4-RSU) Raspberry Pi 3 / OP-TEE VM Hardware-in-the-Loop test.
 #
-# All 4 RSUs (rsu[0]..rsu[3]) run physically on the Raspberry Pi 3 (via rsu-quad-ssh.sh),
-# while Artery on this host runs Root CA, Human Operator, ESA, the vehicle, Cloud backhaul, SUMO, and radio PHY/MAC.
-# Requires opp_run_release to hold cap_net_raw+ep (configured by setup_artery.sh).
+# All 4 RSUs (rsu[0]..rsu[3]) run physically on the Raspberry Pi 3 / OP-TEE VM,
+# while CrowNet (OMNeT++ 6.3 + Artery + Simu5G) on this host runs Root CA, Human Operator,
+# ESA, the 5G NR vehicle UE, 4 gNodeBs + UPF + Router, Cloud backhaul, and host SUMO 1.26.0.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/deps/artery/build"
 
 IFACE="${HIL_IFACE:-}"
 OTP_ALGO="${OTP_ALGO:-${OTP:-ascon}}"
@@ -21,11 +20,11 @@ usage() {
 Usage: $(basename "$0") --iface <nic> [options] [-- <extra opp_run flags>]
 
 Options:
-  --iface <nic>          Host Ethernet interface connected to the Raspberry Pi 3
+  --iface <nic>          Host Ethernet interface connected to the Raspberry Pi 3 / VM
                          (or export HIL_IFACE=<nic>)
   --otp ascon|poly1305   Select OTP/MAC algorithm for the whole run (default: ascon)
   --gui                  Run HIL_RPi3_QuadRsu_GUI (launches sumo-gui) instead of headless
-  --rebuild              Rebuild the tee_v2x shared library before running
+  --rebuild              Rebuild libtee_v2x.so before running
   -h, --help             Show this help message
 EOF
 }
@@ -73,35 +72,17 @@ if [ -z "$IFACE" ]; then
     exit 2
 fi
 
-if [ "$OTP_ALGO" != "ascon" ] && [ "$OTP_ALGO" != "poly1305" ]; then
-    echo "error: invalid --otp '$OTP_ALGO' (expected 'ascon' or 'poly1305')" >&2
-    exit 2
-fi
-
-if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
-    echo "error: Artery build directory not initialized ($BUILD_DIR); run $SCRIPT_DIR/setup_artery.sh first" >&2
-    exit 1
-fi
-
-if [ "$REBUILD" -eq 1 ]; then
-    echo "[run-hil-quad] rebuilding tee_v2x..."
-    cmake --build "$BUILD_DIR" --target tee_v2x -j"$(nproc)"
-fi
-
 CONFIG="HIL_RPi3_QuadRsu"
+ARGS=(--config "$CONFIG" --iface "$IFACE" --otp "$OTP_ALGO")
 if [ "$USE_GUI" -eq 1 ]; then
     CONFIG="HIL_RPi3_QuadRsu_GUI"
+    ARGS=(--config "$CONFIG" --iface "$IFACE" --otp "$OTP_ALGO" --gui)
 fi
-
-RUN_FLAGS="-u Cmdenv -c $CONFIG --scheduler-class=omnetpp::cRealTimeScheduler"
+if [ "$REBUILD" -eq 1 ]; then
+    ARGS+=(--rebuild)
+fi
 if [ ${#EXTRA_FLAGS[@]} -gt 0 ]; then
-    RUN_FLAGS="$RUN_FLAGS ${EXTRA_FLAGS[*]}"
+    ARGS+=(-- "${EXTRA_FLAGS[@]}")
 fi
 
-export HIL_IFACE="$IFACE"
-export OTP_ALGO="$OTP_ALGO"
-echo "[run-hil-quad] HIL_IFACE=$HIL_IFACE OTP_ALGO=$OTP_ALGO config=$CONFIG"
-
-cmake -DRUN_FLAGS="$RUN_FLAGS" "$BUILD_DIR"
-exec cmake --build "$BUILD_DIR" --target run_tee_v2x_handover
-
+exec "$SCRIPT_DIR/run-sim.sh" "${ARGS[@]}"

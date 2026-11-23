@@ -1,7 +1,8 @@
-import artery.application.ItsG5Service;
+import inet.applications.contract.IApp;
 
-// Vehicle: bootstrap, Secure_Data at 10 Hz, CTRA trajectory prediction & Secrecy Forwarding (VehicleTeeService.h)
-simple VehicleTeeService like ItsG5Service
+// Vehicle (5G NR UE + Artery VehicleMiddleware): bootstrap, Secure_Data at 10 Hz,
+// purely kinematic CTRA trajectory prediction & Secrecy Forwarding over 5G NR UDP/IP (VehicleTeeService.h)
+simple VehicleTeeService like IApp
 {
     parameters:
         @signal[bootstrapDelay](type=simtime_t);
@@ -14,6 +15,13 @@ simple VehicleTeeService like ItsG5Service
         @statistic[ctraPredictions](title="CTRA Handover_Predict sent"; record=last,vector);
         @signal[secureDataSent](type=long);
         @statistic[secureDataSent](title="Secure_Data sent"; record=last,vector);
+        @signal[nrServingCellId](type=long);
+        @statistic[nrServingCellId](title="5G NR Serving gNodeB MacNodeId"; record=last,vector);
+        @signal[nrRadioHandovers](type=long);
+        @statistic[nrRadioHandovers](title="5G NR Radio gNodeB Handovers"; record=last,vector);
+
+        int localPort = default(2025);
+        int destPort = default(2025);
         string firstRsu = default("rsu[0]");            // the RSU of the bootstrap (its CY_g in the Activation_Request)
         double startDelay @unit(s) = default(0.5s);     // entering the road -> Activation_Request
         double bootstrapTimeout @unit(s) = default(6s); // max wait for bootstrap completion before failing simulation
@@ -26,4 +34,9 @@ simple VehicleTeeService like ItsG5Service
         double handoverRadius @unit(m) = default(160m);     // distance to pre-fetched RSU to execute Forwarding_Request
         double clockOffset @unit(s) = default(0s);      // initial error of the vehicle clock (PTP corrects it)
         string backhaulModule = default("backhaulBroker");
+        string middlewareModule = default("^.middleware");
+
+    gates:
+        input socketIn;
+        output socketOut;
 }

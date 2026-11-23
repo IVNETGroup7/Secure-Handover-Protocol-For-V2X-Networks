@@ -87,7 +87,6 @@ class CtraPredictor
 
         std::vector<RsuCandidate> mCandidates;
         State mState{};
-        double mTurnAnchorPsi = 0.0;
         int mSamples = 0;
 };
 

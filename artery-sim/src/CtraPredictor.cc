@@ -8,8 +8,6 @@ namespace
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kOmegaEps = 1e-4;          // rad/s threshold between curved and straight CTRA equations
-constexpr double kTurnActiveOmega = 0.05;   // rad/s threshold indicating an active junction turn
-constexpr double kMaxTurnExcursion = kPi / 2.0; // max 90 deg turn per intersection in a Manhattan grid
 constexpr double kMaxSpeed = 35.0;          // m/s cap during lookahead rollout
 
 double euclidean(double x1, double y1, double x2, double y2)
@@ -65,7 +63,6 @@ void CtraPredictor::update(double x, double y, double speed, double psiRad, doub
         mState.a = std::isnan(accel) ? 0.0 : std::clamp(accel, -8.0, 5.0);
         mState.omega = 0.0;
         mState.timestamp = simTimeSec;
-        mTurnAnchorPsi = psi;
         mSamples = 1;
         return;
     }
@@ -83,10 +80,6 @@ void CtraPredictor::update(double x, double y, double speed, double psiRad, doub
     mState.omega = std::clamp(rawOmega, -2.5, 2.5);
     mState.timestamp = simTimeSec;
     ++mSamples;
-
-    if (std::abs(mState.omega) < kTurnActiveOmega) {
-        mTurnAnchorPsi = psi;
-    }
 }
 
 CtraPredictor::State CtraPredictor::stepCtra(const State& s, double dt)
@@ -135,15 +128,6 @@ std::vector<CtraPredictor::State> CtraPredictor::rollout(double horizonSec, doub
 
     State cur = mState;
     for (int i = 0; i < steps; ++i) {
-        // Cap cumulative turn excursion to 90 deg (kMaxTurnExcursion) per intersection turn
-        if (std::abs(cur.omega) >= kTurnActiveOmega) {
-            const double turned = std::abs(wrapAngle(cur.psi + cur.omega * stepSec - mTurnAnchorPsi));
-            if (turned >= kMaxTurnExcursion) {
-                const double sign = cur.omega >= 0.0 ? 1.0 : -1.0;
-                cur.psi = wrapAngle(mTurnAnchorPsi + sign * kMaxTurnExcursion);
-                cur.omega = 0.0;
-            }
-        }
         cur = stepCtra(cur, stepSec);
         trajectory.push_back(cur);
     }

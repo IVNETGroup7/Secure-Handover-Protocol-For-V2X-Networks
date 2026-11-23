@@ -3,7 +3,9 @@
 
 // What ./app runs once the OP-TEE TA session is opened (host/main.cpp)
 
+#include "Otp.h"
 #include "tee_session.h"
+#include <optional>
 #include <string>
 
 // in-memory bootstrap against the repository's own vehicle and ESA (host/selftest.cpp);
@@ -16,6 +18,7 @@ struct RsuOptions
     std::string iface = "eth0";
     std::string name = "rsu[0]";
     unsigned sessionTimeoutSeconds = 120;
+    std::optional<OtpAlgo> otpAlgo;     // nullopt = adopt Session_Ack otpAlgo from backhaul
 };
 int runRsuNode(TeeSession& tee, const RsuOptions& options);
 

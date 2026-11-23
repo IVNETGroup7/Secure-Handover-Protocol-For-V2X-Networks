@@ -8,6 +8,7 @@
 #include "Crypto.h"
 #include "ExternalSecurityAgent.h"
 #include "HumanOperator.h"
+#include "Otp.h"
 #include "ProtocolMsg.h"
 #include "SimTime.h"
 #include "SmartData.h"
@@ -33,6 +34,9 @@ class BackhaulBroker : public omnetpp::cSimpleModule
 
         BackhaulBroker();
         ~BackhaulBroker() override;
+
+        // Active OTP/MAC algorithm for the whole scenario (ascon or poly1305, never mixed)
+        OtpAlgo otpAlgo();
 
         // Step 2: CA issues X.509 certificate for RSU's TEE-generated CY_g, ESA verifies it against CA
         // and derives K_esa, and RSU receives { caPublicKey, gatewayCert, esaCert }. Also exchanges
@@ -71,6 +75,7 @@ class BackhaulBroker : public omnetpp::cSimpleModule
         std::unique_ptr<ExternalSecurityAgent> mEsa;
         std::unique_ptr<HumanOperator> mOperator;
         std::unique_ptr<CloudIdentity> mCloud;
+        std::optional<OtpAlgo> mOtpAlgo;
         std::map<std::string, RsuCallback> mRsus;           // RSU -> what reaches it
         std::map<std::string, Bytes> mGatewayKeys;          // RSU -> CY_g
         std::map<std::string, Bytes> mGatewayCerts;         // RSU -> CA-signed DER X.509 certificate

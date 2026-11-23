@@ -12,6 +12,7 @@
 //   executing the exact same TA session logic and command IDs without hardware /dev/tee0.
 
 #include "Crypto.h"
+#include "Otp.h"
 #include "gateway_ta.h"
 #include <cstdint>
 #include <memory>
@@ -20,8 +21,9 @@
 class TeeSession
 {
     public:
-        // Opens a new session with the RSU Gateway TA (TA_GATEWAY_UUID) and configures its Secure Storage ID
-        explicit TeeSession(const std::string& storageId = "gateway.sealed", bool freshState = false);
+        // Opens a new session with the RSU Gateway TA (TA_GATEWAY_UUID) and configures its Secure Storage ID & OTP algo
+        explicit TeeSession(const std::string& storageId = "gateway.sealed", bool freshState = false,
+            OtpAlgo otpAlgo = otpAlgorithm());
         ~TeeSession();
 
         TeeSession(const TeeSession&) = delete;
@@ -31,7 +33,8 @@ class TeeSession
         const std::string& storageId() const { return mStorageId; }
 
         // TA Commands (TA_GATEWAY_CMD_*)
-        int setStorageId(const std::string& storageId, bool deleteExisting = false);
+        int setStorageId(const std::string& storageId, bool deleteExisting = false,
+            OtpAlgo otpAlgo = otpAlgorithm());
         int initIdentity(Bytes& outGatewayPubKey);
         int initGateway(const Bytes& caPubKey, const Bytes& gwCertDer, const Bytes& esaCertDer, const Bytes& groupKey);
         int initCloudSession(const std::string& cloudCertPem, const std::string& host, const std::string& gateway);

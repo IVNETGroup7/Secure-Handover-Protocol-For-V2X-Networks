@@ -3,6 +3,8 @@
 #include "SmartData.h"
 #include "V2xFrame.h"
 #include <omnetpp.h>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <stdexcept>
 
@@ -14,6 +16,31 @@ BackhaulBroker::BackhaulBroker()
 }
 
 BackhaulBroker::~BackhaulBroker() = default;
+
+OtpAlgo BackhaulBroker::otpAlgo()
+{
+    if (!mOtpAlgo) {
+        std::string name = par("otpAlgo").stdstringValue();
+        if (name.empty()) {
+            if (const char* envAlgo = std::getenv("OTP_ALGO"); envAlgo && envAlgo[0] != '\0') {
+                name = envAlgo;
+            }
+        }
+        if (name.empty()) {
+            name = "ascon";
+        }
+        const auto parsed = parseOtpAlgo(name);
+        if (!parsed) {
+            throw omnetpp::cRuntimeError(
+                "BackhaulBroker: invalid otpAlgo '%s' (expected 'ascon' or 'poly1305')", name.c_str());
+        }
+        mOtpAlgo = *parsed;
+        setOtpAlgorithm(*mOtpAlgo);
+        std::printf("[BackhaulBroker] OTP algorithm: %s\n", otpAlgoName(*mOtpAlgo));
+        std::fflush(stdout);
+    }
+    return *mOtpAlgo;
+}
 
 CertificateAuthority& BackhaulBroker::ca()
 {

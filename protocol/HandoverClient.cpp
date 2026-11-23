@@ -1,6 +1,7 @@
 #include "HandoverClient.h"
 #include "HandoverPayload.h"
 #include "MessageType.h"
+#include "Otp.h"
 #include "ProtocolMsg.h"
 #include "Trace.h"
 #include <iostream>
@@ -38,7 +39,8 @@ void HandoverClient::sendEncryptedPredict(const std::string& targetRsu)
     m.type = Handover_Predict;
     m.authD = mSession.traits().authD;
     m.targetRsu = targetRsu;
-    m.otp = poly1305Aes(mSession.kDg(), VehicleSession::otpNonce(m.authD, tNow), handoverPredictOtpData(targetRsu));
+    m.otp = computeOtp(mSession.kDg(), OtpPurpose::HandoverPredict, VehicleSession::otpNonce(m.authD, tNow),
+        handoverPredictOtpData(targetRsu));
     for (const std::string& line : describe(m)) {
         printDetail(line);
     }
@@ -65,8 +67,9 @@ void HandoverClient::requestPrediction(const std::string& targetRsu)
     handover.target = targetRsu;
     handover.keys = handoverKeys(ecdh(mSession.ecdhKey(), publicKeyFromDer(*targetKey).get()), tau);
     mPending = handover;
-    printDetail("tau_{i+2} = Poly1305(K_dg, t_i = " + std::to_string(mSession.lastAuthSlot())
-        + ", m); K_dh_i = ECDH(X_V, Y_G_{i+2}); KT_i = Poly1305(K_dh_i, K_dh_i xor tau_{i+2}, m)");
+    const std::string macName = otpAlgoName(otpAlgorithm());
+    printDetail("tau_{i+2} = " + macName + "(K_dg, t_i = " + std::to_string(mSession.lastAuthSlot())
+        + ", m); K_dh_i = ECDH(X_V, Y_G_{i+2}); KT_i = " + macName + "(K_dh_i, K_dh_i xor tau_{i+2}, m)");
 
     sendEncryptedPredict(targetRsu);
 

@@ -35,7 +35,7 @@ constexpr double kActivationWindow = 5.0; // s
 constexpr const char* kEcdhCurve = "P-256";
 
 // OTP_dt = MAC(K_dg, Auth_d xor t, m): m and the time step of t are public, known by vehicle and RSU
-// (bootstrap OTPs: Ascon, BootstrapOtp.h; handover and SmartData OTPs: Poly1305-AES)
+// (selected via --otp ascon|poly1305, Otp.h — all OTPs in a run use the same algorithm)
 constexpr const char* kOtpMessage = "secure-bootstrap OTP_dt";   // m
 constexpr double kOtpTimeStep = 0.5;                            // s: t = floor(PTP-synchronized clock / step)
 constexpr int kOtpWindow = 1;   // RSU: tries t = its own slot +- kOtpWindow slots (delay and residual clock error)

@@ -52,6 +52,7 @@ void VehicleTeeService::initialize()
         throw omnetpp::cRuntimeError("%s: no BackhaulBroker '%s' in the network", mName.c_str(),
             par("backhaulModule").stringValue());
     }
+    mBroker->otpAlgo();
 
     discoverRsus();
 

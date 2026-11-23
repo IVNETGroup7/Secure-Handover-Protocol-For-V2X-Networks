@@ -10,5 +10,5 @@ srcs-y += crypto_tee.cpp
 srcs-y += codec.cpp
 srcs-y += ../../common/SmartData.cpp
 srcs-y += ../../common/Ascon.cpp
-srcs-y += ../../common/BootstrapOtp.cpp
+srcs-y += ../../common/Otp.cpp
 

@@ -1,5 +1,4 @@
 #include "gateway_session.h"
-#include "BootstrapOtp.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -61,23 +60,20 @@ const Bytes& otpMessage()
     return m;
 }
 
-// K_otp keys of the bootstrap Ascon OTPs (derived from K_dg): wiped from TA memory when they go out of scope
-struct WipedOtpKeys
+// Wiped list of derived Ascon keys used during the pending-ECDH Auth_Request sweep
+struct WipedAsconKeyList
 {
-    std::vector<OtpKey> keys;
+    std::vector<ascon::Key> keys;
 
-    WipedOtpKeys() = default;
-    WipedOtpKeys(const Bytes& kDg, BootstrapOtp which) : keys{ bootstrapOtpKey(kDg, which) } {}
-    WipedOtpKeys(const WipedOtpKeys&) = delete;
-    WipedOtpKeys& operator=(const WipedOtpKeys&) = delete;
-    ~WipedOtpKeys()
+    WipedAsconKeyList() = default;
+    WipedAsconKeyList(const WipedAsconKeyList&) = delete;
+    WipedAsconKeyList& operator=(const WipedAsconKeyList&) = delete;
+    ~WipedAsconKeyList()
     {
-        for (OtpKey& key : keys) {
+        for (ascon::Key& key : keys) {
             ta_crypto::cleanse(key.data(), key.size());
         }
     }
-
-    const OtpKey& front() const { return keys.front(); }
 };
 
 std::string hex(const Bytes& data)
@@ -177,9 +173,10 @@ GatewayTaSession::~GatewayTaSession()
     }
 }
 
-void GatewayTaSession::setStorageId(const std::string& storageId, bool deleteExisting)
+void GatewayTaSession::setStorageId(const std::string& storageId, bool deleteExisting, OtpAlgo otpAlgo)
 {
     mStorageId = storageId;
+    mOtpAlgo = otpAlgo;
     if (deleteExisting) {
         ta_crypto::deletePersistentState(mStorageId);
     }
@@ -202,16 +199,25 @@ void GatewayTaSession::check(bool ok, const std::string& text)
     print((ok ? kCheckOk : kCheckFailed) + text);
 }
 
-Block GatewayTaSession::computeForwardingToken(const Bytes& kDg, uint64_t authSlot)
+Block GatewayTaSession::computeMac(const Bytes& key32, OtpPurpose purpose, const Block& nonce, const Bytes& msg) const
+{
+    if (mOtpAlgo == OtpAlgo::Ascon) {
+        const ScopedAsconKey key(key32, purpose);
+        return computeAsconOtp(key.key, nonce, msg);
+    }
+    return ta_crypto::poly1305Aes(key32, nonce, msg);
+}
+
+Block GatewayTaSession::computeForwardingToken(const Bytes& kDg, uint64_t authSlot) const
 {
     Block nonce{};
     for (int i = 0; i < 8; ++i) {
         nonce[static_cast<size_t>(15 - i)] = static_cast<uint8_t>(authSlot >> (8 * i));
     }
-    return ta_crypto::poly1305Aes(kDg, nonce, otpMessage());
+    return computeMac(kDg, OtpPurpose::ForwardingToken, nonce, otpMessage());
 }
 
-HandoverKeys GatewayTaSession::computeHandoverKeys(const Bytes& kDh, const Block& tau)
+HandoverKeys GatewayTaSession::computeHandoverKeys(const Bytes& kDh, const Block& tau) const
 {
     if (kDh.size() != 32) {
         throw std::runtime_error("Secrecy Forwarding: K_dh needs 32 bytes (got " + std::to_string(kDh.size()) + ")");
@@ -223,7 +229,7 @@ HandoverKeys GatewayTaSession::computeHandoverKeys(const Bytes& kDh, const Block
     for (size_t j = 0; j < nonce.size(); ++j) {
         nonce[j] = static_cast<uint8_t>(kDh[j] ^ tau[j]);
     }
-    keys.kt = ta_crypto::poly1305Aes(kDh, nonce, otpMessage());
+    keys.kt = computeMac(kDh, OtpPurpose::HandoverKey, nonce, otpMessage());
 
     Bytes material(keys.kt.begin(), keys.kt.end());
     material.insert(material.end(), kDh.begin(), kDh.end());
@@ -239,25 +245,25 @@ HandoverKeys GatewayTaSession::computeHandoverKeys(const Bytes& kDh, const Block
     return keys;
 }
 
-Block GatewayTaSession::computeForwardingOtp(const HandoverKeys& keys, uint64_t slot)
+Block GatewayTaSession::computeForwardingOtp(const HandoverKeys& keys, uint64_t slot) const
 {
     Block nonce{};
     std::copy_n(keys.auth.begin(), nonce.size(), nonce.begin());
     for (int i = 0; i < 8; ++i) {
         nonce[static_cast<size_t>(15 - i)] ^= static_cast<uint8_t>(slot >> (8 * i));
     }
-    return ta_crypto::poly1305Aes(keys.kt32, nonce, wire::forwardingRequestOtpData(keys.auth));
+    return computeMac(keys.kt32, OtpPurpose::ForwardingRequest, nonce, wire::forwardingRequestOtpData(keys.auth));
 }
 
 Block GatewayTaSession::computeForwardingGrantedOtp(const HandoverKeys& keys, uint64_t slot,
-    const wire::ForwardingGranted& m)
+    const wire::ForwardingGranted& m) const
 {
     Block nonce{};
     std::copy_n(keys.authPrime.begin(), nonce.size(), nonce.begin());
     for (int i = 0; i < 8; ++i) {
         nonce[static_cast<size_t>(15 - i)] ^= static_cast<uint8_t>(slot >> (8 * i));
     }
-    return ta_crypto::poly1305Aes(keys.kt32, nonce, wire::forwardingGrantedOtpData(m));
+    return computeMac(keys.kt32, OtpPurpose::ForwardingGranted, nonce, wire::forwardingGrantedOtpData(m));
 }
 
 void GatewayTaSession::saveState()
@@ -450,27 +456,34 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
 
     purgeExpiredActivations(now);
 
-    // Auth_Request K_otp of every pending K_dg, derived once for the reboot check and the anonymous sweep
-    WipedOtpKeys pendingKeys;
-    pendingKeys.keys.reserve(mPendingEcdh.size());
-    for (const auto& ecdh : mPendingEcdh) {
-        pendingKeys.keys.push_back(bootstrapOtpKey(ecdh.kDg, BootstrapOtp::AuthRequest));
+    // Pre-derive pending ECDH Ascon keys once for the reboot check & anonymous sweep (unused in Poly1305 mode)
+    WipedAsconKeyList pendingAsconKeys;
+    if (mOtpAlgo == OtpAlgo::Ascon) {
+        pendingAsconKeys.keys.reserve(mPendingEcdh.size());
+        for (const auto& ecdh : mPendingEcdh) {
+            pendingAsconKeys.keys.push_back(deriveAsconOtpKey(ecdh.kDg, OtpPurpose::AuthRequest));
+        }
     }
+    auto pendingAuthReqOtp = [&](size_t idx, const Block& nonce) -> Block {
+        if (mOtpAlgo == OtpAlgo::Ascon) {
+            return computeAsconOtp(pendingAsconKeys.keys[idx], nonce, otpMessage());
+        }
+        return ta_crypto::poly1305Aes(mPendingEcdh[idx].kDg, nonce, otpMessage());
+    };
 
     // Spec Step 7.1 & Section 5.3 (Reboot Protection):
     // Discard any Auth_Request from an already-active device WITHOUT disturbing its active session.
     for (const auto& [_, active] : mActiveSessions) {
-        const WipedOtpKeys activeKey(active.kDg, BootstrapOtp::AuthRequest);
         for (uint64_t t = tMin; t <= tMax; ++t) {
             const Block nonce = otpNonce(active.authD, t);
-            const Block activeOtp = bootstrapOtp(activeKey.front(), nonce, otpMessage());
+            const Block activeOtp = computeMac(active.kDg, OtpPurpose::AuthRequest, nonce, otpMessage());
             if (ta_crypto::constTimeCmp(activeOtp.data(), request.otp.data(), activeOtp.size()) == 0) {
                 check(false, session + ": Auth_Request from already-active device (" + active.session
                     + "): discarded (active session preserved)");
                 return std::nullopt;
             }
-            for (const OtpKey& ecdhKey : pendingKeys.keys) {
-                const Block candidate = bootstrapOtp(ecdhKey, nonce, otpMessage());
+            for (size_t i = 0; i < mPendingEcdh.size(); ++i) {
+                const Block candidate = pendingAuthReqOtp(i, nonce);
                 if (ta_crypto::constTimeCmp(candidate.data(), request.otp.data(), candidate.size()) == 0) {
                     check(false, session + ": Auth_Request from already-active device (" + active.session
                         + " via new ECDH): discarded (active session preserved)");
@@ -493,14 +506,13 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
 
     for (size_t i = 0; i < mPendingEcdh.size() && pendingMatch == mPendingActivations.end(); ++i) {
         const auto ecdh = mPendingEcdh.begin() + static_cast<std::ptrdiff_t>(i);
-        const OtpKey& ecdhKey = pendingKeys.keys[i];
         for (auto pending = mPendingActivations.begin(); pending != mPendingActivations.end(); ++pending) {
             if (now < pending->t0 || now > pending->tf) {
                 continue; // Enforce both t_0 <= now <= t_f
             }
             bool matched = false;
             for (uint64_t t = tMin; t <= tMax; ++t) {
-                const Block otp = bootstrapOtp(ecdhKey, otpNonce(pending->authD, t), otpMessage());
+                const Block otp = pendingAuthReqOtp(i, otpNonce(pending->authD, t));
                 if (ta_crypto::constTimeCmp(otp.data(), request.otp.data(), otp.size()) == 0) {
                     ecdhMatch = ecdh;
                     pendingMatch = pending;
@@ -555,7 +567,7 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
     mPendingEcdh.erase(ecdhMatch);
     saveState();
 
-    // Spec Step 8: generate FRESH Ascon OTP_dt authenticating Auth_Granted under K_dg and Auth_d,
+    // Spec Step 8: generate FRESH OTP_dt authenticating Auth_Granted under K_dg and Auth_d,
     // advancing the timestamp by elapsed TEE / Secure Storage sealing time before sending.
     const uint64_t taEndMs = ta_crypto::monotonicTimeMs();
     const uint64_t elapsedNs = taEndMs >= taStartMs ? (taEndMs - taStartMs) * 1000000ULL : 0ULL;
@@ -567,8 +579,7 @@ std::optional<Bytes> GatewayTaSession::authGranted(const std::string& session, c
     m.esaPublicKey = mEsaPublicKey;
     m.authEg = active.authEg;
     m.nextRsus = neighborRsuList();
-    const WipedOtpKeys grantedKey(active.kDg, BootstrapOtp::AuthGranted);
-    m.otp = bootstrapOtp(grantedKey.front(), otpNonce(active.authD, tReply), wire::authGrantedOtpData(m));
+    m.otp = computeMac(active.kDg, OtpPurpose::AuthGranted, otpNonce(active.authD, tReply), wire::authGrantedOtpData(m));
 
     Bytes sealed = ta_crypto::aesGcmEncrypt(active.kDg, wire::pack(m));
     print(session + ": Auth_Granted = E_K_dg(M with fresh OTP_dt + " + std::to_string(m.nextRsus.size())
@@ -609,10 +620,9 @@ std::optional<Bytes> GatewayTaSession::active02(const std::string& session, cons
     uint64_t tMin = 0, tMax = 0;
     slotWindow(tNow, tMin, tMax);
     const Bytes otpInput = wire::activeOtpData(m.authD, m.authDe);
-    const WipedOtpKeys activeKey(matched->kDg, BootstrapOtp::Active01);
     bool otpValid = false;
     for (uint64_t t = tMin; t <= tMax; ++t) {
-        const Block expected = bootstrapOtp(activeKey.front(), otpNonce(matched->authD, t), otpInput);
+        const Block expected = computeMac(matched->kDg, OtpPurpose::Active01, otpNonce(matched->authD, t), otpInput);
         if (ta_crypto::constTimeCmp(expected.data(), m.otp.data(), expected.size()) == 0) {
             otpValid = true;
             break;
@@ -699,7 +709,8 @@ std::optional<Bytes> GatewayTaSession::forwardingGranted(const std::string& sess
         return std::nullopt;
     }
     const long long slotOffset = static_cast<long long>(tMatch) - static_cast<long long>(tNow);
-    check(true, session + ": OTP = Poly1305(KT_i^32, auth_{i+2} xor t_c, Forwarding_Request) with t_c = "
+    check(true, session + ": OTP = " + std::string(otpAlgoName(mOtpAlgo))
+        + "(KT_i^32, auth_{i+2} xor t_c, Forwarding_Request) with t_c = "
         + std::to_string(tMatch) + " (my slot " + (slotOffset >= 0 ? "+" : "") + std::to_string(slotOffset) + ")");
 
     const std::string vehicle = handover.session;
@@ -795,7 +806,7 @@ int GatewayTaSession::marshal(const Bytes& otPacket, uint64_t now, Bytes& outItP
         for (int i = 0; i < 8; ++i) {
             nonce[static_cast<size_t>(15 - i)] ^= static_cast<uint8_t>(t >> (8 * i));
         }
-        const Block candidate = ta_crypto::poly1305Aes(keys->kDg, nonce, message.sealedData);
+        const Block candidate = computeMac(keys->kDg, OtpPurpose::SecureData, nonce, message.sealedData);
         if (ta_crypto::constTimeCmp(candidate.data(), message.otp.data(), candidate.size()) == 0) {
             otpOk = true;
             tMatch = t;
@@ -807,7 +818,8 @@ int GatewayTaSession::marshal(const Bytes& otPacket, uint64_t now, Bytes& outItP
     }
     if (traced) {
         const long long offset = static_cast<long long>(tMatch) - static_cast<long long>(tNow);
-        check(true, session + ": OTP_dt = Poly1305(K_dg, Auth_d xor t, AES(K_G, Data)) with t = "
+        check(true, session + ": OTP_dt = " + std::string(otpAlgoName(mOtpAlgo))
+            + "(K_dg, Auth_d xor t, AES(K_G, Data)) with t = "
             + std::to_string(tMatch) + " (my slot " + (offset >= 0 ? "+" : "") + std::to_string(offset) + ")");
     }
 
@@ -1211,7 +1223,8 @@ int GatewayTaSession::handleHandoverPredict(const Bytes& inPkt, uint64_t current
         const Bytes otpInput = wire::handoverPredictOtpData(m.targetRsu);
         bool otpValid = false;
         for (uint64_t t = tMin; t <= tMax; ++t) {
-            const Block expected = ta_crypto::poly1305Aes(matched->kDg, otpNonce(matched->authD, t), otpInput);
+            const Block expected = computeMac(matched->kDg, OtpPurpose::HandoverPredict, otpNonce(matched->authD, t),
+                otpInput);
             if (ta_crypto::constTimeCmp(expected.data(), m.otp.data(), expected.size()) == 0) {
                 otpValid = true;
                 break;

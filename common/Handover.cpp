@@ -1,5 +1,6 @@
 #include "Handover.h"
 #include "MessageType.h"
+#include "Otp.h"
 #include "Traits.h"
 #include "WireCodec.h"
 #include <algorithm>
@@ -35,7 +36,7 @@ Block forwardingToken(const Bytes& kDg, uint64_t authSlot)
     for (int i = 0; i < 8; ++i) {
         nonce[static_cast<size_t>(15 - i)] = static_cast<uint8_t>(authSlot >> (8 * i));
     }
-    return poly1305Aes(kDg, nonce, otpMessage());
+    return computeOtp(kDg, OtpPurpose::ForwardingToken, nonce, otpMessage());
 }
 
 HandoverKeys handoverKeys(const Bytes& kDh, const Block& tau)
@@ -46,14 +47,14 @@ HandoverKeys handoverKeys(const Bytes& kDh, const Block& tau)
     HandoverKeys keys;
     keys.kDh = kDh;
 
-    // KT_i = Poly1305(K_dh_i, K_dh_i xor tau_{i+2}, m)
+    // KT_i = MAC(K_dh_i, K_dh_i xor tau_{i+2}, m)
     Block nonce;
     for (size_t j = 0; j < nonce.size(); ++j) {
         nonce[j] = static_cast<uint8_t>(kDh[j] ^ tau[j]);
     }
-    keys.kt = poly1305Aes(kDh, nonce, otpMessage());
+    keys.kt = computeOtp(kDh, OtpPurpose::HandoverKey, nonce, otpMessage());
 
-    // KT_i^32 = SHA256(KT_i || K_dh_i): Poly1305-AES takes a 32-byte key
+    // KT_i^32 = SHA256(KT_i || K_dh_i): 32-byte key material for Forwarding OTPs
     Bytes material(keys.kt.begin(), keys.kt.end());
     material.insert(material.end(), kDh.begin(), kDh.end());
     const Sha256 kt32 = sha256(material);
@@ -85,7 +86,8 @@ Bytes forwardingRequestOtpData(const Sha256& auth)
 
 Block forwardingOtp(const HandoverKeys& keys, uint64_t slot)
 {
-    return poly1305Aes(keys.kt32, slottedNonce(keys.auth.data(), slot), forwardingRequestOtpData(keys.auth));
+    return computeOtp(keys.kt32, OtpPurpose::ForwardingRequest, slottedNonce(keys.auth.data(), slot),
+        forwardingRequestOtpData(keys.auth));
 }
 
 Bytes forwardingGrantedOtpData(const std::vector<NeighborRsuKey>& nextRsus, const Sha256& authPrime, const Bytes& kG)
@@ -105,6 +107,6 @@ Bytes forwardingGrantedOtpData(const std::vector<NeighborRsuKey>& nextRsus, cons
 Block forwardingGrantedOtp(const HandoverKeys& keys, uint64_t slot, const std::vector<NeighborRsuKey>& nextRsus,
     const Sha256& authPrime, const Bytes& kG)
 {
-    return poly1305Aes(keys.kt32, slottedNonce(authPrime.data(), slot),
+    return computeOtp(keys.kt32, OtpPurpose::ForwardingGranted, slottedNonce(authPrime.data(), slot),
         forwardingGrantedOtpData(nextRsus, authPrime, kG));
 }

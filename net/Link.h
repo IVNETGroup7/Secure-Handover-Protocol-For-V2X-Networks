@@ -1,6 +1,7 @@
 #ifndef NET_LINK_H_
 #define NET_LINK_H_
 
+#include "Otp.h"
 #include "ProtocolMsg.h"
 #include "RawSocket.h"
 #include <chrono>
@@ -65,11 +66,13 @@ struct SessionAck
     Bytes caPublicKey;              // Root CA public key (DER SPKI)
     Bytes gatewayCert;              // CA-signed Gateway X.509 certificate (DER)
     Bytes esaCert;                  // CA-signed ESA X.509 certificate (DER)
+    OtpAlgo otpAlgo = OtpAlgo::Ascon; // Active OTP/MAC algorithm for the session (never mixed)
 };
 
 Bytes packSessionHello(const std::string& rsu, const Bytes& gatewayPublicKey);
 std::optional<SessionHello> parseSessionHello(const Bytes& body);
-Bytes packSessionAck(const std::string& rsu, const Bytes& caPublicKey, const Bytes& gatewayCert, const Bytes& esaCert);
+Bytes packSessionAck(const std::string& rsu, const Bytes& caPublicKey, const Bytes& gatewayCert, const Bytes& esaCert,
+    OtpAlgo otpAlgo = otpAlgorithm());
 std::optional<SessionAck> parseSessionAck(const Bytes& body);
 
 struct PeerCertFrame

@@ -1,4 +1,5 @@
 #include "SmartData.h"
+#include "Otp.h"
 #include "Traits.h"
 #ifndef __OPTEE_TA__
 #include <openssl/bio.h>
@@ -151,7 +152,7 @@ Block dataOtp(const Bytes& kDg, const Bytes& authD, uint64_t slot, const Bytes& 
     for (int i = 0; i < 8; ++i) {
         nonce[static_cast<size_t>(15 - i)] ^= static_cast<uint8_t>(slot >> (8 * i));
     }
-    return poly1305Aes(kDg, nonce, m);
+    return computeOtp(kDg, OtpPurpose::SecureData, nonce, m);
 }
 
 DataMessage sealSmartData(const SmartData& data, const Bytes& kG, const Bytes& kDg, int64_t nowNs)

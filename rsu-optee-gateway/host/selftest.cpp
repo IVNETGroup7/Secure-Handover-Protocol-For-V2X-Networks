@@ -1,9 +1,9 @@
 #include "modes.h"
-#include "BootstrapOtp.h"
 #include "BootstrapPayload.h"
 #include "ExternalSecurityAgent.h"
 #include "HumanOperator.h"
 #include "Link.h"
+#include "Otp.h"
 #include "MessageType.h"
 #include "ProtocolMsg.h"
 #include "SimTime.h"
@@ -476,7 +476,7 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
 
     // Also test a real Auth_Request computed by already-active node[0] using its own K_dg & Auth_d (reboot protection)
     const int64_t nowNs = SimTime::now().ns();
-    const Block rebootOtp = bootstrapOtp(bootstrapOtpKey(activeNode0.result.kDg, BootstrapOtp::AuthRequest),
+    const Block rebootOtp = computeOtp(activeNode0.result.kDg, OtpPurpose::AuthRequest,
         VehicleSession::otpNonce(activeNode0.result.authD, dataOtpSlot(nowNs)),
         Bytes(kOtpMessage, kOtpMessage + std::char_traits<char>::length(kOtpMessage)));
     const Reply rebootAuth = rsu0.handleBootstrap(Auth_Request, "node[0]",
@@ -572,7 +572,8 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
     const auto anchor = parseClockAnchor(packClockAnchor(1234567890LL));
     const auto tag = parseRsuTag(toBytes("rsu[1]\n"));
     const auto hello = parseSessionHello(packSessionHello("rsu[0]", cyG0));
-    const auto ack = parseSessionAck(packSessionAck("rsu[0]", ca.publicKeyDer, validGwCert, esa.certificate()));
+    const auto ack = parseSessionAck(packSessionAck("rsu[0]", ca.publicKeyDer, validGwCert, esa.certificate(),
+        otpAlgorithm()));
 
     bool clockCalled = false;
     int radioReplies = 0;
@@ -608,7 +609,7 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
         && anchor && *anchor == 1234567890LL
         && tag && *tag == "rsu[1]"
         && hello && hello->rsu == "rsu[0]" && hello->gatewayPublicKey == cyG0
-        && ack && ack->rsu == "rsu[0]" && ack->caPublicKey == ca.publicKeyDer
+        && ack && ack->rsu == "rsu[0]" && ack->caPublicKey == ca.publicKeyDer && ack->otpAlgo == otpAlgorithm()
         && reg23 == GW_OK && reg32 == GW_OK
         && clockCalled && radioReplies == 1;
     checkItem("7d. HIL wire helpers & 4 TA sessions", hilOk,
@@ -642,6 +643,14 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
         }
     }
     const Reply rateBlocked = rsu3.handleForwardingRequest("dos-sender", bogusFwdReq, tNowNs);
+    const Bytes probeKey(32, 0x42);
+    const Block probeNonce{};
+    const Bytes probeMsg = { 'o', 't', 'p' };
+    const bool otpSelectOk = parseOtpAlgo("ascon") == OtpAlgo::Ascon
+        && parseOtpAlgo("poly1305") == OtpAlgo::Poly1305
+        && !parseOtpAlgo("mixed")
+        && (computeOtp(probeKey, OtpPurpose::AuthRequest, probeNonce, probeMsg, OtpAlgo::Ascon)
+            != computeOtp(probeKey, OtpPurpose::AuthRequest, probeNonce, probeMsg, OtpAlgo::Poly1305));
     const bool secFwdOk = (roguePeerStatus == GW_ERR_CRYPTO)
         && (spoofPredictStatus == GW_IGNORED)
         && (forgedNoticeStatus == GW_IGNORED)
@@ -650,7 +659,8 @@ bool securityAndHilChecks(const CertificateAuthority& ca, PacketManager& rsu0, c
         && (fanoutOk == 4)
         && (fanoutBlocked == GW_IGNORED)
         && (rateAllowedBeforeLimit == 5)
-        && (rateBlocked.status == GW_IGNORED);
+        && (rateBlocked.status == GW_IGNORED)
+        && otpSelectOk;
     checkItem("7e. Secrecy Forwarding security/DoS", secFwdOk,
         secFwdOk ? "rogue peer, spoofed predict/notice, fan-out <= 4 & req rate limit OK" : "FAILED");
 

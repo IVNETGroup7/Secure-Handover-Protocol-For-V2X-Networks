@@ -109,6 +109,7 @@ void TeeRsuService::initialize()
     }
 
     if (mEnableHil) {
+        mBroker->otpAlgo();
         initHil();
     } else {
         initLocalTee();
@@ -271,7 +272,7 @@ void TeeRsuService::initLocalTee()
     if (sealed.empty()) {
         sealed = fileName(mName) + ".sealed";
     }
-    mTee = std::make_unique<TeeSession>(sealed, par("freshState").boolValue());
+    mTee = std::make_unique<TeeSession>(sealed, par("freshState").boolValue(), mBroker->otpAlgo());
     mGateway = std::make_unique<PacketManager>(*mTee, mName);
 
     // Step 2: generate Gateway identity (X_gw, CY_g) inside TA, certify via CA, verify ESA cert & derive K_esa
@@ -442,7 +443,7 @@ void TeeRsuService::sendHilSessionAck()
         return;
     }
     sendFrame(*mHilBackhaul, FrameKind::Session_Ack,
-        packSessionAck(mName, mCaPublicKey, mGatewayCert, mEsaCert));
+        packSessionAck(mName, mCaPublicKey, mGatewayCert, mEsaCert, mBroker->otpAlgo()));
 }
 
 void TeeRsuService::sendHilClockAnchor()

@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/deps/artery/build"
 
 IFACE="${HIL_IFACE:-}"
+OTP_ALGO="${OTP_ALGO:-${OTP:-ascon}}"
 USE_GUI=0
 REBUILD=0
 EXTRA_FLAGS=()
@@ -20,11 +21,12 @@ usage() {
 Usage: $(basename "$0") --iface <nic> [options] [-- <extra opp_run flags>]
 
 Options:
-  --iface <nic>   Host Ethernet interface connected to the Raspberry Pi 3
-                  (or export HIL_IFACE=<nic>)
-  --gui           Run HIL_RPi3_QuadRsu_GUI (launches sumo-gui) instead of headless
-  --rebuild       Rebuild the tee_v2x shared library before running
-  -h, --help      Show this help message
+  --iface <nic>          Host Ethernet interface connected to the Raspberry Pi 3
+                         (or export HIL_IFACE=<nic>)
+  --otp ascon|poly1305   Select OTP/MAC algorithm for the whole run (default: ascon)
+  --gui                  Run HIL_RPi3_QuadRsu_GUI (launches sumo-gui) instead of headless
+  --rebuild              Rebuild the tee_v2x shared library before running
+  -h, --help             Show this help message
 EOF
 }
 
@@ -33,6 +35,11 @@ while [ $# -gt 0 ]; do
         --iface)
             [ $# -ge 2 ] || { echo "error: --iface requires an argument" >&2; exit 2; }
             IFACE="$2"
+            shift 2
+            ;;
+        --otp)
+            [ $# -ge 2 ] || { echo "error: --otp requires an argument" >&2; exit 2; }
+            OTP_ALGO="$2"
             shift 2
             ;;
         --gui)
@@ -66,6 +73,11 @@ if [ -z "$IFACE" ]; then
     exit 2
 fi
 
+if [ "$OTP_ALGO" != "ascon" ] && [ "$OTP_ALGO" != "poly1305" ]; then
+    echo "error: invalid --otp '$OTP_ALGO' (expected 'ascon' or 'poly1305')" >&2
+    exit 2
+fi
+
 if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
     echo "error: Artery build directory not initialized ($BUILD_DIR); run $SCRIPT_DIR/setup_artery.sh first" >&2
     exit 1
@@ -87,7 +99,8 @@ if [ ${#EXTRA_FLAGS[@]} -gt 0 ]; then
 fi
 
 export HIL_IFACE="$IFACE"
-echo "[run-hil-quad] HIL_IFACE=$HIL_IFACE config=$CONFIG"
+export OTP_ALGO="$OTP_ALGO"
+echo "[run-hil-quad] HIL_IFACE=$HIL_IFACE OTP_ALGO=$OTP_ALGO config=$CONFIG"
 
 cmake -DRUN_FLAGS="$RUN_FLAGS" "$BUILD_DIR"
 exec cmake --build "$BUILD_DIR" --target run_tee_v2x_handover

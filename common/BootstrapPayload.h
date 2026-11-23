@@ -61,7 +61,7 @@ std::vector<std::string> describe(const EcdhPayload&);
 struct AuthRequestPayload
 {
     uint8_t type;
-    Block otp;                  // OTP_dt = Ascon(K_dg, Auth_d xor t, m) (BootstrapOtp.h)
+    Block otp;                  // OTP_dt = MAC(K_dg, Auth_d xor t, m) (Otp.h)
 };
 
 Bytes pack(const AuthRequestPayload&);
@@ -71,7 +71,7 @@ std::vector<std::string> describe(const AuthRequestPayload&);
 struct AuthGrantedPayload
 {
     uint8_t type;
-    Block otp;                              // OTP_dt: fresh Ascon MAC over { Auth_Granted, K_g, CY_e, Auth_eg, nextRsus }
+    Block otp;                              // OTP_dt: fresh MAC over { Auth_Granted, K_g, CY_e, Auth_eg, nextRsus }
     Bytes kG;                               // K_g: group key (AES-128-GCM, vehicle <-> vehicle)
     Bytes esaPublicKey;                     // CY_e: ESA public key (DER SubjectPublicKeyInfo)
     Bytes authEg;                           // Auth_eg = AES(Id_d, CY_e), from the Activation_Token
@@ -87,7 +87,7 @@ struct Active01Payload
 {
     uint8_t type;
     Bytes authD;                // Auth_d
-    Block otp;                  // OTP_dt: fresh Ascon MAC over { Active_01, Auth_d, Auth_de } (binds K_de)
+    Block otp;                  // OTP_dt: fresh MAC over { Active_01, Auth_d, Auth_de } (binds K_de)
     Bytes authDe;               // Auth_de = AES(Id_d, SHA256(UUID + SHA256(f_w) + CY_e))
 };
 

@@ -1,7 +1,7 @@
 #include "BootstrapClient.h"
-#include "BootstrapOtp.h"
 #include "BootstrapPayload.h"
 #include "MessageType.h"
+#include "Otp.h"
 #include "ProtocolMsg.h"
 #include "Trace.h"
 #include <iostream>
@@ -130,13 +130,13 @@ void BootstrapClient::authRequest(const ProtocolMsg& received)
     mPendingKdg = ecdh(mSession.ecdhKey(), publicKeyFromDer(response.publicKey).get());
     printKeep("K_dg", mPendingKdg);
 
-    // Step 6: compute OTP_dt = Ascon(K_dg, Auth_d xor t, m); send ONLY OTP_dt (never Auth_d)
+    // Step 6: compute OTP_dt = MAC(K_dg, Auth_d xor t, m); send ONLY OTP_dt (never Auth_d)
     const uint64_t t = VehicleSession::otpSlot(mSession.localClock());
     const Block nonce = VehicleSession::otpNonce(mSession.traits().authD, t);
 
     AuthRequestPayload otp;
     otp.type = Auth_Request;
-    otp.otp = bootstrapOtp(bootstrapOtpKey(mPendingKdg, BootstrapOtp::AuthRequest), nonce, otpMessage());
+    otp.otp = computeOtp(mPendingKdg, OtpPurpose::AuthRequest, nonce, otpMessage());
     mAuthReqOtp = otp.otp;
     mOtpSlot = t;
     printDetail("t = " + std::to_string(t) + " (slots of " + std::to_string(kOtpTimeStep) + " s), Auth_d xor t = "
@@ -176,15 +176,15 @@ void BootstrapClient::saveVehicle(const ProtocolMsg& received)
         printDetail(line);
     }
 
-    // Step 9 Level 1 Verification: verify fresh Gateway Ascon OTP_dt over Auth_Granted in [t-1, t+1]
+    // Step 9 Level 1 Verification: verify fresh Gateway OTP_dt over Auth_Granted in [t-1, t+1]
     const uint64_t tNow = VehicleSession::otpSlot(mSession.localClock());
     const uint64_t tMin = tNow >= static_cast<uint64_t>(kOtpWindow) ? tNow - kOtpWindow : 0;
     const uint64_t tMax = tNow + kOtpWindow;
     const Bytes grantedData = authGrantedOtpData(m);
-    const OtpKey grantedKey = bootstrapOtpKey(mPendingKdg, BootstrapOtp::AuthGranted);
     bool otpValid = false;
     for (uint64_t t = tMin; t <= tMax; ++t) {
-        const Block expected = bootstrapOtp(grantedKey, VehicleSession::otpNonce(mSession.traits().authD, t), grantedData);
+        const Block expected = computeOtp(mPendingKdg, OtpPurpose::AuthGranted,
+            VehicleSession::otpNonce(mSession.traits().authD, t), grantedData);
         if (CRYPTO_memcmp(expected.data(), m.otp.data(), expected.size()) == 0) {
             otpValid = true;
             break;
@@ -218,7 +218,7 @@ void BootstrapClient::saveVehicle(const ProtocolMsg& received)
     // Step 9.4: compute Auth_de, generate FRESH Active-message OTP_dt (Theorem 2), and derive K_de
     mAuthDe = computeAuthDe(idD, mSession.traits().uuid, mSession.traits().firmwareHash, mEsaPublicKey);
     const uint64_t tActive = VehicleSession::otpSlot(mSession.localClock());
-    mActiveOtp = bootstrapOtp(bootstrapOtpKey(mPendingKdg, BootstrapOtp::Active01),
+    mActiveOtp = computeOtp(mPendingKdg, OtpPurpose::Active01,
         VehicleSession::otpNonce(mSession.traits().authD, tActive), activeOtpData(mSession.traits().authD, mAuthDe));
     const Sha256 kDe = computeKDe(idD, mSession.traits().authD, mAuthDe, mActiveOtp);
     mKde.assign(kDe.begin(), kDe.end());

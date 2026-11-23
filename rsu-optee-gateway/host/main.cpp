@@ -30,8 +30,8 @@ int main(int argc, char** argv)
         const std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
             std::printf("Usage:\n"
-                "  %s [selftest] [--sealed <id>] [--fresh]\n"
-                "  %s rsu [--name <rsu>] [--iface <nic>] [--sealed <id>] [--fresh] [--session-timeout <sec>]\n",
+                "  %s [selftest] [--otp ascon|poly1305] [--sealed <id>] [--fresh]\n"
+                "  %s rsu [--otp ascon|poly1305] [--name <rsu>] [--iface <nic>] [--sealed <id>] [--fresh] [--session-timeout <sec>]\n",
                 argv[0], argv[0]);
             return 0;
         }
@@ -71,19 +71,34 @@ int main(int argc, char** argv)
     const bool freshState = option("--fresh", "0") == "1" || option("--fresh", "") == "true";
     const std::string label = mode == "rsu" ? option("--name", "rsu[0]") : "gateway";
 
+    std::optional<OtpAlgo> requestedOtp;
+    if (const auto it = options.find("--otp"); it != options.end()) {
+        requestedOtp = parseOtpAlgo(it->second);
+        if (!requestedOtp) {
+            std::fprintf(stderr, "error: invalid --otp '%s' (expected 'ascon' or 'poly1305')\n",
+                it->second.c_str());
+            return 1;
+        }
+        setOtpAlgorithm(*requestedOtp);
+    } else {
+        setOtpAlgorithm(OtpAlgo::Ascon);
+    }
+
     int code = 1;
     try {
-        TeeSession tee(storageId, freshState);
+        TeeSession tee(storageId, freshState, otpAlgorithm());
         if (mode == "rsu") {
             RsuOptions rsu;
             rsu.iface = option("--iface", rsu.iface);
             rsu.name = option("--name", rsu.name);
             rsu.sessionTimeoutSeconds = static_cast<unsigned>(
                 std::stoul(option("--session-timeout", std::to_string(rsu.sessionTimeoutSeconds))));
+            rsu.otpAlgo = requestedOtp;
             code = runRsuNode(tee, rsu);
         } else {
-            std::printf("OP-TEE TA session opened (session %llu, storage %s)\n",
-                static_cast<unsigned long long>(tee.sessionId()), storageId.c_str());
+            std::printf("OP-TEE TA session opened (session %llu, storage %s, otp %s)\n",
+                static_cast<unsigned long long>(tee.sessionId()), storageId.c_str(),
+                otpAlgoName(otpAlgorithm()));
             code = runSelfTest(tee, storageId);
         }
     } catch (const std::exception& e) {

@@ -59,6 +59,13 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
     }
     const SessionAck ack = openHttpsSession(backhaul, options.name, gwPublicKey,
         options.iface, [] { return gStop != 0; }, std::chrono::seconds(options.sessionTimeoutSeconds));
+    if (options.otpAlgo && *options.otpAlgo != ack.otpAlgo) {
+        throw std::runtime_error(std::string("OTP algorithm mismatch: local --otp ")
+            + otpAlgoName(*options.otpAlgo) + " != backhaul " + otpAlgoName(ack.otpAlgo));
+    }
+    const OtpAlgo activeOtp = ack.otpAlgo;
+    setOtpAlgorithm(activeOtp);
+    tee.setStorageId(tee.storageId(), false, activeOtp);
     radio.setPeerMac(backhaul.peerMac());
     const int init = gateway.initGateway(ack.caPublicKey, ack.gatewayCert, ack.esaCert);
     if (init != GW_OK) {
@@ -82,9 +89,9 @@ int runRsuNode(TeeSession& tee, const RsuOptions& options)
     };
     gateway.setTransport(transport);
 
-    std::printf("[%s] OP-TEE gateway: session #%llu (storage %s), HTTPS session with ESA, radio on %s (0x88b5)\n",
+    std::printf("[%s] OP-TEE gateway: session #%llu (storage %s, otp %s), HTTPS session with ESA, radio on %s (0x88b5)\n",
         options.name.c_str(), static_cast<unsigned long long>(tee.sessionId()), tee.storageId().c_str(),
-        options.iface.c_str());
+        otpAlgoName(activeOtp), options.iface.c_str());
     std::fflush(stdout);
 
     Reassembler reassembler;

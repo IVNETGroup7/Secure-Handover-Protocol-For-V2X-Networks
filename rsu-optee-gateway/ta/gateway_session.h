@@ -7,6 +7,7 @@
 #include "Crypto.h"
 #include "Handover.h"
 #include "MessageType.h"
+#include "Otp.h"
 #include "SmartData.h"
 #include "Traits.h"
 #include "codec.h"
@@ -25,8 +26,8 @@ class GatewayTaSession
         GatewayTaSession() = default;
         ~GatewayTaSession();
 
-        // Configure OP-TEE Secure Storage object ID (and optionally delete existing state)
-        void setStorageId(const std::string& storageId, bool deleteExisting);
+        // Configure OP-TEE Secure Storage object ID (optionally delete existing state) and OTP algorithm
+        void setStorageId(const std::string& storageId, bool deleteExisting, OtpAlgo otpAlgo = OtpAlgo::Ascon);
 
         // Drain trace lines accumulated during the current command invocation
         std::string takeLogs();
@@ -142,14 +143,18 @@ class GatewayTaSession
         std::optional<Bytes> forwardingGranted(const std::string& session, const Bytes& in, uint64_t now);
         int marshal(const Bytes& otPacket, uint64_t now, Bytes& outItPkt);
 
-        // Secrecy Forwarding equations inside the TA (using ta_crypto)
-        static Block computeForwardingToken(const Bytes& kDg, uint64_t authSlot);
-        static HandoverKeys computeHandoverKeys(const Bytes& kDh, const Block& tau);
-        static Block computeForwardingOtp(const HandoverKeys& keys, uint64_t slot);
-        static Block computeForwardingGrantedOtp(const HandoverKeys& keys, uint64_t slot,
-            const wire::ForwardingGranted& m);
+        // Unified OTP/MAC primitive inside the TA (Ascon-AEAD128 or Poly1305-AES per mOtpAlgo)
+        Block computeMac(const Bytes& key32, OtpPurpose purpose, const Block& nonce, const Bytes& msg) const;
+
+        // Secrecy Forwarding equations inside the TA
+        Block computeForwardingToken(const Bytes& kDg, uint64_t authSlot) const;
+        HandoverKeys computeHandoverKeys(const Bytes& kDh, const Block& tau) const;
+        Block computeForwardingOtp(const HandoverKeys& keys, uint64_t slot) const;
+        Block computeForwardingGrantedOtp(const HandoverKeys& keys, uint64_t slot,
+            const wire::ForwardingGranted& m) const;
 
         bool mReady = false;
+        OtpAlgo mOtpAlgo = OtpAlgo::Ascon;
         std::string mStorageId = "gateway.sealed";
         ta_crypto::EcdhKeyPair mGatewayKey;         // X_gw / CY_g held strictly inside Secure World
         Bytes mCaPublicKey;                         // Pinned Root CA public key (DER SPKI)

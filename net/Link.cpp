@@ -58,13 +58,15 @@ std::optional<SessionHello> parseSessionHello(const Bytes& body)
     }
 }
 
-Bytes packSessionAck(const std::string& rsu, const Bytes& caPublicKey, const Bytes& gatewayCert, const Bytes& esaCert)
+Bytes packSessionAck(const std::string& rsu, const Bytes& caPublicKey, const Bytes& gatewayCert, const Bytes& esaCert,
+    OtpAlgo otpAlgo)
 {
     Bytes out;
     wire_codec::putString(out, rsu);
     wire_codec::putBytes(out, caPublicKey);
     wire_codec::putBytes(out, gatewayCert);
     wire_codec::putBytes(out, esaCert);
+    wire_codec::putUint(out, static_cast<uint8_t>(otpAlgo), 1);
     return out;
 }
 
@@ -77,9 +79,12 @@ std::optional<SessionAck> parseSessionAck(const Bytes& body)
         ack.caPublicKey = r.field();
         ack.gatewayCert = r.field();
         ack.esaCert = r.field();
-        if (ack.rsu.empty() || ack.caPublicKey.empty() || ack.gatewayCert.empty() || ack.esaCert.empty()) {
+        const uint64_t algo = r.uint(1);
+        if (ack.rsu.empty() || ack.caPublicKey.empty() || ack.gatewayCert.empty() || ack.esaCert.empty()
+            || algo > static_cast<uint64_t>(OtpAlgo::Ascon)) {
             return std::nullopt;
         }
+        ack.otpAlgo = static_cast<OtpAlgo>(algo);
         return ack;
     } catch (const std::exception&) {
         return std::nullopt;

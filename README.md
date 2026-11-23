@@ -28,39 +28,41 @@ Once bootstrapped with `rsu[0]`, the vehicle's **CTRA (Constant Turn Rate and Ac
 
 ## Quick start
 
+All test, simulation, and HIL commands accept `OTP=ascon|poly1305` (or `--otp ascon|poly1305`, default: `ascon`) to run every OTP/MAC in the session under a single algorithm — never mixed.
+
 ```bash
 # 1. Host self-test: 7-scenario OP-TEE gateway self-test (HOST_SIM mode)
-make run
+make run                       # or: make run OTP=poly1305
 
 # 2. Pure Artery IEEE 802.11p 4-RSU Manhattan Grid simulation (bootstrap + CTRA pre-fetch + Secrecy Forwarding)
 artery-sim/setup_artery.sh     # one-time dependency & CMake build
-make sim
+make sim                       # or: make sim OTP=poly1305
 
 # 3. Physical 4-RSU Raspberry Pi 3 HIL (all 4 RSUs in RPi3 TrustZone; rest simulated on PC)
 make rpi3 PI_IP=<pi-ip>        # cross-compile & deploy .ta + ./app
-./rsu-quad-ssh.sh --pi-ip <pi-ip>
-make hil-quad HIL_IFACE=<host-nic>       # add GUI=1 for sumo-gui
+./rsu-quad-ssh.sh --pi-ip <pi-ip> [--otp ascon|poly1305]
+make hil-quad HIL_IFACE=<host-nic> [OTP=ascon|poly1305] [GUI=1]
 
 # 4. Complementary VM workflow (4-RSU HIL without physical RPi3 hardware)
-./setup-vm.sh                  # create/start optee-arm64-vm
-make vm                        # run self-test inside VM
-make vm-hil                    # launch 4-RSU daemon inside VM (pair with: make hil-quad HIL_IFACE=virbr0)
+./setup-vm.sh                  # create/start optee-arm64-vm (add --recreate to rebuild)
+make vm [OTP=ascon|poly1305]   # run self-test inside VM
+make vm-hil [OTP=ascon|poly1305] # launch 4-RSU daemon inside VM (pair with: make hil-quad HIL_IFACE=virbr0)
 ```
 
 ---
 
 ## Top-level targets ([`Makefile`](Makefile))
 
-| Command | What it does |
-|---|---|
-| `make build` | Builds `rsu-optee-gateway/app` (`HOST_SIM` self-test + `rsu` HIL daemon) |
-| `make run` / `make test` | Builds and runs the 7-scenario OP-TEE gateway self-test |
-| `make vm` | Syncs the repository into `optee-arm64-vm` and runs the self-test |
-| `make vm-hil` | Starts 4 concurrent `rsu[0]`..`rsu[3]` processes inside `optee-arm64-vm` (pair with `HIL_IFACE=virbr0` on host) |
-| `make rpi3 [PI_IP=<ip>]` | Cross-compiles the `.ta` and `./app` for Raspberry Pi 3 (`-mcpu=cortex-a53`) and optionally deploys via SSH |
-| `make sim` | Rebuilds `tee_v2x` and runs the pure-simulation `D250m_80211p` 4-RSU Manhattan Grid + CTRA scenario |
-| `make hil-quad HIL_IFACE=<nic> [GUI=1]` | Rebuilds `tee_v2x` and runs `HIL_RPi3_QuadRsu` (or `HIL_RPi3_QuadRsu_GUI` with `GUI=1`) |
-| `make clean` | Removes build outputs, `*.sealed*` state files, and simulation result artifacts |
+| Command | Flags / Variables | What it does |
+|---|---|---|
+| `make build` | — | Builds `rsu-optee-gateway/app` (`HOST_SIM` self-test + `rsu` HIL daemon) |
+| `make run` / `make test` | `OTP=ascon\|poly1305` *(default `ascon`)* | Builds and runs the 7-scenario OP-TEE gateway self-test |
+| `make vm` | `OTP=ascon\|poly1305` *(default `ascon`)* | Syncs the repository into `optee-arm64-vm` and runs the self-test |
+| `make vm-hil` | `OTP=ascon\|poly1305` *(default `ascon`)* | Starts 4 concurrent `rsu[0]`..`rsu[3]` processes inside `optee-arm64-vm` (pair with `HIL_IFACE=virbr0` on host) |
+| `make rpi3` | `PI_IP=<ip>` *(optional)* | Cross-compiles the `.ta` and `./app` for Raspberry Pi 3 (`-mcpu=cortex-a53`) and deploys via SSH when `PI_IP` is set |
+| `make sim` | `OTP=ascon\|poly1305` *(default `ascon`)* | Rebuilds `tee_v2x` and runs the pure-simulation `D250m_80211p` 4-RSU Manhattan Grid + CTRA scenario |
+| `make hil-quad` | `HIL_IFACE=<nic>` *(required)*, `OTP=ascon\|poly1305` *(default `ascon`)*, `GUI=1` *(optional)* | Rebuilds `tee_v2x` and runs `HIL_RPi3_QuadRsu` (or `HIL_RPi3_QuadRsu_GUI` with `GUI=1`) |
+| `make clean` | — | Removes build outputs, `*.sealed*` state files, and simulation result artifacts |
 
 ---
 
@@ -69,7 +71,7 @@ make vm-hil                    # launch 4-RSU daemon inside VM (pair with: make 
 The gateway separates untrusted OS networking from cryptographic state and keys:
 
 - **Normal World (`host/`)**: `./app` manages raw Ethernet sockets (`0x88b5` radio, `0x88b6` backhaul), message fragmentation/reassembly, OT/IT queues (`PacketManager`), PTP clock synchronization, and `TeeSession` invocations. It never sees plaintext `Activation_Token` (`Auth_d`/`Auth_eg`), `Active_02` (`OTP_dt`), `Handover_Predict`, `Forwarding_Notice` (`E_{K_rsu}`), `Forwarding_Granted` (`E_{KT_i}`), `K_g`, `K_dg`, `K_rsu`, `K_esa`, `K_eg`, or `SmartData` JSON.
-- **Secure World (`ta/`)**: `9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta` uses the GlobalPlatform TEE Internal Core API to generate the Gateway's P-256 identity keypair (`X_gw`/`CY_g`) strictly inside TrustZone, pin the Root CA public key and verify CA-signed Gateway/ESA/Cloud X.509 certificates, derive the mutually-authenticated Gateway ↔ ESA AES-256-GCM key (`K_esa`), decrypt `Activation_Token` anonymously, verify fresh per-step `OTP_dt`s (Theorem 2: Ascon-AEAD128 for the bootstrap, RFC 8439 Poly1305-AES for handover and SmartData), enforce `[t_0, t_f]` / compromised-`Auth_d` exclusion / active-session reboot protection, perform OT→IT Secure Marshaling (`K_eg`), handle Secrecy Forwarding handovers, and seal state in OP-TEE Secure Storage (`TEE_STORAGE_PRIVATE`).
+- **Secure World (`ta/`)**: `9a4c5e10-6b2f-4d8e-a1b2-c3d4e5f60718.ta` uses the GlobalPlatform TEE Internal Core API to generate the Gateway's P-256 identity keypair (`X_gw`/`CY_g`) strictly inside TrustZone, pin the Root CA public key and verify CA-signed Gateway/ESA/Cloud X.509 certificates, derive the mutually-authenticated Gateway ↔ ESA AES-256-GCM key (`K_esa`), decrypt `Activation_Token` anonymously, verify fresh per-step `OTP_dt`s (Theorem 2: all OTPs/MACs in a run use either **Ascon-AEAD128** or **Poly1305-AES**, selected via `--otp ascon|poly1305`, never mixed), enforce `[t_0, t_f]` / compromised-`Auth_d` exclusion / active-session reboot protection, perform OT→IT Secure Marshaling (`K_eg`), handle Secrecy Forwarding handovers, and seal state in OP-TEE Secure Storage (`TEE_STORAGE_PRIVATE`).
 
 ### Build modes & CLI
 
@@ -78,11 +80,23 @@ The gateway separates untrusted OS networking from cryptographic state and keys:
 
 ```text
 Usage:
-  ./rsu-optee-gateway/app [selftest] [--sealed <id>] [--fresh]
-  ./rsu-optee-gateway/app rsu [--name <rsu>] [--iface <nic>] [--sealed <id>] [--fresh] [--session-timeout <sec>]
+  ./rsu-optee-gateway/app [selftest] [--otp ascon|poly1305] [--sealed <id>] [--fresh]
+  ./rsu-optee-gateway/app rsu [--otp ascon|poly1305] [--name <rsu>] [--iface <nic>] [--sealed <id>] [--fresh] [--session-timeout <sec>]
 ```
 
-Running `./rsu-optee-gateway/app` (or `make run`) executes 7 scenarios (plus subtests `4a`–`4m` and `7a`–`7d`), ending with:
+| Flag (`./app`) | Modes | Default | Description |
+|---|---|---|---|
+| `--otp ascon\|poly1305` | `selftest`, `rsu` | `ascon` (`selftest`); auto-adopt from `Session_Ack` (`rsu`) | Selects the single OTP/MAC algorithm for the whole run. In `rsu` mode, passing `--otp` explicitly enforces a match against Artery's `Session_Ack`. |
+| `--sealed <id>` | `selftest`, `rsu` | `gateway.sealed` (`OPTEE`) or `<app-dir>/gateway.sealed` (`HOST_SIM`) | OP-TEE Secure Storage object ID (or host-sealed file path in `HOST_SIM`). |
+| `--fresh` | `selftest`, `rsu` | off (`0`) | Purges any existing sealed state for `--sealed <id>` on startup (`--fresh`, `--fresh 1`, or `--fresh true`). |
+| `--name <rsu>` | `rsu` | `rsu[0]` | Logical RSU identifier on shared Ethernet (`rsu[0]`..`rsu[3]`). |
+| `--iface <nic>` | `rsu` | `eth0` | Network interface for raw Ethernet sockets (`0x88b5` radio, `0x88b6` backhaul). |
+| `--session-timeout <sec>` | `rsu` | `120` | Seconds to wait for initial `Session_Ack` from Artery/ESA before exiting. |
+| `-h`, `--help` | both | — | Prints CLI usage and exits. |
+
+*(In `rsu-optee-gateway/Makefile`, you can also pass `TEE_MODE=HOST_SIM|OPTEE`, `OTP=ascon|poly1305`, `IFACE=<nic>`, `SESSION_TIMEOUT=<sec>`, `PLATFORM=<name>`, `PI_IP=<ip>`, and `VM_ARGS=<targets>`.)*
+
+Running `./rsu-optee-gateway/app --otp ascon` or `--otp poly1305` (or `make run OTP=ascon` / `make run OTP=poly1305`, `make sim OTP=...`, `make hil-quad HIL_IFACE=<nic> OTP=...`) runs all 7 scenarios (plus subtests `4a`–`4m` and `7a`–`7e`) under the single selected OTP/MAC algorithm, ending with:
 
 ```text
 results:
@@ -110,8 +124,15 @@ In **4-RSU HIL**, all 4 Manhattan Grid RSUs execute in isolated OP-TEE TA sessio
    ```
 2. **Start all 4 RSUs in OP-TEE on the Raspberry Pi 3** (requires `tee-supplicant` + `/dev/tee0`):
    ```bash
-   ./rsu-quad-ssh.sh --pi-ip <pi-ip>
+   ./rsu-quad-ssh.sh --pi-ip <pi-ip> [--rsu-iface eth0] [--otp ascon|poly1305] [--session-timeout 120] [--keep-state] [--remote-app /root/app]
    ```
+   - `--pi-ip <ip>` (or `PI_IP=<ip>`): Raspberry Pi IP *(required)*.
+   - `--rsu-iface <iface>` (or `RSU_IFACE=<iface>`): Pi Ethernet NIC *(default `eth0`)*.
+   - `--otp ascon|poly1305` (or `OTP=...`): Pin OTP algorithm on the Pi; if omitted, each RSU adopts the algorithm sent by Artery in `Session_Ack`.
+   - `--session-timeout <sec>` (or `SESSION_TIMEOUT=<sec>`): Handshake timeout *(default `120`)*.
+   - `--keep-state`: Reuse existing `rsu0.sealed`..`rsu3.sealed` instead of passing `--fresh`.
+   - `--remote-app <path>`: Remote binary path on the Pi *(default `/root/app`)*.
+
    This launches 4 independent `./app rsu` daemons sharing `eth0`:
    - `rsu[0]` (West edge) with Secure Storage ID `rsu0.sealed` (OP-TEE TA session #1)
    - `rsu[1]` (North edge) with Secure Storage ID `rsu1.sealed` (OP-TEE TA session #2)
@@ -119,10 +140,15 @@ In **4-RSU HIL**, all 4 Manhattan Grid RSUs execute in isolated OP-TEE TA sessio
    - `rsu[3]` (South edge) with Secure Storage ID `rsu3.sealed` (OP-TEE TA session #4)
 3. **Run Artery on the host PC** (ensure `sudo setcap cap_net_raw=ep artery-sim/deps/omnetpp-5.7.1/bin/opp_run_release` or run with privileges):
    ```bash
-   make hil-quad HIL_IFACE=<host-nic>          # headless
-   make hil-quad HIL_IFACE=<host-nic> GUI=1    # with sumo-gui
+   make hil-quad HIL_IFACE=<host-nic> [OTP=ascon|poly1305] [GUI=1]
+   # Or invoke run-hil-quad.sh directly:
+   ./artery-sim/run-hil-quad.sh --iface <host-nic> [--otp ascon|poly1305] [--gui] [--rebuild] [-- <extra opp_run flags>]
    ```
-   *(Or invoke `./artery-sim/run-hil-quad.sh --iface <host-nic> [--gui] [--rebuild]` directly.)*
+   - `--iface <nic>` (or `HIL_IFACE=<nic>`): Host NIC wired to the RPi3 *(required)*.
+   - `--otp ascon|poly1305` (or `OTP` / `OTP_ALGO`): OTP/MAC algorithm for the whole run *(default `ascon`)*.
+   - `--gui`: Runs `HIL_RPi3_QuadRsu_GUI` (`sumo-gui`) instead of headless `HIL_RPi3_QuadRsu`.
+   - `--rebuild`: Rebuilds `tee_v2x` before starting Artery.
+   - `-- <extra opp_run flags>`: Forwards additional flags directly to `opp_run_release` (e.g. `--*.rsu[*].middleware.TeeRsuService.hilHandshakeTimeout=25s`).
 
 Artery drives SUMO mobility around the **400 m × 400 m Manhattan Grid** (`20 m/s` along `w_0 w_1 n_0 n_1 e_0 e_1 s_0 s_1`), ITS-G5 802.11p channel physics, vehicle `node[0]` with `CtraPredictor`, the ESA, and Cloud signature/decryption verification (`BackhaulBroker`), bridging `0x88b5` radio and `0x88b6` backhaul traffic over `<host-nic>` so `rsu[0]`..`rsu[3]` execute initial bootstrapping, SmartData marshaling, selective CTRA token pre-fetching, and TrustZone-to-TrustZone **Secrecy Forwarding** on the physical RPi3. Once `Session_Hello` / `Session_Ack` discovery completes, `RawSocket` pins each side's learned peer unicast MAC (`setPeerMac`) so LAN switches/routers do not drop concurrent 4-RSU frames under broadcast storm control.
 
@@ -132,10 +158,10 @@ Artery drives SUMO mobility around the **400 m × 400 m Manhattan Grid** (`20 m/
 
 `./setup-vm.sh` provisions an Ubuntu 24.04 x86_64 libvirt/KVM VM (`optee-arm64-vm`) with the ARM64 cross-toolchain, `qemu-system-arm`, `optee_os` `vexpress-qemu_armv8a` (`ta_dev_kit`), and `optee_client` (`libteec`) in `/opt/optee`.
 
-- **Self-test inside the VM**: `make vm` syncs the repo via `rsu-optee-gateway/vm-make.sh` and runs the self-test.
+- **Self-test inside the VM**: `make vm [OTP=ascon|poly1305]` syncs the repo via `rsu-optee-gateway/vm-make.sh` (`VM_NAME`, `VM_DIR`, `VM_USER`, `VM_HOST` env overrides) and runs the self-test.
 - **4-RSU HIL against the VM**:
-  1. Terminal 1: `make vm-hil` (syncs the repo, grants `cap_net_raw=ep` in the VM, and starts 4 concurrent `rsu[0]`..`rsu[3]` processes bound to the VM's libvirt NIC).
-  2. Terminal 2 (host PC): `make hil-quad HIL_IFACE=virbr0` (pairs Artery `HIL_RPi3_QuadRsu` over the KVM bridge `virbr0` using the same Ethernet multiplexing path as physical RPi3 HIL).
+  1. Terminal 1: `make vm-hil [OTP=ascon|poly1305]` (syncs the repo, grants `cap_net_raw=ep` in the VM, and starts 4 concurrent `rsu[0]`..`rsu[3]` processes bound to the VM's libvirt NIC).
+  2. Terminal 2 (host PC): `make hil-quad HIL_IFACE=virbr0 [OTP=ascon|poly1305] [GUI=1]` (pairs Artery `HIL_RPi3_QuadRsu` over the KVM bridge `virbr0` using the same Ethernet multiplexing path as physical RPi3 HIL).
 
 ---
 
@@ -147,7 +173,7 @@ At startup, neighboring RSUs exchange CA-signed certificates inside their TrustZ
 |---|---|---|---|---|
 | 0 | `Handover_Predict` (`21`) | $\text{Vehicle} \to G_{i+1}$ | Radio (`0x88b5`) | Vehicle sends $E_{K_{dg}}(\{\text{Auth}_d, G_{i+2}, \text{OTP}_{dt}\})$ identifying only $G_{i+2}$; verified inside TA (`TA_GATEWAY_CMD_HANDLE_HANDOVER_PREDICT`) |
 | 1 | `Forwarding_Notice` (`16`) | $G_{i+1} \to G_{i+2}$ | Backhaul (`0x88b6`) | $G_{i+1}$ TA seals $E_{K_{rsu}}(\{\text{Forwarding\_Notice}, Y_V, \tau_{i+2}, \text{Auth}_d\})$ (`TA_GATEWAY_CMD_TRIGGER_HANDOVER`); $G_{i+2}$ TA pre-computes $K_{dh_i}$, $KT_i$, $\text{auth}_{i+2}$ (`TA_GATEWAY_CMD_RECEIVE_FORWARDING_NOTICE`) |
-| 2 | `Forwarding_Request` (`18`) | $\text{Vehicle} \to G_{i+2}$ | Radio (`0x88b5`) | Sent when entering `handoverRadius = 160 m`; carries $\text{auth}_{i+2} = \text{SHA256}(\tau_{i+2})$ and $\text{OTP} = \text{Poly1305}(KT_i^{32}, \text{auth}_{i+2} \oplus t_c, \text{type} \parallel \text{auth}_{i+2})$ (`TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST`) |
+| 2 | `Forwarding_Request` (`18`) | $\text{Vehicle} \to G_{i+2}$ | Radio (`0x88b5`) | Sent when entering `handoverRadius = 160 m`; carries $\text{auth}_{i+2} = \text{SHA256}(\tau_{i+2})$ and $\text{OTP} = \text{MAC}(KT_i^{32}, \text{auth}_{i+2} \oplus t_c, \text{type} \parallel \text{auth}_{i+2})$ (`TA_GATEWAY_CMD_HANDLE_FORWARDING_REQUEST`) |
 | 3 | `Forwarding_Granted` (`19`) | $G_{i+2} \to \text{Vehicle}$ | Radio (`0x88b5`) | Sends $E_{KT_i}(\{\text{nextRsus}, \text{auth}'_{i+2}, K_{G_{i+2}}, \text{OTP}'\})$ with $\text{auth}'_{i+2} = \text{SHA256}(KT_i \parallel \text{auth}_{i+2})$ and fresh $\text{OTP}'$; vehicle switches to target key $K_{G_{i+2}}$ |
 | – | `Secure_Data` (`20`) | $\text{Vehicle} \to \text{RSU}$ | Radio (`0x88b5`) | SmartData OT packet marshaled in TA (`TA_GATEWAY_CMD_SECURE_MARSHAL_OT_TO_IT`) → IT Cloud backhaul (`0x88b6`) |
 

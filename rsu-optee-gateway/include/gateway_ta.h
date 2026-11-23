@@ -14,9 +14,9 @@
 // TA Command IDs (invoked via TEEC_InvokeCommand)
 enum TaGatewayCommand
 {
-    // Configure the OP-TEE Secure Storage object ID for this RSU session (e.g., "gateway.sealed.rsu0")
+    // Configure the OP-TEE Secure Storage object ID and OTP algorithm for this RSU session
     // params[0] = MEMREF_TEMP_INPUT: storage object ID string (or path in host simulation mode)
-    // params[1] = VALUE_INPUT:       a = purge existing object if non-zero
+    // params[1] = VALUE_INPUT:       a = purge existing object if non-zero, b = OtpAlgo (0 = Poly1305, 1 = Ascon)
     TA_GATEWAY_CMD_SET_STORAGE_ID           = 0,
 
     // Initialize the RSU gateway inside the Secure World with CA-signed Gateway and ESA certificates:

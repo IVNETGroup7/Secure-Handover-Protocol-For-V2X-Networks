@@ -26,6 +26,7 @@ TEEC_EXPORT ?= $(wildcard $(OPTEE_DIR)/optee_client/out/export/usr)
 #                        runs full TrustZone security logic on VM/host without cross-compilation.
 #   OPTEE              - compiles against libteec (-DUSE_OPTEE) and builds ta/$(TA_UUID).ta via TA_DEV_KIT_DIR.
 TEE_MODE ?= HOST_SIM
+OTP ?= ascon
 
 PLATFORM ?= native
 
@@ -99,7 +100,7 @@ $(BUILD)/common/%.o: ../%.cpp
 	$(CXX) $(Host_Cpp_Flags) -c $< -o $@
 
 run: all
-	./app
+	./app --otp $(OTP)
 
 caps: app
 	sudo setcap cap_net_raw=ep app
@@ -115,12 +116,12 @@ hil-quad: caps
 		echo "error: set IFACE=<nic> for hil-quad" >&2; exit 2; \
 	fi; \
 	timeout="$(or $(SESSION_TIMEOUT),120)"; \
-	echo "[hil-4rsu] starting rsu[0] + rsu[1] + rsu[2] + rsu[3] (4 OP-TEE TA sessions) on $$iface (Ctrl+C to stop)..."; \
+	echo "[hil-4rsu] starting rsu[0] + rsu[1] + rsu[2] + rsu[3] (4 OP-TEE TA sessions, otp=$(OTP)) on $$iface (Ctrl+C to stop)..."; \
 	trap 'kill -TERM $$p0 $$p1 $$p2 $$p3 2>/dev/null || true; wait $$p0 $$p1 $$p2 $$p3 2>/dev/null || true' EXIT INT TERM; \
-	./app rsu --name rsu[0] --iface "$$iface" --sealed rsu0.sealed --fresh --session-timeout "$$timeout" & p0=$$!; \
-	./app rsu --name rsu[1] --iface "$$iface" --sealed rsu1.sealed --fresh --session-timeout "$$timeout" & p1=$$!; \
-	./app rsu --name rsu[2] --iface "$$iface" --sealed rsu2.sealed --fresh --session-timeout "$$timeout" & p2=$$!; \
-	./app rsu --name rsu[3] --iface "$$iface" --sealed rsu3.sealed --fresh --session-timeout "$$timeout" & p3=$$!; \
+	./app rsu --name rsu[0] --iface "$$iface" --sealed rsu0.sealed --fresh --otp "$(OTP)" --session-timeout "$$timeout" & p0=$$!; \
+	./app rsu --name rsu[1] --iface "$$iface" --sealed rsu1.sealed --fresh --otp "$(OTP)" --session-timeout "$$timeout" & p1=$$!; \
+	./app rsu --name rsu[2] --iface "$$iface" --sealed rsu2.sealed --fresh --otp "$(OTP)" --session-timeout "$$timeout" & p2=$$!; \
+	./app rsu --name rsu[3] --iface "$$iface" --sealed rsu3.sealed --fresh --otp "$(OTP)" --session-timeout "$$timeout" & p3=$$!; \
 	wait $$p0 $$p1 $$p2 $$p3
 
 # Delegate build/run to the ARM64 QEMU OP-TEE VM (VM_ARGS=hil-quad runs quad-RSU over virbr0)

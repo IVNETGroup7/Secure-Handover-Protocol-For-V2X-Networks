@@ -86,7 +86,7 @@ struct TeeSession::Impl
 #endif
 };
 
-TeeSession::TeeSession(const std::string& storageId, bool freshState)
+TeeSession::TeeSession(const std::string& storageId, bool freshState, OtpAlgo otpAlgo)
     : mImpl(std::make_unique<Impl>()), mSessionId(gNextSessionId.fetch_add(1)), mStorageId(storageId)
 {
 #ifdef USE_OPTEE
@@ -101,7 +101,7 @@ TeeSession::TeeSession(const std::string& storageId, bool freshState)
     }
     mImpl->open = true;
 #endif
-    setStorageId(mStorageId, freshState);
+    setStorageId(mStorageId, freshState, otpAlgo);
 }
 
 TeeSession::~TeeSession()
@@ -115,7 +115,7 @@ TeeSession::~TeeSession()
 #endif
 }
 
-int TeeSession::setStorageId(const std::string& storageId, bool deleteExisting)
+int TeeSession::setStorageId(const std::string& storageId, bool deleteExisting, OtpAlgo otpAlgo)
 {
     mStorageId = storageId;
 #ifdef USE_OPTEE
@@ -124,12 +124,13 @@ int TeeSession::setStorageId(const std::string& storageId, bool deleteExisting)
     op.params[0].tmpref.buffer = const_cast<char*>(mStorageId.data());
     op.params[0].tmpref.size = mStorageId.size();
     op.params[1].value.a = deleteExisting ? 1 : 0;
+    op.params[1].value.b = static_cast<uint32_t>(otpAlgo);
     uint32_t origin = 0;
     checkTeec(TEEC_InvokeCommand(&mImpl->sess, TA_GATEWAY_CMD_SET_STORAGE_ID, &op, &origin),
         origin, "TA_GATEWAY_CMD_SET_STORAGE_ID");
     return GW_OK;
 #else
-    mImpl->ta.setStorageId(mStorageId, deleteExisting);
+    mImpl->ta.setStorageId(mStorageId, deleteExisting, otpAlgo);
     return GW_OK;
 #endif
 }

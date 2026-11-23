@@ -110,9 +110,13 @@ TEE_Result TA_InvokeCommandEntryPoint(void* sess_ctx, uint32_t cmd_id, uint32_t 
                 if (t0 != TEE_PARAM_TYPE_MEMREF_INPUT || t1 != TEE_PARAM_TYPE_VALUE_INPUT) {
                     return TEE_ERROR_BAD_PARAMETERS;
                 }
+                if (params[1].value.b > static_cast<uint32_t>(OtpAlgo::Ascon)) {
+                    return TEE_ERROR_BAD_PARAMETERS;
+                }
                 const char* ptr = static_cast<const char*>(params[0].memref.buffer);
                 const std::string storageId(ptr, ptr + params[0].memref.size);
-                sess->setStorageId(storageId, params[1].value.a != 0);
+                sess->setStorageId(storageId, params[1].value.a != 0,
+                    static_cast<OtpAlgo>(params[1].value.b));
                 return TEE_SUCCESS;
             }
 

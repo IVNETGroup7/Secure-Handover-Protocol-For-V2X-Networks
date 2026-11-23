@@ -16,6 +16,7 @@ constexpr uint64_t kHandoverPendingTtlNs = 30ULL * 1000000000ULL;
 constexpr uint32_t kMaxForwardingNoticesPerVehicle = 4;
 constexpr uint32_t kMaxForwardingReqsPerSec = 5;
 constexpr uint64_t kForwardingRateWindowNs = 1000000000ULL;
+constexpr size_t kCloudSessionPreload = 3; // Standby ephemeral Cloud ECDH sessions pre-derived at init (0 ms rotation stall)
 
 std::string seconds(uint64_t ns)
 {
@@ -157,6 +158,9 @@ GatewayTaSession::~GatewayTaSession()
     ta_crypto::cleanse(mGroupKey.data(), mGroupKey.size());
     ta_crypto::cleanse(mEsaSessionKey.data(), mEsaSessionKey.size());
     ta_crypto::cleanse(mCloud.kEg.data(), mCloud.kEg.size());
+    for (auto& pre : mCloud.preloaded) {
+        ta_crypto::cleanse(pre.kEg.data(), pre.kEg.size());
+    }
     for (auto& [_, peer] : mPeerRsus) {
         ta_crypto::cleanse(peer.kRsu.data(), peer.kRsu.size());
     }
@@ -417,13 +421,19 @@ std::optional<GatewayTaSession::VehicleKeys> GatewayTaSession::findVehicleKeys(c
 
 void GatewayTaSession::newCloudSession()
 {
-    const auto derived = ta_crypto::generateAndDeriveEcdh(mCloud.cloudPublicKeyDer);
     if (!mCloud.kEg.empty()) {
         ta_crypto::cleanse(mCloud.kEg.data(), mCloud.kEg.size());
     }
-    const Sha256 digest = ta_crypto::sha256(derived.sharedSecret);
-    mCloud.kEg.assign(digest.begin(), digest.end());
-    mCloud.ys = ta_crypto::base64Encode(derived.publicKeyDer);
+    if (!mCloud.preloaded.empty()) {
+        mCloud.kEg = std::move(mCloud.preloaded.back().kEg);
+        mCloud.ys = std::move(mCloud.preloaded.back().ys);
+        mCloud.preloaded.pop_back();
+    } else {
+        const auto derived = ta_crypto::generateAndDeriveEcdh(mCloud.cloudPublicKeyDer);
+        const Sha256 digest = ta_crypto::sha256(derived.sharedSecret);
+        mCloud.kEg.assign(digest.begin(), digest.end());
+        mCloud.ys = ta_crypto::base64Encode(derived.publicKeyDer);
+    }
     mCloud.messages = 0;
     ++mCloud.number;
     print("HTTPS session #" + std::to_string(mCloud.number) + " with the cloud: Y_s = " + mCloud.ys.substr(36, 16)
@@ -969,8 +979,21 @@ int GatewayTaSession::initCloudSession(const std::string& cloudCertPem, const st
         mCloud.host = host;
         mCloud.gateway = gateway;
         mCloud.ready = true;
+        for (auto& pre : mCloud.preloaded) {
+            ta_crypto::cleanse(pre.kEg.data(), pre.kEg.size());
+        }
+        mCloud.preloaded.clear();
+        mCloud.preloaded.reserve(kCloudSessionPreload + 1);
+        for (size_t i = 0; i < kCloudSessionPreload + 1; ++i) {
+            const auto derived = ta_crypto::generateAndDeriveEcdh(mCloud.cloudPublicKeyDer);
+            const Sha256 digest = ta_crypto::sha256(derived.sharedSecret);
+            mCloud.preloaded.push_back(PrecomputedCloudSession{
+                Bytes(digest.begin(), digest.end()),
+                ta_crypto::base64Encode(derived.publicKeyDer)
+            });
+        }
         check(true, "HTTPS session: Cloud certificate verified against pinned CA (" + pinned->subject
-            + ", P-256)");
+            + ", P-256; " + std::to_string(kCloudSessionPreload) + " standby session(s) pre-derived)");
         newCloudSession();
         return GW_OK;
     } catch (const std::exception& e) {

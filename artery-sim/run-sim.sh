@@ -225,6 +225,9 @@ DOCKER_ARGS=(
     -w "$SCENARIO_DIR"
 )
 
+RUN_TS="$(date +%Y%m%d-%H%M%S)"
+RESULT_STEM="${CSV_PREFIX:-results/${CONFIG}-${OTP_ALGO}-${RUN_TS}}"
+
 OPP_ARGS=(
     -u Cmdenv
     -c "$CONFIG"
@@ -237,6 +240,8 @@ OPP_ARGS=(
     -l "$CROWNET_DIR/simu5g/src/simu5g"
     -l "$CROWNET_DIR/crownet/src/CROWNET"
     -l "$SCRIPT_DIR/build/tee_v2x"
+    "--output-scalar-file=${RESULT_STEM}.sca"
+    "--output-vector-file=${RESULT_STEM}.vec"
     "--*.traci.launcher.port=$TRACI_PORT"
 )
 
@@ -245,9 +250,7 @@ if [ "$IS_HIL" -eq 1 ]; then
     OPP_ARGS+=(--scheduler-class=omnetpp::cRealTimeScheduler)
 fi
 
-if [ -n "$CSV_PREFIX" ]; then
-    DOCKER_ARGS+=(-e "CSV_PREFIX=$CSV_PREFIX")
-fi
+DOCKER_ARGS+=(-e "CSV_PREFIX=$RESULT_STEM")
 
 if [ "$VERBOSE" = "1" ]; then
     DOCKER_ARGS+=(-e "V2X_VERBOSE=1")

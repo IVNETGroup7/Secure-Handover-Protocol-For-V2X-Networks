@@ -148,7 +148,7 @@ In **4-RSU HIL**, all 4 Manhattan Grid RSUs execute in isolated OP-TEE TA sessio
    - `--config <name>` (`run-sim.sh`): OMNeT++ config *(default `NR_5G`, or `NR_5G_GUI` with `--gui`)*.
    - `--iface <nic>` (or `HIL_IFACE=<nic>`): Host NIC wired to the RPi3 *(required for HIL configs)*.
    - `--otp ascon|poly1305` (or `OTP` / `OTP_ALGO`): OTP/MAC algorithm for the whole run *(default `ascon`)*.
-   - `--csv-prefix <path>` (or `CSV_PREFIX=<path>`): Custom output prefix for the 3 evaluation CSV files *(default `artery-sim/scenario/results/<config>-<otp>`)*.
+   - `--csv-prefix <path>` (or `CSV_PREFIX=<path>`): Custom output prefix for `.sca`/`.vec`/`.vci` and the 3 evaluation CSV files *(default `results/<config>-<otp>-<YYYYMMDD-HHMMSS>`, never overwriting previous runs or other OTP algorithms)*.
    - `--quiet` / `--verbose` (`QUIET=1` / `VERBOSE=1`): `HIL_RPi3_QuadRsu` uses focused evaluation output (`[EVAL t=...]` milestones + summary report) by default; pass `--verbose` (`V2X_VERBOSE=1`) to re-enable per-step crypto hex dumps.
    - `--gui`: Launches host `sumo-gui --start` (`NR_5G_GUI` / `HIL_RPi3_QuadRsu_GUI`) instead of headless `sumo`.
    - `--rebuild`: Rebuilds `artery-sim/build/libtee_v2x.so` before starting CrowNet.

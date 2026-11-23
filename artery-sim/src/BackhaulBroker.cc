@@ -538,10 +538,16 @@ std::string BackhaulBroker::resolveCsvPrefix() const
     const auto* cfg = getSimulation()->getEnvir()->getConfigEx();
     const char* resultDir = cfg->getVariable(CFGVAR_RESULTDIR);
     const char* configName = cfg->getVariable(CFGVAR_CONFIGNAME);
+    const char* dateTime = cfg->getVariable(CFGVAR_DATETIME);
     const std::string dir = (resultDir && resultDir[0] != '\0') ? resultDir : "results";
     const std::string name = (configName && configName[0] != '\0') ? configName : "sim";
     const std::string algo = mOtpAlgo ? otpAlgoName(*mOtpAlgo) : "ascon";
-    return dir + "/" + name + "-" + algo;
+    prefix = dir + "/" + name + "-" + algo;
+    if (dateTime && dateTime[0] != '\0') {
+        prefix += "-";
+        prefix += dateTime;
+    }
+    return prefix;
 }
 
 void BackhaulBroker::exportMetricsAndReport()

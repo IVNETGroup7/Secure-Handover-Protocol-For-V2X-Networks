@@ -109,6 +109,12 @@ class GatewayTaSession
             Bytes kG;
         };
 
+        struct PrecomputedCloudSession
+        {
+            Bytes kEg;
+            std::string ys;
+        };
+
         struct CloudState
         {
             bool ready = false;
@@ -119,6 +125,7 @@ class GatewayTaSession
             std::string ys;
             int messages = 0;
             int number = 0;
+            std::vector<PrecomputedCloudSession> preloaded;
         };
 
         void print(const std::string& text);

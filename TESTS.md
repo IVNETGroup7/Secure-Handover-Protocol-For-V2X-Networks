@@ -35,6 +35,7 @@ For a concise overview and quick-start commands, see [README.md](README.md).
    - [7.3 Simulation Configurations (`omnetpp.ini`) & Run Flags](#73-simulation-configurations-omnetppini--run-flags)
    - [7.4 Observed `NR_5G` Trace & Scalar Results](#74-observed-nr_5g-trace--scalar-results)
    - [7.5 Observed Physical RPi3 5G NR `HIL_RPi3_QuadRsu` Results](#75-observed-physical-rpi3-5g-nr-hil_rpi3_quadrsu-results)
+   - [7.6 Academic V2X Evaluation Metrics & CSV Exports](#76-academic-v2x-evaluation-metrics--csv-exports)
 
 ---
 
@@ -371,7 +372,9 @@ When each `./app rsu` instance exits cleanly (timeout or signal), [`Benchmark::p
 |---|---|---|---|
 | `--config <name>` | `run-sim.sh` | `NR_5G` (`NR_5G_GUI` with `--gui`) | OMNeT++ configuration name (`NR_5G`, `NR_5G_GUI`, `HIL_RPi3_QuadRsu`, `HIL_RPi3_QuadRsu_GUI`). |
 | `OTP=ascon\|poly1305` (Make) / `--otp ascon\|poly1305` / `OTP_ALGO` env | `make sim`, `make hil-quad`, `run-sim.sh`, `run-hil-quad.sh` | `ascon` | Selects the single OTP/MAC algorithm for vehicle, local TAs, and `Session_Ack` sent to physical RPi3 RSUs. |
-| `HIL_IFACE=<nic>` / `--iface <nic>` | `make hil-quad`, `run-hil-quad.sh`, `run-sim.sh` (HIL configs) | *(required for HIL)* | Host Ethernet interface wired to RPi3 (e.g. `enp3s0`) or VM bridge (`virbr0`). |
+| `HIL_IFACE=<nic>` / `--iface <nic>` | `make hil-quad`, `run-hil-quad.sh`, `run-sim.sh` (HIL configs) | *(required for HIL)* | Host Ethernet interface wired to RPi3 (e.g. `<host-nic>`) or VM bridge (`virbr0`). |
+| `CSV_PREFIX=<path>` / `--csv-prefix <path>` | `make sim`, `make hil-quad`, `run-sim.sh`, `run-hil-quad.sh` | `results/<config>-<otp>` | Output file prefix for `<prefix>-{summary,handovers,packets}.csv`. |
+| `QUIET=1` / `--quiet` & `VERBOSE=1` / `--verbose` (`V2X_VERBOSE=1`) | `make sim`, `make hil-quad`, `run-sim.sh`, `run-hil-quad.sh` | `quietTrace=true` in HIL, `false` in `NR_5G` | Controls focused evaluation output (`[EVAL t=...]` milestones + report) vs. full per-step cryptographic hex traces. |
 | `GUI=1` (Make) / `--gui` | `make sim`, `make hil-quad`, `run-sim.sh`, `run-hil-quad.sh` | headless | Launches host `sumo-gui --start --quit-on-end` (`NR_5G_GUI` / `HIL_RPi3_QuadRsu_GUI`). |
 | `--rebuild` | `run-sim.sh`, `run-hil-quad.sh` | off (`make` passes it) | Rebuilds `artery-sim/build/libtee_v2x.so` inside `v2x-crownet:6.3.0` before running. |
 | `-- <extra opp_run flags>` | `run-sim.sh`, `run-hil-quad.sh` | — | Appends arbitrary OMNeT++ flags to `opp_run_release`, e.g. `--*.rsu[*].app[0].hilHandshakeTimeout=25s` or `--*.backhaulBroker.otpAlgo=\"poly1305\"`. |
@@ -413,3 +416,20 @@ Running the full 85 s 5G NR `HIL_RPi3_QuadRsu` scenario (`OTP=ascon`) with all 4
 - **Backhaul, Operator & Cloud (`HighwayHandover.backhaulBroker`)**:
   - `backhaulDelivered`: `7`, `backhaulUndeliverable`: `0`, `operatorConfirmations`: `1`
   - `cloudStored`: `762` (`cloudRefused = 0`, `cloudJsonBytes:sum = 331753`)
+
+### 7.6 Academic V2X Evaluation Metrics & CSV Exports
+
+To produce publication-ready evaluation data without verbose cryptographic hex traces cluttering HIL output, `HIL_RPi3_QuadRsu` enables `*.backhaulBroker.quietTrace = true` by default (override with `VERBOSE=1` / `--verbose`, or enable on `NR_5G` with `QUIET=1` / `--quiet`). During the run, only concise `[EVAL t=...]` milestones (bootstrap, CTRA predictions, 5G NR X2 handovers, Secrecy Forwarding handovers) are printed, followed by a formatted **V2X 5G NR + OP-TEE Evaluation Report** and 3 CSV files in `artery-sim/scenario/results/` (`<prefix>-summary.csv`, `<prefix>-handovers.csv`, `<prefix>-packets.csv`, where `<prefix>` defaults to `results/<configname>-<otp>` and can be overridden via `CSV_PREFIX=<path>` / `--csv-prefix <path>`):
+
+| CSV File | Schema & Academic Metrics Captured |
+|---|---|
+| **`<prefix>-summary.csv`** | `category,metric,value,unit,description` covering **Reliability** (`ot_pdr_pct`, `e2e_cloud_pdr_pct`, `e2e_plr_pct`, `ta_acceptance_rate_pct`, `marshal_refused`, `cloud_refused`), **Throughput & Overhead** (`ot_tx_goodput_kbps`, `cloud_it_goodput_kbps`, `protocol_control_overhead_pct`, `control_bytes_sent`, `data_bytes_sent`, `backhaul_messages_delivered`), **Latency & Jitter** (`e2e_latency_{mean,std,min,p50,p95,p99,max}_ms`, RFC 3550 `jitter_{mean,p95,max}_ms`, `nr_uplink_latency_{mean,p95}_ms`, `rsu_ta_turnaround_{mean,p95,max}_ms`, `host_ta_invoke_{mean,p95}_us`), **Bootstrap & Handover** (`bootstrap_delay_ms`, `operator_e2e_confirmation_ms`, `handover_success_rate_pct`, `handover_latency_{mean,std,min,max}_ms`, `handover_interruption_time_{mean,max}_ms`), **CTRA** (`ctra_prediction_accuracy_pct`, `prefetch_lead_time_{mean,min,max}_ms`, `backhaul_signaling_reduction_pct`), and **5G NR PHY** (`nr_radio_handovers`, `nr_sinr_{dl,ul}_mean_db`, `nr_cqi_{dl,ul}_mean`). |
+| **`<prefix>-handovers.csv`** | Per-handover breakdown: `handover_id,from_rsu,to_rsu,ctra_predict_time_s,ctra_accurate,prefetch_ready_time_s,nr_x2_handover_time_s,nr_from_gnb,nr_to_gnb,fwd_req_time_s,fwd_granted_time_s,prefetch_lead_time_ms,handover_e2e_delay_ms,handover_interruption_time_ms,handover_dist_m`. |
+| **`<prefix>-packets.csv`** | Per-packet time-series extracted directly from each Cloud-decrypted `SmartData` JSON `"Timing"` field (zero wire-protocol overhead in both `NR_5G` and physical RPi3 `HIL_RPi3_QuadRsu`): `seq,tx_time_s,rsu_rx_time_s,cloud_rx_time_s,rsu,serving_gnb,ot_bytes,it_json_bytes,nr_uplink_ms,rsu_ta_ms,e2e_latency_ms,jitter_ms`. |
+
+Verified `NR_5G` (`OTP=ascon` and `OTP=poly1305`) summary highlights (`results/NR_5G-{ascon,poly1305}-summary.csv`):
+- **Reliability**: OT PDR `100.00%` (`842/842`), E2E Cloud PDR `100.00%` (`PLR = 0.00%`), TA acceptance `100.00%`.
+- **Throughput & Overhead**: `33.00 kbps` OT goodput, `34.87 kbps` Cloud JSON goodput, `0.328%` protocol control overhead (`1143 B` control / `346904 B` data).
+- **Latency & Jitter**: E2E latency `mean = 5.31 ms` (`std = 2.49`, `p50 = 4.50`, `p95 = 10.50`, `p99 = 15.27`, `max = 28.00 ms`), RFC 3550 jitter `mean = 0.87 ms` (`p95 = 6.00 ms`), `HOST_SIM` TA wall-clock `mean = 32.23 us` (`p95 = 37.92 us`).
+- **Bootstrap, CTRA & Handover**: OT bootstrap `39.50 ms`, Operator E2E `187.00 ms`, CTRA accuracy `100.0%` (`3/3`), pre-fetch lead time `2900 ms`, backhaul signaling reduction `66.67%`, Secrecy Forwarding delay `12.00 ms`, Handover Interruption Time (HIT) `100.00 ms` (exact 10 Hz packet period, zero dropped packets across all 3 RSU switches).
+- **5G NR PHY (Simu5G)**: `3` X2 gNodeB handovers, mean DL SINR `42.01 dB` (CQI `14.00`), mean UL SINR `39.71 dB` (CQI `14.26`).

@@ -16,6 +16,9 @@ IMAGE_NAME="v2x-crownet:6.3.0"
 CONFIG=""
 OTP_ALGO="${OTP_ALGO:-${OTP:-ascon}}"
 IFACE="${HIL_IFACE:-}"
+CSV_PREFIX="${CSV_PREFIX:-}"
+VERBOSE="${V2X_VERBOSE:-0}"
+QUIET=0
 USE_GUI=0
 REBUILD=0
 EXTRA_FLAGS=()
@@ -28,6 +31,9 @@ Options:
   --config <name>        OMNeT++ config (default: NR_5G, or NR_5G_GUI with --gui)
   --otp ascon|poly1305   Select OTP/MAC algorithm for the whole run (default: ascon)
   --iface <nic>          Host Ethernet interface for HIL configs (or export HIL_IFACE=<nic>)
+  --csv-prefix <path>    Prefix for CSV exports (<prefix>-{summary,handovers,packets}.csv)
+  --quiet                Focused evaluation output (suppress verbose per-step crypto hex trace)
+  --verbose              Enable full per-step cryptographic trace (overrides quietTrace in HIL)
   --gui                  Launch host sumo-gui (--start) instead of headless sumo
   --rebuild              Rebuild libtee_v2x.so before running
   -h, --help             Show this help message
@@ -50,6 +56,21 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "error: --iface requires an argument" >&2; exit 2; }
             IFACE="$2"
             shift 2
+            ;;
+        --csv-prefix)
+            [ $# -ge 2 ] || { echo "error: --csv-prefix requires an argument" >&2; exit 2; }
+            CSV_PREFIX="$2"
+            shift 2
+            ;;
+        --quiet)
+            QUIET=1
+            VERBOSE=0
+            shift
+            ;;
+        --verbose)
+            VERBOSE=1
+            QUIET=0
+            shift
             ;;
         --gui)
             USE_GUI=1
@@ -222,6 +243,16 @@ OPP_ARGS=(
 if [ "$IS_HIL" -eq 1 ]; then
     DOCKER_ARGS+=(--cap-add=NET_RAW -e "HIL_IFACE=$IFACE")
     OPP_ARGS+=(--scheduler-class=omnetpp::cRealTimeScheduler)
+fi
+
+if [ -n "$CSV_PREFIX" ]; then
+    DOCKER_ARGS+=(-e "CSV_PREFIX=$CSV_PREFIX")
+fi
+
+if [ "$VERBOSE" = "1" ]; then
+    DOCKER_ARGS+=(-e "V2X_VERBOSE=1")
+elif [ "$QUIET" -eq 1 ]; then
+    OPP_ARGS+=(--*.backhaulBroker.quietTrace=true)
 fi
 
 if [ ${#EXTRA_FLAGS[@]} -gt 0 ]; then

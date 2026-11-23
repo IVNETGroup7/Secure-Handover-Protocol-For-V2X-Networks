@@ -6,6 +6,9 @@
 
 namespace trace
 {
+void setEnabled(bool enabled);
+bool enabled();
+
 void step(const std::string& node, const std::string& step, const std::string& onType = "",
     const std::string& from = "", const std::string& vehicle = "");
 

@@ -28,11 +28,11 @@ rpi3:
 	$(MAKE) -C rsu-optee-gateway rpi3 PI_IP=$(PI_IP)
 
 sim:
-	./artery-sim/run-sim.sh --rebuild --otp "$(OTP)" $(if $(GUI),--gui)
+	./artery-sim/run-sim.sh --rebuild --otp "$(OTP)" $(if $(GUI),--gui) $(if $(CSV_PREFIX),--csv-prefix "$(CSV_PREFIX)") $(if $(QUIET),--quiet) $(if $(VERBOSE),--verbose)
 
 hil-quad:
 	@test -n "$(HIL_IFACE)" || { echo "error: pass HIL_IFACE=<host_nic> (e.g. make hil-quad HIL_IFACE=enp3s0)" >&2; exit 2; }
-	./artery-sim/run-hil-quad.sh --rebuild --iface "$(HIL_IFACE)" --otp "$(OTP)" $(if $(GUI),--gui)
+	./artery-sim/run-hil-quad.sh --rebuild --iface "$(HIL_IFACE)" --otp "$(OTP)" $(if $(GUI),--gui) $(if $(CSV_PREFIX),--csv-prefix "$(CSV_PREFIX)") $(if $(VERBOSE),--verbose)
 
 clean:
 	$(MAKE) -C rsu-optee-gateway clean
@@ -46,6 +46,6 @@ help:
 	@echo "  make vm [OTP=ascon|poly1305]              Sync repo & run self-test in optee-arm64-vm"
 	@echo "  make vm-hil [OTP=ascon|poly1305]          Run quad-RSU (rsu[0]..rsu[3]) in optee-arm64-vm (pair with HIL_IFACE=virbr0)"
 	@echo "  make rpi3 [PI_IP=<ip>]                    Cross-compile & deploy .ta + ./app for Raspberry Pi 3"
-	@echo "  make sim [OTP=ascon|poly1305] [GUI=1]     Build libtee_v2x.so and run CrowNet 5G NR simulation (NR_5G)"
-	@echo "  make hil-quad HIL_IFACE=<nic> [OTP=...]   Rebuild libtee_v2x.so and run 5G NR HIL_RPi3_QuadRsu (add GUI=1 for sumo-gui)"
+	@echo "  make sim [OTP=ascon|poly1305] [GUI=1] [QUIET=1] [CSV_PREFIX=<path>]  Run CrowNet 5G NR simulation (NR_5G) + export CSVs"
+	@echo "  make hil-quad HIL_IFACE=<nic> [OTP=...] [GUI=1] [VERBOSE=1] [CSV_PREFIX=<path>]  Run 5G NR HIL_RPi3_QuadRsu + export CSVs"
 	@echo "  make clean                                Clean build artifacts, sealed state files, and simulation results"

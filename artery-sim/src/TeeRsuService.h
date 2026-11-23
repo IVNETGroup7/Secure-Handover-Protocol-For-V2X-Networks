@@ -54,7 +54,7 @@ class TeeRsuService : public omnetpp::cSimpleModule, public inet::UdpSocket::ICa
         void sendRadio(const ProtocolMsg&);
         void sendHttps(const ProtocolMsg&);
         void onBackhaul(const ProtocolMsg&);
-        void onRadioRx(const ProtocolMsg&);
+        void onRadioRx(const ProtocolMsg&, size_t wireBytes);
         void secureData(const ProtocolMsg&);
         void maybeSyncHilClock();
         void sendHilClockAnchor();

@@ -118,6 +118,7 @@ void TeeRsuService::initialize(int stage)
         mSocket.setCallback(this);
         mSocket.bind(mLocalPort);
 
+        mBroker->setHilMode(mEnableHil);
         if (mEnableHil) {
             mBroker->otpAlgo();
             initHil();
@@ -319,10 +320,13 @@ void TeeRsuService::initLocalTee()
     mGateway->setTransport(transport);
 }
 
-void TeeRsuService::onRadioRx(const ProtocolMsg& msg)
+void TeeRsuService::onRadioRx(const ProtocolMsg& msg, size_t wireBytes)
 {
     if (msg.getType() == Handover_Predict && msg.getDestination() == mName) {
         ++mHandoversTriggered;
+    }
+    if (msg.getType() == Secure_Data && msg.getDestination() == mName && mBroker) {
+        mBroker->recordRsuSecureDataRx(mName, omnetpp::simTime().inUnit(omnetpp::SIMTIME_NS), wireBytes);
     }
     if (mEnableHil) {
         if (!mHilRadio || msg.getDestination() != mName) {
@@ -357,7 +361,7 @@ void TeeRsuService::socketDataArrived(inet::UdpSocket*, inet::Packet* packet)
                 portInd ? portInd->getSrcPort() : mVehiclePort
             };
         }
-        onRadioRx(msg);
+        onRadioRx(msg, wire.size());
     } catch (const std::runtime_error& e) {
         EV_ERROR << mName << ": 5G NR UDP frame dropped: " << e.what() << "\n";
     }
@@ -381,8 +385,14 @@ void TeeRsuService::secureData(const ProtocolMsg& msg)
     const Reply reply = mGateway->marshal(getPayload(msg), static_cast<uint64_t>(SimTime::now().ns()));
     const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
     emit(mMarshalLatencySignal, us);
+    if (mBroker) {
+        mBroker->recordRsuTaWallUs(mName, us);
+    }
     if (reply.status != GW_OK) {
         ++mMarshalRefused;
+        if (mBroker) {
+            mBroker->recordRsuMarshalRefused(mName);
+        }
         EV_WARN << mName << ": SmartData of " << msg.getSender() << " refused by the TA (" << statusName(reply.status)
             << ")\n";
         return;
@@ -569,6 +579,9 @@ void TeeRsuService::pollHil()
             } else if (kind == FrameKind::Cloud_Refused) {
                 if (auto tag = parseRsuTag(body); tag && *tag == mName) {
                     ++mMarshalRefused;
+                    if (mBroker) {
+                        mBroker->recordRsuMarshalRefused(mName);
+                    }
                 }
             } else if (kind == FrameKind::Session_Hello) {
                 if (auto hello = parseSessionHello(body);

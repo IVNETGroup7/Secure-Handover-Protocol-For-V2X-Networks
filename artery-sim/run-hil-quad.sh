@@ -11,6 +11,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 IFACE="${HIL_IFACE:-}"
 OTP_ALGO="${OTP_ALGO:-${OTP:-ascon}}"
+CSV_PREFIX="${CSV_PREFIX:-}"
+VERBOSE="${V2X_VERBOSE:-0}"
 USE_GUI=0
 REBUILD=0
 EXTRA_FLAGS=()
@@ -23,6 +25,8 @@ Options:
   --iface <nic>          Host Ethernet interface connected to the Raspberry Pi 3 / VM
                          (or export HIL_IFACE=<nic>)
   --otp ascon|poly1305   Select OTP/MAC algorithm for the whole run (default: ascon)
+  --csv-prefix <path>    Prefix for CSV exports (<prefix>-{summary,handovers,packets}.csv)
+  --verbose              Enable full per-step cryptographic trace (default: focused output)
   --gui                  Run HIL_RPi3_QuadRsu_GUI (launches sumo-gui) instead of headless
   --rebuild              Rebuild libtee_v2x.so before running
   -h, --help             Show this help message
@@ -40,6 +44,15 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "error: --otp requires an argument" >&2; exit 2; }
             OTP_ALGO="$2"
             shift 2
+            ;;
+        --csv-prefix)
+            [ $# -ge 2 ] || { echo "error: --csv-prefix requires an argument" >&2; exit 2; }
+            CSV_PREFIX="$2"
+            shift 2
+            ;;
+        --verbose)
+            VERBOSE=1
+            shift
             ;;
         --gui)
             USE_GUI=1
@@ -80,6 +93,12 @@ if [ "$USE_GUI" -eq 1 ]; then
 fi
 if [ "$REBUILD" -eq 1 ]; then
     ARGS+=(--rebuild)
+fi
+if [ -n "$CSV_PREFIX" ]; then
+    ARGS+=(--csv-prefix "$CSV_PREFIX")
+fi
+if [ "$VERBOSE" = "1" ]; then
+    ARGS+=(--verbose)
 fi
 if [ ${#EXTRA_FLAGS[@]} -gt 0 ]; then
     ARGS+=(-- "${EXTRA_FLAGS[@]}")

@@ -37,6 +37,8 @@ class VehicleTeeService : public omnetpp::cSimpleModule, public inet::UdpSocket:
         void finish() override;
         void receiveSignal(omnetpp::cComponent* source, omnetpp::simsignal_t signalID, long value,
             omnetpp::cObject* details) override;
+        void receiveSignal(omnetpp::cComponent* source, omnetpp::simsignal_t signalID, double value,
+            omnetpp::cObject* details) override;
 
         // inet::UdpSocket::ICallback
         void socketDataArrived(inet::UdpSocket* socket, inet::Packet* packet) override;
@@ -45,8 +47,8 @@ class VehicleTeeService : public omnetpp::cSimpleModule, public inet::UdpSocket:
 
     private:
         void ensureDefaultCellularRoute();
-        void subscribeNrServingCell();
-        void unsubscribeNrServingCell();
+        void subscribeNrSignals();
+        void unsubscribeNrSignals();
         void discoverRsus();
         void updateKinematics();
         void onNrServingCellChanged(int cellId);
@@ -78,9 +80,16 @@ class VehicleTeeService : public omnetpp::cSimpleModule, public inet::UdpSocket:
         double mHandoverRadius = 160.0;
         bool mReady = false;
         std::string mPredictedRsu;
+        std::string mHandoverFromRsu;
+        double mLastPrefetchLeadMs = -1.0;
         int mLastNrServingCellId = 0;
         omnetpp::cModule* mNrPhyModule = nullptr;
+        omnetpp::cModule* mNrChannelModule = nullptr;
         omnetpp::simsignal_t mServingCellSignal = SIMSIGNAL_NULL;
+        omnetpp::simsignal_t mAverageCqiDlSignal = SIMSIGNAL_NULL;
+        omnetpp::simsignal_t mAverageCqiUlSignal = SIMSIGNAL_NULL;
+        omnetpp::simsignal_t mMeasuredSinrDlSignal = SIMSIGNAL_NULL;
+        omnetpp::simsignal_t mMeasuredSinrUlSignal = SIMSIGNAL_NULL;
         omnetpp::simtime_t mStartedAt;
         omnetpp::simtime_t mPredictSentAt;
         omnetpp::simtime_t mPrefetchReadyAt;

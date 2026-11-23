@@ -31,7 +31,7 @@ constexpr double kPi = 3.14159265358979323846;
 
 VehicleTeeService::~VehicleTeeService()
 {
-    unsubscribeNrServingCell();
+    unsubscribeNrSignals();
     cancelAndDelete(mStartTimer);
     cancelAndDelete(mBootstrapLaunchTimer);
     cancelAndDelete(mBootstrapTimeoutTimer);
@@ -75,7 +75,7 @@ void VehicleTeeService::initialize(int stage)
         mSocket.bind(mLocalPort);
 
         discoverRsus();
-        subscribeNrServingCell();
+        subscribeNrSignals();
 
         mStartTimer = new omnetpp::cMessage("bootstrap");
         mBootstrapLaunchTimer = new omnetpp::cMessage("bootstrapOtLaunch");
@@ -159,7 +159,7 @@ void VehicleTeeService::updateKinematics()
     }
 }
 
-void VehicleTeeService::subscribeNrServingCell()
+void VehicleTeeService::subscribeNrSignals()
 {
     omnetpp::cModule* host = getParentModule();
     if (host && host->hasPar("nrServingNodeId")) {
@@ -171,25 +171,73 @@ void VehicleTeeService::subscribeNrServingCell()
     if (omnetpp::cModule* nrPhy = findModuleByPath("^.cellularNic.nrPhy")) {
         mNrPhyModule = nrPhy;
         mServingCellSignal = registerSignal("servingCell");
+        mAverageCqiDlSignal = registerSignal("averageCqiDl");
+        mAverageCqiUlSignal = registerSignal("averageCqiUl");
         mNrPhyModule->subscribe(mServingCellSignal, this);
+        mNrPhyModule->subscribe(mAverageCqiDlSignal, this);
+        mNrPhyModule->subscribe(mAverageCqiUlSignal, this);
+    }
+    if (omnetpp::cModule* nrCh = findModuleByPath("^.cellularNic.nrChannelModel[0]")) {
+        mNrChannelModule = nrCh;
+        mMeasuredSinrDlSignal = registerSignal("measuredSinrDl");
+        mMeasuredSinrUlSignal = registerSignal("measuredSinrUl");
+        mNrChannelModule->subscribe(mMeasuredSinrDlSignal, this);
+        mNrChannelModule->subscribe(mMeasuredSinrUlSignal, this);
     }
 }
 
-void VehicleTeeService::unsubscribeNrServingCell()
+void VehicleTeeService::unsubscribeNrSignals()
 {
-    if (mNrPhyModule && mServingCellSignal != SIMSIGNAL_NULL) {
-        if (mNrPhyModule->isSubscribed(mServingCellSignal, this)) {
-            mNrPhyModule->unsubscribe(mServingCellSignal, this);
+    if (mNrPhyModule) {
+        for (omnetpp::simsignal_t sig : { mServingCellSignal, mAverageCqiDlSignal, mAverageCqiUlSignal }) {
+            if (sig != SIMSIGNAL_NULL && mNrPhyModule->isSubscribed(sig, this)) {
+                mNrPhyModule->unsubscribe(sig, this);
+            }
+        }
+    }
+    if (mNrChannelModule) {
+        for (omnetpp::simsignal_t sig : { mMeasuredSinrDlSignal, mMeasuredSinrUlSignal }) {
+            if (sig != SIMSIGNAL_NULL && mNrChannelModule->isSubscribed(sig, this)) {
+                mNrChannelModule->unsubscribe(sig, this);
+            }
         }
     }
     mNrPhyModule = nullptr;
+    mNrChannelModule = nullptr;
 }
 
 void VehicleTeeService::receiveSignal(omnetpp::cComponent*, omnetpp::simsignal_t signalID, long value,
     omnetpp::cObject*)
 {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
     if (signalID == mServingCellSignal) {
         onNrServingCellChanged(static_cast<int>(value));
+    } else if (mBroker && signalID == mAverageCqiDlSignal) {
+        mBroker->recordNrRadioSample(nan, nan, static_cast<double>(value), nan);
+    } else if (mBroker && signalID == mAverageCqiUlSignal) {
+        mBroker->recordNrRadioSample(nan, nan, nan, static_cast<double>(value));
+    } else if (mBroker && signalID == mMeasuredSinrDlSignal) {
+        mBroker->recordNrRadioSample(static_cast<double>(value), nan, nan, nan);
+    } else if (mBroker && signalID == mMeasuredSinrUlSignal) {
+        mBroker->recordNrRadioSample(nan, static_cast<double>(value), nan, nan);
+    }
+}
+
+void VehicleTeeService::receiveSignal(omnetpp::cComponent*, omnetpp::simsignal_t signalID, double value,
+    omnetpp::cObject*)
+{
+    if (!mBroker) {
+        return;
+    }
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (signalID == mAverageCqiDlSignal) {
+        mBroker->recordNrRadioSample(nan, nan, value, nan);
+    } else if (signalID == mAverageCqiUlSignal) {
+        mBroker->recordNrRadioSample(nan, nan, nan, value);
+    } else if (signalID == mMeasuredSinrDlSignal) {
+        mBroker->recordNrRadioSample(value, nan, nan, nan);
+    } else if (signalID == mMeasuredSinrUlSignal) {
+        mBroker->recordNrRadioSample(nan, value, nan, nan);
     }
 }
 
@@ -201,6 +249,9 @@ void VehicleTeeService::onNrServingCellChanged(int cellId)
     if (mLastNrServingCellId != 0) {
         ++mNrRadioHandovers;
         emit(mNrRadioHandoversSignal, mNrRadioHandovers);
+        if (mBroker) {
+            mBroker->recordNrRadioHandover(omnetpp::simTime().dbl(), mLastNrServingCellId, cellId);
+        }
         char detail[128];
         std::snprintf(detail, sizeof(detail), "gNodeB macNodeId %d -> %d (5G NR X2 handover #%ld)",
             mLastNrServingCellId, cellId, mNrRadioHandovers);
@@ -232,6 +283,9 @@ void VehicleTeeService::startBootstrap()
         mPrefetchReadyAt = omnetpp::simTime();
         ++mPrefetchesCompleted;
         const double rttMs = (mPrefetchReadyAt - mPredictSentAt).dbl() * 1000.0;
+        if (mBroker) {
+            mBroker->recordPrefetchReady(mPrefetchReadyAt.dbl(), targetRsu, rttMs);
+        }
         EV_INFO << mName << ": [CTRA pre-compute ready] keys for " << targetRsu
                 << " pre-computed in " << rttMs << " ms (holding keys until handover zone)\n";
     });
@@ -242,6 +296,12 @@ void VehicleTeeService::startBootstrap()
         mPrefetchReadyAt = omnetpp::SimTime::ZERO;
         const double ms = (omnetpp::simTime() - mRequestSentAt).dbl() * 1000.0;
         emit(mHandoverDelaySignal, ms);
+        if (mBroker) {
+            mBroker->recordHandoverComplete(omnetpp::simTime().dbl(), mHandoverFromRsu, result.rsu, ms,
+                mLastPrefetchLeadMs);
+        }
+        mHandoverFromRsu.clear();
+        mLastPrefetchLeadMs = -1.0;
         EV_INFO << mName << ": handed over to " << result.rsu << " in " << ms << " ms\n";
         getParentModule()->bubble(("handover: " + result.rsu).c_str());
     });
@@ -271,6 +331,9 @@ void VehicleTeeService::launchOtBootstrap()
         mReady = true;
         cancelEvent(mBootstrapTimeoutTimer);
         emit(mBootstrapDelaySignal, omnetpp::simTime() - mStartedAt);
+        if (mBroker) {
+            mBroker->recordBootstrapTiming(mStartedAt.dbl(), omnetpp::simTime().dbl());
+        }
         getParentModule()->bubble(("bootstrap OK: " + result.rsu).c_str());
         if (!mDataTimer->isScheduled()) {
             scheduleAt(omnetpp::simTime() + par("dataInterval"), mDataTimer);
@@ -318,6 +381,10 @@ void VehicleTeeService::checkPrediction()
     mPredictSentAt = omnetpp::simTime();
     ++mPredictionsSent;
     emit(mCtraPredictionSignal, mPredictionsSent);
+    if (mBroker) {
+        mBroker->recordCtraPrediction(mPredictSentAt.dbl(), current, pred->targetRsu, pred->currentDistance,
+            pred->minDistance, pred->timeToClosest);
+    }
 
     const auto& st = mPredictor.state();
     char summary[256];
@@ -359,14 +426,20 @@ void VehicleTeeService::checkHandover()
         || mPredictor.shouldExecuteHandover(mAgent->session().currentRsu(), target, mHandoverRadius);
 
     if (shouldRequest) {
+        mLastPrefetchLeadMs = -1.0;
         if (mPrefetchReadyAt > omnetpp::SimTime::ZERO) {
-            const double leadMs = (omnetpp::simTime() - mPrefetchReadyAt).dbl() * 1000.0;
-            emit(mPrefetchLeadTimeSignal, leadMs);
+            mLastPrefetchLeadMs = (omnetpp::simTime() - mPrefetchReadyAt).dbl() * 1000.0;
+            emit(mPrefetchLeadTimeSignal, mLastPrefetchLeadMs);
         }
+        mHandoverFromRsu = mAgent->session().currentRsu();
+        const double distM = mPredictor.distanceToRsu(target);
         EV_INFO << mName << ": at (" << mPredictor.state().x << ", " << mPredictor.state().y
-                << ") m (dist=" << mPredictor.distanceToRsu(target) << " m), Forwarding_Request to pre-fetched "
+                << ") m (dist=" << distM << " m), Forwarding_Request to pre-fetched "
                 << target << "\n";
         mRequestSentAt = omnetpp::simTime();
+        if (mBroker) {
+            mBroker->recordHandoverRequest(mRequestSentAt.dbl(), mHandoverFromRsu, target, distM);
+        }
         mAgent->handover().requestForwarding();
     }
 }
@@ -438,6 +511,9 @@ void VehicleTeeService::sendRadio(const ProtocolMsg& msg)
 {
     const inet::L3Address destAddr = resolveRsuAddress(msg.getDestination());
     const Bytes wire = serialize(msg);
+    if (mBroker) {
+        mBroker->recordVehicleTx(static_cast<MessageType>(msg.getType()), wire.size(), mLastNrServingCellId);
+    }
     auto* pkt = new inet::Packet(messageTypeName(msg.getType()));
     pkt->insertAtBack(inet::makeShared<inet::BytesChunk>(wire));
     mSocket.sendTo(pkt, destAddr, mDestPort);
@@ -450,7 +526,7 @@ double VehicleTeeService::positionX() const
 
 void VehicleTeeService::finish()
 {
-    unsubscribeNrServingCell();
+    unsubscribeNrSignals();
     recordScalar("bootstrapped", mReady ? 1 : 0);
     recordScalar("secureDataSent", mSecureDataSent);
     recordScalar("ctraPredictionsSent", mPredictionsSent);

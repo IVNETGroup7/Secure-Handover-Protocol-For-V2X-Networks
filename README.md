@@ -60,8 +60,8 @@ make vm-hil [OTP=ascon|poly1305] # launch 4-RSU daemon inside VM (pair with: mak
 | `make vm` | `OTP=ascon\|poly1305` *(default `ascon`)* | Syncs the repository into `optee-arm64-vm` and runs the self-test |
 | `make vm-hil` | `OTP=ascon\|poly1305` *(default `ascon`)* | Starts 4 concurrent `rsu[0]`..`rsu[3]` processes inside `optee-arm64-vm` (pair with `HIL_IFACE=virbr0` on host) |
 | `make rpi3` | `PI_IP=<ip>` *(optional)* | Cross-compiles the `.ta` and `./app` for Raspberry Pi 3 (`-mcpu=cortex-a53`) and deploys via SSH when `PI_IP` is set |
-| `make sim` | `OTP=ascon\|poly1305` *(default `ascon`)*, `GUI=1` *(optional)* | Rebuilds `libtee_v2x.so` and runs the CrowNet 5G NR `NR_5G` (or `NR_5G_GUI`) 4-RSU Manhattan Grid + CTRA scenario |
-| `make hil-quad` | `HIL_IFACE=<nic>` *(required)*, `OTP=ascon\|poly1305` *(default `ascon`)*, `GUI=1` *(optional)* | Rebuilds `libtee_v2x.so` and runs 5G NR `HIL_RPi3_QuadRsu` (or `HIL_RPi3_QuadRsu_GUI` with `GUI=1`) |
+| `make sim` | `OTP=ascon\|poly1305` *(default `ascon`)*, `GUI=1`, `QUIET=1`, `CSV_PREFIX=<path>` | Rebuilds `libtee_v2x.so`, runs CrowNet 5G NR `NR_5G` (or `NR_5G_GUI`), prints the V2X Evaluation Report, and exports 3 CSV files |
+| `make hil-quad` | `HIL_IFACE=<nic>` *(required)*, `OTP=ascon\|poly1305`, `GUI=1`, `VERBOSE=1`, `CSV_PREFIX=<path>` | Rebuilds `libtee_v2x.so`, runs 5G NR `HIL_RPi3_QuadRsu` (focused output by default; pass `VERBOSE=1` for full crypto trace), and exports 3 CSV files |
 | `make clean` | — | Removes build outputs, `*.sealed*` state files, and simulation result artifacts |
 
 ---
@@ -140,14 +140,16 @@ In **4-RSU HIL**, all 4 Manhattan Grid RSUs execute in isolated OP-TEE TA sessio
    - `rsu[3]` (South edge) with Secure Storage ID `rsu3.sealed` (OP-TEE TA session #4)
 3. **Run CrowNet 5G NR on the host PC** (`v2x-crownet:6.3.0` already sets `cap_net_raw+ep` on `opp_run_release` and launches with `--network=host --cap-add=NET_RAW`, while host SUMO 1.26.0 runs natively):
    ```bash
-   make hil-quad HIL_IFACE=<host-nic> [OTP=ascon|poly1305] [GUI=1]
+   make hil-quad HIL_IFACE=<host-nic> [OTP=ascon|poly1305] [GUI=1] [CSV_PREFIX=<path>] [VERBOSE=1]
    # Or invoke run-hil-quad.sh / run-sim.sh directly:
-   ./artery-sim/run-hil-quad.sh --iface <host-nic> [--otp ascon|poly1305] [--gui] [--rebuild] [-- <extra opp_run flags>]
-   ./artery-sim/run-sim.sh [--config NR_5G|NR_5G_GUI|HIL_RPi3_QuadRsu|HIL_RPi3_QuadRsu_GUI] [--otp ascon|poly1305] [--iface <nic>] [--gui] [--rebuild] [-- <extra opp_run flags>]
+   ./artery-sim/run-hil-quad.sh --iface <host-nic> [--otp ascon|poly1305] [--csv-prefix <path>] [--verbose] [--gui] [--rebuild] [-- <extra opp_run flags>]
+   ./artery-sim/run-sim.sh [--config NR_5G|NR_5G_GUI|HIL_RPi3_QuadRsu|HIL_RPi3_QuadRsu_GUI] [--otp ascon|poly1305] [--iface <nic>] [--csv-prefix <path>] [--quiet|--verbose] [--gui] [--rebuild] [-- <extra opp_run flags>]
    ```
    - `--config <name>` (`run-sim.sh`): OMNeT++ config *(default `NR_5G`, or `NR_5G_GUI` with `--gui`)*.
    - `--iface <nic>` (or `HIL_IFACE=<nic>`): Host NIC wired to the RPi3 *(required for HIL configs)*.
    - `--otp ascon|poly1305` (or `OTP` / `OTP_ALGO`): OTP/MAC algorithm for the whole run *(default `ascon`)*.
+   - `--csv-prefix <path>` (or `CSV_PREFIX=<path>`): Custom output prefix for the 3 evaluation CSV files *(default `artery-sim/scenario/results/<config>-<otp>`)*.
+   - `--quiet` / `--verbose` (`QUIET=1` / `VERBOSE=1`): `HIL_RPi3_QuadRsu` uses focused evaluation output (`[EVAL t=...]` milestones + summary report) by default; pass `--verbose` (`V2X_VERBOSE=1`) to re-enable per-step crypto hex dumps.
    - `--gui`: Launches host `sumo-gui --start` (`NR_5G_GUI` / `HIL_RPi3_QuadRsu_GUI`) instead of headless `sumo`.
    - `--rebuild`: Rebuilds `artery-sim/build/libtee_v2x.so` before starting CrowNet.
    - `-- <extra opp_run flags>`: Forwards additional flags directly to `opp_run_release` (e.g. `--*.rsu[*].app[0].hilHandshakeTimeout=25s`).
@@ -186,4 +188,12 @@ At startup, neighboring RSUs exchange CA-signed certificates inside their TrustZ
 | Config | Mode | What it runs |
 |---|---|---|
 | `NR_5G` / `NR_5G_GUI` | Pure host simulation (`HOST_SIM`) | **5G NR via CrowNet (OMNeT++ 6.3.0 + INET 4 + Artery + Simu5G)** — `3.5 GHz` n78 NR carrier, numerology $\mu=1$ (`30 kHz` SCS), `25 RBs`, `ueTxPower = 26 dBm`, `eNodeBTxPower = 30 dBm`; **400 m × 400 m 3×3 Manhattan Grid** (`85 s`, `20 m/s`), 4 `gNodeB`s (`gNB[0..3]`) with full-mesh X2 handover + `UPF` + `Router` + 4 co-located OP-TEE RSUs (`rsu[0]` West `(10, 200)`, `rsu[1]` North `(200, 10)`, `rsu[2]` East `(390, 200)`, `rsu[3]` South `(200, 390)`), purely kinematic CTRA prediction (`predictRadius = 80 m`, `handoverRadius = 160 m`), 3 live 5G NR X2 radio handovers (`gNB[0] → gNB[1] → gNB[2] → gNB[3]`), and 3 Secrecy Forwarding handovers (`rsu[0] → rsu[1] → rsu[2] → rsu[3]`). |
-| `HIL_RPi3_QuadRsu` (+ `HIL_RPi3_QuadRsu_GUI`) | 5G NR Hardware-in-the-Loop (`cRealTimeScheduler`) | Extends `NR_5G` with `*.rsu[*].app[0].enableHil = true`, bridging `0x88b5`/`0x88b6` frames over `HIL_IFACE` to the 4 isolated RPi3 (or `virbr0` VM) OP-TEE TA sessions while the 5G NR RAN/Core, vehicle UE, CTRA predictor, ESA, and Cloud run in CrowNet. |
+| `HIL_RPi3_QuadRsu` (+ `HIL_RPi3_QuadRsu_GUI`) | 5G NR Hardware-in-the-Loop (`cRealTimeScheduler`) | Extends `NR_5G` with `*.rsu[*].app[0].enableHil = true` and `*.backhaulBroker.quietTrace = true` (focused evaluation milestones + report + CSV exports), bridging `0x88b5`/`0x88b6` frames over `HIL_IFACE` to the 4 isolated RPi3 (or `virbr0` VM) OP-TEE TA sessions while the 5G NR RAN/Core, vehicle UE, CTRA predictor, ESA, and Cloud run in CrowNet. |
+
+### Academic V2X Evaluation Metrics & CSV Exports
+
+Every `NR_5G` and `HIL_RPi3_QuadRsu` run prints a structured **V2X 5G NR + OP-TEE Evaluation Report** at completion and exports 3 CSV files into `artery-sim/scenario/results/` (default prefix `<config>-<otp>`, overridable via `CSV_PREFIX=<path>` / `--csv-prefix <path>`):
+
+- **`<prefix>-summary.csv`** (`category,metric,value,unit,description`): Aggregated academic V2X & TEE metrics — OT/E2E PDR & PLR, TA acceptance rate, OT/Cloud goodput (`kbps`), security control overhead (`%`), E2E OT→Cloud latency (`mean/std/min/p50/p95/p99/max`), 5G NR uplink latency, RSU OP-TEE TA turnaround latency, RFC 3550 latency jitter (IPDV), bootstrap & Operator E2E delay, Secrecy Forwarding handover delay & success rate, Handover Interruption Time (HIT), CTRA prediction accuracy, pre-fetch lead time, backhaul signaling reduction (`%`), 5G NR X2 radio handovers, and Simu5G 5G NR DL/UL SINR & CQI.
+- **`<prefix>-handovers.csv`**: Per-handover event log (`from_rsu`, `to_rsu`, CTRA predict & pre-fetch timestamps/accuracy, 5G NR X2 gNB switch, `Forwarding_Request`/`Granted` timestamps, pre-fetch lead time, handover E2E delay, HIT, distance).
+- **`<prefix>-packets.csv`**: Per-packet time-series (`seq`, `tx_time_s`, `rsu_rx_time_s`, `cloud_rx_time_s`, `rsu`, `serving_gnb`, `ot_bytes`, `it_json_bytes`, `nr_uplink_ms`, `rsu_ta_ms`, `e2e_latency_ms`, `jitter_ms`) ready for plotting CDFs, latency timelines, and jitter distributions.
